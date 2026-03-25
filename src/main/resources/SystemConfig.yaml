@@ -1,0 +1,19 @@
+## YAML Template.
+DbHome: D:\dzda
+FileSync:
+    excludeDeleted: false #不监听删除事件
+    includeHidden: true #包含系统隐藏文件
+    lastModified: '0' #最近同步时间戳,只同步该时间戳之后的文件,默认值0,可选时间字符串格式:'2022-01-01 00:00:00'
+    fileFilter: com.filesync.filters.FilenameFilter #FileFilter class name,若不为空,其他过滤规则忽略
+    sources:
+        - I:\dzda\cms\sync
+    targets:
+        - D:\dzda\cms\sync
+    #suffixIncludes:  #只监听后缀,优先1,若不为空,其他过滤规则忽略
+    #    - .class
+    #prefixIncludes:  #只监听前缀,优先2,若不为空,其他过滤规则忽略
+    #    - abc
+    #suffixExcludes:  #不监听后缀
+    #    - .exe
+    prefixExcludes:  #不监听前缀
+        - .
