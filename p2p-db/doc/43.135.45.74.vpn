@@ -1,0 +1,51 @@
+﻿# VPN Client 连接设置文件
+# 
+# 此文件是使用 VPN Client 管理器导出的。
+# 此文件内容可使用文本编辑器进行编辑。
+# 当此文件通过使用客户端连接管理器导入后可以立即被使用。
+
+declare root
+{
+	bool CheckServerCert false
+	uint64 CreateDateTime 0
+	uint64 LastConnectDateTime 0
+	bool StartupAccount false
+	uint64 UpdateDateTime 0
+
+	declare ClientAuth
+	{
+		uint AuthType 1
+		byte HashedPassword YqLpZL3qoTnpg7I+k3wndSqVhf4=
+		string Username hjk
+	}
+	declare ClientOption
+	{
+		string AccountName 43.135.45.74
+		uint AdditionalConnectionInterval 1
+		uint ConnectionDisconnectSpan 0
+		string DeviceName VPN
+		bool DisableQoS false
+		bool HalfConnection false
+		bool HideNicInfoWindow false
+		bool HideStatusWindow false
+		string Hostname 43.135.45.74
+		string HubName DEFAULT
+		uint MaxConnection 1
+		bool NoRoutingTracking false
+		bool NoTls1 false
+		bool NoUdpAcceleration false
+		uint NumRetry 4294967295
+		uint Port 443
+		uint PortUDP 0
+		string ProxyName $
+		byte ProxyPassword $
+		uint ProxyPort 0
+		uint ProxyType 0
+		string ProxyUsername $
+		bool RequireBridgeRoutingMode false
+		bool RequireMonitorMode false
+		uint RetryInterval 15
+		bool UseCompress false
+		bool UseEncrypt true
+	}
+}

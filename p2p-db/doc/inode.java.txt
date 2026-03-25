@@ -1,0 +1,1015 @@
+```java
+class Ds128SuperInode {
+    // 8字节，文件系统标志和版本号，当前为DS64v1.0
+    long i_magic;
+    // Size in bytes
+    long i_size_lo;
+    // 块大小
+    int i_block_size;
+    // 内部命名标识符字符串位置偏移
+    int i_sys_names_offset;
+    // 时间戳序列号
+    long sn;
+    // inode创建时间
+    long inode_ctime;
+    long next_super_node;
+    long sibling_super_node;
+    long sibling_mount_node;
+    byte[] md5 = new byte[16];
+    long[] extra_data = new long[4];
+    // 多版本并发控制 -- 文件系统
+    long next_mvcc_super_inode;
+    // 可执行代码入口 main entry,boot entry
+    long i_node_exec_entry;
+}
+```
+
+在上述Java代码中，`int64` 类型在Java中使用 `long` 来表示，因为 `long` 类型是64位有符号整数，与C语言中的 `int64` 对应。`int32` 类型在Java中使用 `int` 来表示，`byte` 类型在Java和C语言中是相同的。同时，移除了注释掉的代码行。
+
+以下是将 `Ds128SuperInode` 类使用字节数组表示，并生成对应的读写工具类的代码：
+
+```java
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+
+class Ds128SuperInode {
+    // 8字节，文件系统标志和版本号，当前为DS64v1.0
+    long i_magic;
+    // Size in bytes
+    long i_size_lo;
+    // 块大小
+    int i_block_size;
+    // 内部命名标识符字符串位置偏移
+    int i_sys_names_offset;
+    // 时间戳序列号
+    long sn;
+    // inode创建时间
+    long inode_ctime;
+    long next_super_node;
+    long sibling_super_node;
+    long sibling_mount_node;
+    byte[] md5 = new byte[16];
+    long[] extra_data = new long[4];
+    // 多版本并发控制 -- 文件系统
+    long next_mvcc_super_inode;
+    // 可执行代码入口 main entry,boot entry
+    long i_node_exec_entry;
+}
+
+public class Ds128SuperInodeUtils {
+    private static final int SIZE = 8 + 8 + 4 + 4 + 8 + 8 + 8 + 8 + 8 + 16 + 8 * 4 + 8 + 8;
+
+    public static byte[] toByteArray(Ds128SuperInode inode) {
+        ByteBuffer buffer = ByteBuffer.allocate(SIZE);
+        buffer.order(ByteOrder.LITTLE_ENDIAN);
+        buffer.putLong(inode.i_magic);
+        buffer.putLong(inode.i_size_lo);
+        buffer.putInt(inode.i_block_size);
+        buffer.putInt(inode.i_sys_names_offset);
+        buffer.putLong(inode.sn);
+        buffer.putLong(inode.inode_ctime);
+        buffer.putLong(inode.next_super_node);
+        buffer.putLong(inode.sibling_super_node);
+        buffer.putLong(inode.sibling_mount_node);
+        buffer.put(inode.md5);
+        for (long data : inode.extra_data) {
+            buffer.putLong(data);
+        }
+        buffer.putLong(inode.next_mvcc_super_inode);
+        buffer.putLong(inode.i_node_exec_entry);
+        return buffer.array();
+    }
+
+    public static Ds128SuperInode fromByteArray(byte[] bytes) {
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        buffer.order(ByteOrder.LITTLE_ENDIAN);
+        Ds128SuperInode inode = new Ds128SuperInode();
+        inode.i_magic = buffer.getLong();
+        inode.i_size_lo = buffer.getLong();
+        inode.i_block_size = buffer.getInt();
+        inode.i_sys_names_offset = buffer.getInt();
+        inode.sn = buffer.getLong();
+        inode.inode_ctime = buffer.getLong();
+        inode.next_super_node = buffer.getLong();
+        inode.sibling_super_node = buffer.getLong();
+        inode.sibling_mount_node = buffer.getLong();
+        buffer.get(inode.md5);
+        for (int i = 0; i < inode.extra_data.length; i++) {
+            inode.extra_data[i] = buffer.getLong();
+        }
+        inode.next_mvcc_super_inode = buffer.getLong();
+        inode.i_node_exec_entry = buffer.getLong();
+        return inode;
+    }
+}
+```
+
+### 代码说明：
+1. **`Ds128SuperInode` 类**：定义了 `Ds128SuperInode` 的数据结构，包含了各个字段。
+2. **`Ds128SuperInodeUtils` 类**：
+    - `SIZE` 常量：计算了 `Ds128SuperInode` 对象所需的字节数组大小。
+    - `toByteArray` 方法：将 `Ds128SuperInode` 对象转换为字节数组。
+    - `fromByteArray` 方法：将字节数组转换为 `Ds128SuperInode` 对象。
+
+### 使用示例：
+```java
+public class Main {
+    public static void main(String[] args) {
+        Ds128SuperInode inode = new Ds128SuperInode();
+        inode.i_magic = 1L;
+        inode.i_size_lo = 1024L;
+        inode.i_block_size = 4096;
+        inode.i_sys_names_offset = 100;
+        inode.sn = 2L;
+        inode.inode_ctime = System.currentTimeMillis();
+        inode.next_super_node = 3L;
+        inode.sibling_super_node = 4L;
+        inode.sibling_mount_node = 5L;
+        inode.md5 = new byte[16];
+        inode.extra_data = new long[]{1L, 2L, 3L, 4L};
+        inode.next_mvcc_super_inode = 6L;
+        inode.i_node_exec_entry = 7L;
+
+        byte[] bytes = Ds128SuperInodeUtils.toByteArray(inode);
+        Ds128SuperInode newInode = Ds128SuperInodeUtils.fromByteArray(bytes);
+
+        System.out.println("i_magic: " + newInode.i_magic);
+    }
+}
+```
+
+这个示例展示了如何使用 `Ds128SuperInodeUtils` 类将 `Ds128SuperInode` 对象转换为字节数组，然后再将字节数组转换回 `Ds128SuperInode` 对象。
+
+
+
+以下是使用数组加下标的方式实现 Ds128SuperInode 类的读写工具类代码：
+
+class Ds128SuperInode {
+    // 8字节，文件系统标志和版本号，当前为DS64v1.0
+    long i_magic;
+    // Size in bytes
+    long i_size_lo;
+    // 块大小
+    int i_block_size;
+    // 内部命名标识符字符串位置偏移
+    int i_sys_names_offset;
+    // 时间戳序列号
+    long sn;
+    // inode创建时间
+    long inode_ctime;
+    long next_super_node;
+    long sibling_super_node;
+    long sibling_mount_node;
+    byte[] md5 = new byte[16];
+    long[] extra_data = new long[4];
+    // 多版本并发控制 -- 文件系统
+    long next_mvcc_super_inode;
+    // 可执行代码入口 main entry,boot entry
+    long i_node_exec_entry;
+}
+
+public class Ds128SuperInodeUtils {
+    private static final int LONG_SIZE = 8;
+    private static final int INT_SIZE = 4;
+    private static final int MD5_SIZE = 16;
+
+    public static byte[] toByteArray(Ds128SuperInode inode) {
+        int size = LONG_SIZE * 9 + INT_SIZE * 2 + MD5_SIZE;
+        byte[] bytes = new byte[size];
+        int index = 0;
+
+        // 写入 i_magic
+        writeLong(bytes, index, inode.i_magic);
+        index += LONG_SIZE;
+
+        // 写入 i_size_lo
+        writeLong(bytes, index, inode.i_size_lo);
+        index += LONG_SIZE;
+
+        // 写入 i_block_size
+        writeInt(bytes, index, inode.i_block_size);
+        index += INT_SIZE;
+
+        // 写入 i_sys_names_offset
+        writeInt(bytes, index, inode.i_sys_names_offset);
+        index += INT_SIZE;
+
+        // 写入 sn
+        writeLong(bytes, index, inode.sn);
+        index += LONG_SIZE;
+
+        // 写入 inode_ctime
+        writeLong(bytes, index, inode.inode_ctime);
+        index += LONG_SIZE;
+
+        // 写入 next_super_node
+        writeLong(bytes, index, inode.next_super_node);
+        index += LONG_SIZE;
+
+        // 写入 sibling_super_node
+        writeLong(bytes, index, inode.sibling_super_node);
+        index += LONG_SIZE;
+
+        // 写入 sibling_mount_node
+        writeLong(bytes, index, inode.sibling_mount_node);
+        index += LONG_SIZE;
+
+        // 写入 md5
+        System.arraycopy(inode.md5, 0, bytes, index, MD5_SIZE);
+        index += MD5_SIZE;
+
+        // 写入 extra_data
+        for (long data : inode.extra_data) {
+            writeLong(bytes, index, data);
+            index += LONG_SIZE;
+        }
+
+        // 写入 next_mvcc_super_inode
+        writeLong(bytes, index, inode.next_mvcc_super_inode);
+        index += LONG_SIZE;
+
+        // 写入 i_node_exec_entry
+        writeLong(bytes, index, inode.i_node_exec_entry);
+
+        return bytes;
+    }
+
+    public static Ds128SuperInode fromByteArray(byte[] bytes) {
+        Ds128SuperInode inode = new Ds128SuperInode();
+        int index = 0;
+
+        // 读取 i_magic
+        inode.i_magic = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 i_size_lo
+        inode.i_size_lo = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 i_block_size
+        inode.i_block_size = readInt(bytes, index);
+        index += INT_SIZE;
+
+        // 读取 i_sys_names_offset
+        inode.i_sys_names_offset = readInt(bytes, index);
+        index += INT_SIZE;
+
+        // 读取 sn
+        inode.sn = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 inode_ctime
+        inode.inode_ctime = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 next_super_node
+        inode.next_super_node = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 sibling_super_node
+        inode.sibling_super_node = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 sibling_mount_node
+        inode.sibling_mount_node = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 md5
+        System.arraycopy(bytes, index, inode.md5, 0, MD5_SIZE);
+        index += MD5_SIZE;
+
+        // 读取 extra_data
+        for (int i = 0; i < inode.extra_data.length; i++) {
+            inode.extra_data[i] = readLong(bytes, index);
+            index += LONG_SIZE;
+        }
+
+        // 读取 next_mvcc_super_inode
+        inode.next_mvcc_super_inode = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 i_node_exec_entry
+        inode.i_node_exec_entry = readLong(bytes, index);
+
+        return inode;
+    }
+
+    private static void writeLong(byte[] bytes, int index, long value) {
+        for (int i = 0; i < LONG_SIZE; i++) {
+            bytes[index + i] = (byte) (value >> (i * 8));
+        }
+    }
+
+    private static long readLong(byte[] bytes, int index) {
+        long value = 0;
+        for (int i = 0; i < LONG_SIZE; i++) {
+            value |= ((long) (bytes[index + i] & 0xFF)) << (i * 8);
+        }
+        return value;
+    }
+
+    private static void writeInt(byte[] bytes, int index, int value) {
+        for (int i = 0; i < INT_SIZE; i++) {
+            bytes[index + i] = (byte) (value >> (i * 8));
+        }
+    }
+
+    private static int readInt(byte[] bytes, int index) {
+        int value = 0;
+        for (int i = 0; i < INT_SIZE; i++) {
+            value |= ((bytes[index + i] & 0xFF)) << (i * 8);
+        }
+        return value;
+    }
+}
+
+代码说明：
+Ds128SuperInode 类：定义了 Ds128SuperInode 的数据结构，包含了各个字段。
+Ds128SuperInodeUtils 类：
+toByteArray 方法：将 Ds128SuperInode 对象转换为字节数组，使用数组下标和 writeLong、writeInt 方法依次写入各个字段。
+fromByteArray 方法：将字节数组转换为 Ds128SuperInode 对象，使用数组下标和 readLong、readInt 方法依次读取各个字段。
+writeLong 和 readLong 方法：用于将 long 类型的值写入字节数组和从字节数组中读取 long 类型的值。
+writeInt 和 readInt 方法：用于将 int 类型的值写入字节数组和从字节数组中读取 int 类型的值。
+使用示例：
+java
+public class Main {
+    public static void main(String[] args) {
+        Ds128SuperInode inode = new Ds128SuperInode();
+        inode.i_magic = 1L;
+        inode.i_size_lo = 1024L;
+        inode.i_block_size = 4096;
+        inode.i_sys_names_offset = 100;
+        inode.sn = 2L;
+        inode.inode_ctime = System.currentTimeMillis();
+        inode.next_super_node = 3L;
+        inode.sibling_super_node = 4L;
+        inode.sibling_mount_node = 5L;
+        inode.md5 = new byte[16];
+        inode.extra_data = new long[]{1L, 2L, 3L, 4L};
+        inode.next_mvcc_super_inode = 6L;
+        inode.i_node_exec_entry = 7L;
+
+        byte[] bytes = Ds128SuperInodeUtils.toByteArray(inode);
+        Ds128SuperInode newInode = Ds128SuperInodeUtils.fromByteArray(bytes);
+
+        System.out.println("i_magic: " + newInode.i_magic);
+    }
+}
+这个示例展示了如何使用 Ds128SuperInodeUtils 类将 Ds128SuperInode 对象转换为字节数组，然后再将字节数组转换回 Ds128SuperInode 对象。
+
+以下是将你提供的 C 语言 struct ds128_inode 转换为 Java 类的代码，同时会生成对应的使用数组加下标方式读写的工具类：
+
+class Ds128Inode {
+    // 引用计数,为零表示已删除,可回收使用
+    int ref_count;
+    // 数据类型
+    int data_type;
+    // 父级inode
+    long inode_parent;
+    // File flags
+    long data_flags;
+    // 命名标识符字符串inode
+    int i_names_inode;
+    // 命名标识符字符串索引偏移
+    int i_names_offset;
+    // 命名标识符字符串前四个字节+hashcode,用于字符串等值比较以及排序,以便快速查找目录下的同一文件
+    long i_names_short;
+    // 短命名标识符存储
+    long[] extra_data = new long[2];
+    // Size in bytes
+    long data_size;
+    // 块数据偏移
+    long data_block_offset;
+    // 占用块计数
+    int data_block_count;
+    // data注释字符串索引偏移
+    int i_comments_offset;
+    // data创建时间
+    long data_ctime;
+    // data最近修改时间
+    long data_mtime;
+    // 数据acl列表索引偏移
+    long i_acl_offset;
+    // inode创建时间
+    long inode_ctime;
+    // 多版本并发控制 -- 文件系统
+    long i_next_mvcc_inode;
+    // 64位数据校验码 -- 文件系统
+    long data_check_sum;
+}
+
+public class Ds128InodeUtils {
+    private static final int LONG_SIZE = 8;
+    private static final int INT_SIZE = 4;
+
+    public static byte[] toByteArray(Ds128Inode inode) {
+        int size = INT_SIZE * 4 + LONG_SIZE * 9 + LONG_SIZE * 2;
+        byte[] bytes = new byte[size];
+        int index = 0;
+
+        // 写入 ref_count
+        writeInt(bytes, index, inode.ref_count);
+        index += INT_SIZE;
+
+        // 写入 data_type
+        writeInt(bytes, index, inode.data_type);
+        index += INT_SIZE;
+
+        // 写入 inode_parent
+        writeLong(bytes, index, inode.inode_parent);
+        index += LONG_SIZE;
+
+        // 写入 data_flags
+        writeLong(bytes, index, inode.data_flags);
+        index += LONG_SIZE;
+
+        // 写入 i_names_inode
+        writeInt(bytes, index, inode.i_names_inode);
+        index += INT_SIZE;
+
+        // 写入 i_names_offset
+        writeInt(bytes, index, inode.i_names_offset);
+        index += INT_SIZE;
+
+        // 写入 i_names_short
+        writeLong(bytes, index, inode.i_names_short);
+        index += LONG_SIZE;
+
+        // 写入 extra_data
+        for (long data : inode.extra_data) {
+            writeLong(bytes, index, data);
+            index += LONG_SIZE;
+        }
+
+        // 写入 data_size
+        writeLong(bytes, index, inode.data_size);
+        index += LONG_SIZE;
+
+        // 写入 data_block_offset
+        writeLong(bytes, index, inode.data_block_offset);
+        index += LONG_SIZE;
+
+        // 写入 data_block_count
+        writeInt(bytes, index, inode.data_block_count);
+        index += INT_SIZE;
+
+        // 写入 i_comments_offset
+        writeInt(bytes, index, inode.i_comments_offset);
+        index += INT_SIZE;
+
+        // 写入 data_ctime
+        writeLong(bytes, index, inode.data_ctime);
+        index += LONG_SIZE;
+
+        // 写入 data_mtime
+        writeLong(bytes, index, inode.data_mtime);
+        index += LONG_SIZE;
+
+        // 写入 i_acl_offset
+        writeLong(bytes, index, inode.i_acl_offset);
+        index += LONG_SIZE;
+
+        // 写入 inode_ctime
+        writeLong(bytes, index, inode.inode_ctime);
+        index += LONG_SIZE;
+
+        // 写入 i_next_mvcc_inode
+        writeLong(bytes, index, inode.i_next_mvcc_inode);
+        index += LONG_SIZE;
+
+        // 写入 data_check_sum
+        writeLong(bytes, index, inode.data_check_sum);
+
+        return bytes;
+    }
+
+    public static Ds128Inode fromByteArray(byte[] bytes) {
+        Ds128Inode inode = new Ds128Inode();
+        int index = 0;
+
+        // 读取 ref_count
+        inode.ref_count = readInt(bytes, index);
+        index += INT_SIZE;
+
+        // 读取 data_type
+        inode.data_type = readInt(bytes, index);
+        index += INT_SIZE;
+
+        // 读取 inode_parent
+        inode.inode_parent = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 data_flags
+        inode.data_flags = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 i_names_inode
+        inode.i_names_inode = readInt(bytes, index);
+        index += INT_SIZE;
+
+        // 读取 i_names_offset
+        inode.i_names_offset = readInt(bytes, index);
+        index += INT_SIZE;
+
+        // 读取 i_names_short
+        inode.i_names_short = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 extra_data
+        for (int i = 0; i < inode.extra_data.length; i++) {
+            inode.extra_data[i] = readLong(bytes, index);
+            index += LONG_SIZE;
+        }
+
+        // 读取 data_size
+        inode.data_size = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 data_block_offset
+        inode.data_block_offset = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 data_block_count
+        inode.data_block_count = readInt(bytes, index);
+        index += INT_SIZE;
+
+        // 读取 i_comments_offset
+        inode.i_comments_offset = readInt(bytes, index);
+        index += INT_SIZE;
+
+        // 读取 data_ctime
+        inode.data_ctime = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 data_mtime
+        inode.data_mtime = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 i_acl_offset
+        inode.i_acl_offset = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 inode_ctime
+        inode.inode_ctime = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 i_next_mvcc_inode
+        inode.i_next_mvcc_inode = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 data_check_sum
+        inode.data_check_sum = readLong(bytes, index);
+
+        return inode;
+    }
+
+    private static void writeLong(byte[] bytes, int index, long value) {
+        for (int i = 0; i < LONG_SIZE; i++) {
+            bytes[index + i] = (byte) (value >> (i * 8));
+        }
+    }
+
+    private static long readLong(byte[] bytes, int index) {
+        long value = 0;
+        for (int i = 0; i < LONG_SIZE; i++) {
+            value |= ((long) (bytes[index + i] & 0xFF)) << (i * 8);
+        }
+        return value;
+    }
+
+    private static void writeInt(byte[] bytes, int index, int value) {
+        for (int i = 0; i < INT_SIZE; i++) {
+            bytes[index + i] = (byte) (value >> (i * 8));
+        }
+    }
+
+    private static int readInt(byte[] bytes, int index) {
+        int value = 0;
+        for (int i = 0; i < INT_SIZE; i++) {
+            value |= ((bytes[index + i] & 0xFF)) << (i * 8);
+        }
+        return value;
+    }
+}
+
+### 代码解释：
+1. Ds128Inode 类 ：定义了与 C 语言 struct ds128_inode 对应的 Java 类，包含了所有字段，并添加了注释说明每个字段的含义。
+2. Ds128InodeUtils 类 ：
+   - toByteArray 方法：将 Ds128Inode 对象转换为字节数组，按照结构体中字段的顺序，使用 writeLong 和 writeInt 方法依次将各字段写入字节数组。
+   - fromByteArray 方法：从字节数组中读取数据，按照顺序使用 readLong 和 readInt 方法依次将字节数组中的数据读取到 Ds128Inode 对象的对应字段中。
+   - writeLong 和 readLong 方法：用于处理 long 类型数据的写入和读取，通过位移操作实现。
+   - writeInt 和 readInt 方法：用于处理 int 类型数据的写入和读取，同样通过位移操作实现。
+   
+使用示例：
+
+public class Main {
+    public static void main(String[] args) {
+        Ds128Inode inode = new Ds128Inode();
+        inode.ref_count = 1;
+        inode.data_type = 2;
+        inode.inode_parent = 3L;
+        // 其他字段赋值...
+
+        byte[] bytes = Ds128InodeUtils.toByteArray(inode);
+        Ds128Inode newInode = Ds128InodeUtils.fromByteArray(bytes);
+
+        System.out.println("ref_count: " + newInode.ref_count);
+    }
+}
+
+下面是将 struct ds128_super_inode 转换为 Java 类，并且实现使用数组加下标方式读写的代码：
+class Ds128SuperInode {
+    // 8字节，文件系统标志和版本号，当前为DS64v1.0
+    long magic;
+    // 根节点
+    long i_root_node;
+    // Size in bytes
+    long mft_size;
+    // 块占用总数
+    long block_total;
+    // 块大小
+    int block_size;
+    // 系统内部命名标识符字符串位置偏移
+    int i_sys_names_offset;
+    // 短命名标识符存储
+    long[] extra_data = new long[3];
+    // 时间戳序列号
+    long sn;
+    // inode创建时间
+    long inode_ctime;
+    // 文件模式存储空间扩展
+    long i_ext_super_mount_nodes;
+    // 块设备模式存储空间扩展
+    long i_ext_super_nodes;
+    byte[] md5 = new byte[16];
+    // 多版本并发控制 -- 文件系统
+    long i_next_mvcc_super_node;
+    // 可执行代码入口 main entry,boot entry
+    long i_exec_entry_node;
+}
+
+public class Ds128SuperInodeUtils {
+    private static final int LONG_SIZE = 8;
+    private static final int INT_SIZE = 4;
+    private static final int MD5_SIZE = 16;
+
+    public static byte[] toByteArray(Ds128SuperInode inode) {
+        int size = LONG_SIZE * 10 + INT_SIZE * 2 + MD5_SIZE;
+        byte[] bytes = new byte[size];
+        int index = 0;
+
+        // 写入 magic
+        writeLong(bytes, index, inode.magic);
+        index += LONG_SIZE;
+
+        // 写入 i_root_node
+        writeLong(bytes, index, inode.i_root_node);
+        index += LONG_SIZE;
+
+        // 写入 mft_size
+        writeLong(bytes, index, inode.mft_size);
+        index += LONG_SIZE;
+
+        // 写入 block_total
+        writeLong(bytes, index, inode.block_total);
+        index += LONG_SIZE;
+
+        // 写入 block_size
+        writeInt(bytes, index, inode.block_size);
+        index += INT_SIZE;
+
+        // 写入 i_sys_names_offset
+        writeInt(bytes, index, inode.i_sys_names_offset);
+        index += INT_SIZE;
+
+        // 写入 extra_data
+        for (long data : inode.extra_data) {
+            writeLong(bytes, index, data);
+            index += LONG_SIZE;
+        }
+
+        // 写入 sn
+        writeLong(bytes, index, inode.sn);
+        index += LONG_SIZE;
+
+        // 写入 inode_ctime
+        writeLong(bytes, index, inode.inode_ctime);
+        index += LONG_SIZE;
+
+        // 写入 i_ext_super_mount_nodes
+        writeLong(bytes, index, inode.i_ext_super_mount_nodes);
+        index += LONG_SIZE;
+
+        // 写入 i_ext_super_nodes
+        writeLong(bytes, index, inode.i_ext_super_nodes);
+        index += LONG_SIZE;
+
+        // 写入 md5
+        System.arraycopy(inode.md5, 0, bytes, index, MD5_SIZE);
+        index += MD5_SIZE;
+
+        // 写入 i_next_mvcc_super_node
+        writeLong(bytes, index, inode.i_next_mvcc_super_node);
+        index += LONG_SIZE;
+
+        // 写入 i_exec_entry_node
+        writeLong(bytes, index, inode.i_exec_entry_node);
+
+        return bytes;
+    }
+
+    public static Ds128SuperInode fromByteArray(byte[] bytes) {
+        Ds128SuperInode inode = new Ds128SuperInode();
+        int index = 0;
+
+        // 读取 magic
+        inode.magic = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 i_root_node
+        inode.i_root_node = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 mft_size
+        inode.mft_size = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 block_total
+        inode.block_total = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 block_size
+        inode.block_size = readInt(bytes, index);
+        index += INT_SIZE;
+
+        // 读取 i_sys_names_offset
+        inode.i_sys_names_offset = readInt(bytes, index);
+        index += INT_SIZE;
+
+        // 读取 extra_data
+        for (int i = 0; i < inode.extra_data.length; i++) {
+            inode.extra_data[i] = readLong(bytes, index);
+            index += LONG_SIZE;
+        }
+
+        // 读取 sn
+        inode.sn = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 inode_ctime
+        inode.inode_ctime = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 i_ext_super_mount_nodes
+        inode.i_ext_super_mount_nodes = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 i_ext_super_nodes
+        inode.i_ext_super_nodes = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 md5
+        System.arraycopy(bytes, index, inode.md5, 0, MD5_SIZE);
+        index += MD5_SIZE;
+
+        // 读取 i_next_mvcc_super_node
+        inode.i_next_mvcc_super_node = readLong(bytes, index);
+        index += LONG_SIZE;
+
+        // 读取 i_exec_entry_node
+        inode.i_exec_entry_node = readLong(bytes, index);
+
+        return inode;
+    }
+
+    private static void writeLong(byte[] bytes, int index, long value) {
+        for (int i = 0; i < LONG_SIZE; i++) {
+            bytes[index + i] = (byte) (value >> (i * 8));
+        }
+    }
+
+    private static long readLong(byte[] bytes, int index) {
+        long value = 0;
+        for (int i = 0; i < LONG_SIZE; i++) {
+            value |= ((long) (bytes[index + i] & 0xFF)) << (i * 8);
+        }
+        return value;
+    }
+
+    private static void writeInt(byte[] bytes, int index, int value) {
+        for (int i = 0; i < INT_SIZE; i++) {
+            bytes[index + i] = (byte) (value >> (i * 8));
+        }
+    }
+
+    private static int readInt(byte[] bytes, int index) {
+        int value = 0;
+        for (int i = 0; i < INT_SIZE; i++) {
+            value |= ((bytes[index + i] & 0xFF)) << (i * 8);
+        }
+        return value;
+    }
+}
+
+使用示例：
+public class Main {
+    public static void main(String[] args) {
+        Ds128SuperInode inode = new Ds128SuperInode();
+        inode.magic = 0x123456789ABCDEFL;
+        inode.i_root_node = 1L;
+        // 其他字段赋值...
+
+        byte[] bytes = Ds128SuperInodeUtils.toByteArray(inode);
+        Ds128SuperInode newInode = Ds128SuperInodeUtils.fromByteArray(bytes);
+
+        System.out.println("magic: " + newInode.magic);
+    }
+}
+
+
+在 Java 中，你可以使用 java.nio 包中的 FileChannel 和 MappedByteBuffer 来实现内存映射文件的读写操作。下面是一个示例代码，展示了如何使用内存映射方式读写 Ds128SuperInode 对象：
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
+
+class Ds128SuperInode {
+    // 8字节，文件系统标志和版本号，当前为DS64v1.0
+    //long magic;
+	byte[] magic = "DS64v1.0".getBytes();
+    // 根节点
+    long i_root_node;
+    // Size in bytes
+    long mft_size;
+    // 块占用总数
+    long block_total;
+    // 块大小
+    int block_size;
+    // 系统内部命名标识符字符串位置偏移
+    int i_sys_names_offset;
+    // 短命名标识符存储
+    long[] extra_data = new long[3];
+    // 时间戳序列号
+    long sn;
+    // inode创建时间
+    long inode_ctime;
+    // 文件模式存储空间扩展
+    long i_ext_super_mount_nodes;
+    // 块设备模式存储空间扩展
+    long i_ext_super_nodes;
+    byte[] md5 = new byte[16];
+    // 多版本并发控制 -- 文件系统
+    long i_next_mvcc_super_node;
+    // 可执行代码入口 main entry,boot entry
+    long i_exec_entry_node;
+
+    // 写入到内存映射缓冲区
+    public void writeToMappedByteBuffer(MappedByteBuffer buffer) {
+        buffer.putLong(magic);
+        buffer.putLong(i_root_node);
+        buffer.putLong(mft_size);
+        buffer.putLong(block_total);
+        buffer.putInt(block_size);
+        buffer.putInt(i_sys_names_offset);
+        for (long data : extra_data) {
+            buffer.putLong(data);
+        }
+        buffer.putLong(sn);
+        buffer.putLong(inode_ctime);
+        buffer.putLong(i_ext_super_mount_nodes);
+        buffer.putLong(i_ext_super_nodes);
+        buffer.put(md5);
+        buffer.putLong(i_next_mvcc_super_node);
+        buffer.putLong(i_exec_entry_node);
+    }
+
+    // 从内存映射缓冲区读取
+    public void readFromMappedByteBuffer(MappedByteBuffer buffer) {
+        magic = buffer.getLong();
+        i_root_node = buffer.getLong();
+        mft_size = buffer.getLong();
+        block_total = buffer.getLong();
+        block_size = buffer.getInt();
+        i_sys_names_offset = buffer.getInt();
+        for (int i = 0; i < extra_data.length; i++) {
+            extra_data[i] = buffer.getLong();
+        }
+        sn = buffer.getLong();
+        inode_ctime = buffer.getLong();
+        i_ext_super_mount_nodes = buffer.getLong();
+        i_ext_super_nodes = buffer.getLong();
+        buffer.get(md5);
+        i_next_mvcc_super_node = buffer.getLong();
+        i_exec_entry_node = buffer.getLong();
+    }
+}
+
+public class Ds128SuperInodeMemoryMappedIO {
+    private static final int SIZE = 8 * 10 + 4 * 2 + 16; // 计算 Ds128SuperInode 的字节大小
+
+    public static void writeToFile(Ds128SuperInode inode, String filePath) throws IOException {
+        try (RandomAccessFile file = new RandomAccessFile(new File(filePath), "rw");
+             FileChannel channel = file.getChannel()) {
+            MappedByteBuffer buffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, SIZE);
+            inode.writeToMappedByteBuffer(buffer);
+        }
+    }
+
+    public static Ds128SuperInode readFromFile(String filePath) throws IOException {
+        try (RandomAccessFile file = new RandomAccessFile(new File(filePath), "r");
+             FileChannel channel = file.getChannel()) {
+            MappedByteBuffer buffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, SIZE);
+            Ds128SuperInode inode = new Ds128SuperInode();
+            inode.readFromMappedByteBuffer(buffer);
+            return inode;
+        }
+    }
+
+    public static void main(String[] args) {
+        Ds128SuperInode inode = new Ds128SuperInode();
+        inode.magic = 0x123456789ABCDEFL;
+        inode.i_root_node = 1L;
+        // 其他字段赋值...
+
+        String filePath = "super_inode.dat";
+        try {
+            writeToFile(inode, filePath);
+            Ds128SuperInode readInode = readFromFile(filePath);
+            System.out.println("Magic: " + readInode.magic);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+}
+
+### 代码说明：
+1. Ds128SuperInode 类 ：
+   
+   - 定义了 Ds128SuperInode 的数据结构。
+   - writeToMappedByteBuffer 方法：将 Ds128SuperInode 对象的各个字段写入 MappedByteBuffer 。
+   - readFromMappedByteBuffer 方法：从 MappedByteBuffer 中读取数据并填充到 Ds128SuperInode 对象的各个字段。
+2. Ds128SuperInodeMemoryMappedIO 类 ：
+   
+   - SIZE 常量：计算 Ds128SuperInode 对象所需的字节大小。
+   - writeToFile 方法：使用 FileChannel 和 MappedByteBuffer 将 Ds128SuperInode 对象写入文件。
+   - readFromFile 方法：使用 FileChannel 和 MappedByteBuffer 从文件中读取数据并创建 Ds128SuperInode 对象。
+   - main 方法：创建一个 Ds128SuperInode 对象，将其写入文件，然后从文件中读取并打印其中一个字段的值。
+### 注意事项：
+- 内存映射文件适用于处理大文件，因为它可以将文件的一部分映射到内存中，避免了频繁的磁盘 I/O 操作。
+- 确保文件路径存在且有读写权限，否则会抛出 IOException 。
+- 内存映射文件的大小必须在创建时指定，因此需要提前计算 Ds128SuperInode 对象所需的字节大小。
+
+
+class DsFreeBlockIndexArea {
+    int currentUsingIndexAreaPtr;//当前使用的索引区间指针/偏移
+	int prevIndexAreaPtr;//上一个的super nodes索引/指针
+	int nextIndexAreaPtr;//下一个的super nodes索引/指针
+	int  stacksTotal  	/* 空闲块列表存储栈总数 */
+	int  maxBlockSize  	/* 当前索引区间空闲块最大尺寸 */ 
+	
+	DsFreeBlockStack[] stacks;
+}
+
+//环队列
+int32 count;
+int32 head;//环队列头
+int32 tail;//环队列尾
+int32 waitingUseNode;
+int32 freeingNode;
+
+//free index
+
+short ref_count;
+short size;
+int offset;
+long hash;
+
+1  2  3  4  5  6  7  8
+1  2  3  4  5  6  7  8    ^ ^  ^ ^  ^ ^  ^ ^  
+ ^1 ^2 ^3 ^4 ^5 ^6 ^7 ^8
+1  2  3  4  5  6  7
+	^4     ^3    ^2   ^1
+##1-5  2-6  3-7  4-8   5-8-1
+1-6  2-7  3-8  5-8-1
+1-7  2-8  3-8-1
+         1    
+			5  6  7  8
+   2     4     6      8  
+   
+ 4/15=0.26   0.4
+ 
+1  2  3  4  5  6 
+ ^1 ^2 ^3 ^4 ^5 ^6
+1-5  2-5 3-6-1 
+
+3/10=0.333 0.5
+1  2  3  4  5
+ ^1 ^2 ^3 ^4 ^5
+ 
+ 
+
+1-3  2-4  3-5  4-5-1
+1-4  2-5 2-5-1 
+	

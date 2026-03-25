@@ -1,0 +1,126 @@
+688 /*
+689  * Structure of an inode on the disk
+690  */
+ struct ds128_super_inode {
+         int64  magic;         /* 8字节，文件系统标志和版本号，当前为DS64v1.0 */
+         int64  i_root_node;  /* 根节点 */
+         int64  mft_size;      /* Size in bytes */
+			
+			int64  block_total  	/* 块占用总数 */
+			int32  block_size  	/* 块大小 */
+         int32  i_sys_names_offset;        /* 系统内部命名标识符字符串位置偏移 */
+		 int64[3] extra_data  /* 短命名标识符存储 */
+			{
+			}
+			int64  sn; /* 时间戳序列号 */
+			int64  inode_ctime; /* inode创建时间 */
+			int64  i_ext_super_mount_nodes; /* 文件模式存储空间扩展 */
+			int64  i_ext_super_nodes;  /* 块设备模式存储空间扩展 */
+			
+			byte[16] md5;
+			
+			int64  i_next_mvcc_super_node; /* 多版本并发控制 -- 文件系统 */
+         int64 i_exec_entry_node;/* 可执行代码入口 main entry,boot entry */
+ };
+ 
+ struct ds128_inode {
+		int32    ref_count; /* 引用计数,为零表示已删除,可回收使用 */ 
+		int32    data_type; /* 数据类型 */ 
+		int64  inode_parent; /* 父级inode */
+		
+		int64  data_flags;        /* File flags */
+		
+		int32  i_names_inode;        /* 命名标识符字符串inode */
+		int32  i_names_offset;        /* 命名标识符字符串索引偏移 */
+		int64  i_names_short; /* 命名标识符字符串前四个字节+hashcode,用于字符串等值比较以及排序,以便快速查找目录下的同一文件 */
+		int64[2] extra_data  /* 短命名标识符存储 */
+		 {
+		 
+		 }
+		
+		int64  data_size;      /* Size in bytes */
+			
+	int64  data_block_offset  	/* 块数据偏移 */
+	
+			int32  data_block_count;  	/* 占用块计数 */
+		int32  i_comments_offset;        /* data注释字符串索引偏移 */
+       
+			int64  data_ctime; /* data创建时间 */
+			int64  data_mtime; /* data最近修改时间 */
+			
+			int64 i_acl_offset;        /* 数据acl列表索引偏移 */
+			
+			
+			
+         int64  inode_ctime; /* inode创建时间 */
+		 
+		 int64  i_next_mvcc_inode; /* 多版本并发控制 -- 文件系统 */
+		 int64  data_check_sum; /* 64位数据校验码 -- 文件系统 */
+ };
+ 
+ system data types:
+ $MFT
+ $Mirror
+ $Replication
+ $Log
+ $Root
+ $ExecEntry
+ $BadBlock
+ $FreeBlock
+ $Quota
+ $SizeStat 目录大小实时统计
+ $Extent
+ $Bitmap
+ $Names
+ $SysNames
+ $Comments
+ $ACL
+ $Checksum
+ $Redundancy
+ $String
+ $Bin
+ $Byte 1,2,3,4,5,6,7,8...
+ $Bit 1,2,3,4,5,6,7,8...
+ $Int 4,8,16,2,64,128,256...(bits)
+ $Float 16,32,64,128,256...
+ $Decimal $Number(整数位,小数位)
+ $TimeSeries 时序存储数据
+ $Date 32 bit days
+ $Datetime $Timestamp 64 bit 微妙
+ $Time  32 bit 纳秒 1000ms 1000mills 1000ns 1000ps
+ $ExtendDatetime (64 bit days $ExtendDate,64 bit ps $ExtendTime)
+ $DecimalTimes
+ $Catalog
+ $Schema
+ $Database
+ $Table
+ $Column
+ $Rows
+ $Function
+ $Trigger
+ $Procedure
+ $CellTable 表中表（json,xml)
+ 
+ // db acls
+ $DatabaseACL
+ $TableACL
+ $ColumnACL
+ $RowsACL
+ $FunctionACL
+ $TriggerACL
+ $ProcedureACL
+ $SqueenceACL
+ 
+ $Classify
+ $Users
+ $Groups
+ $Roles
+ 
+ $Cache
+ $Temp
+ 
+ $Cluster
+ 
+ int32 next free,int32 count, int32 max,int32 limit,
+ 
+ 

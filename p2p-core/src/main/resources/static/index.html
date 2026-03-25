@@ -1,0 +1,997 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UDP性能监控仪表板</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --primary-color: #4361ee;
+            --secondary-color: #3a0ca3;
+            --success-color: #4cc9f0;
+            --warning-color: #f72585;
+            --danger-color: #7209b7;
+            --light-color: #f8f9fa;
+            --dark-color: #212529;
+            --gray-color: #6c757d;
+            --border-radius: 12px;
+            --box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+            --transition: all 0.3s ease;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: var(--dark-color);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 30px 40px;
+            border-radius: var(--border-radius);
+            margin-bottom: 30px;
+            box-shadow: var(--box-shadow);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .header-content h1 {
+            font-size: 2.8rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+
+        .header-content p {
+            color: var(--gray-color);
+            font-size: 1.1rem;
+        }
+
+        .header-stats {
+            display: flex;
+            gap: 20px;
+        }
+
+        .stat-badge {
+            background: var(--light-color);
+            padding: 10px 20px;
+            border-radius: 50px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 500;
+        }
+
+        .stat-badge i {
+            color: var(--primary-color);
+            font-size: 1.2rem;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 25px;
+            margin-bottom: 30px;
+        }
+
+        .dashboard-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 30px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+            transition: var(--transition);
+        }
+
+        .dashboard-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.15);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+        }
+
+        .card-header h3 {
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: var(--dark-color);
+        }
+
+        .card-header i {
+            font-size: 1.8rem;
+            color: var(--primary-color);
+        }
+
+        .stat-value {
+            font-size: 3rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .stat-label {
+            color: var(--gray-color);
+            font-size: 1rem;
+            margin-bottom: 15px;
+        }
+
+        .stat-trend {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .trend-up { color: #4ade80; }
+        .trend-down { color: #f87171; }
+        .trend-neutral { color: var(--gray-color); }
+
+        .chart-container {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 30px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+            margin-bottom: 30px;
+        }
+
+        .chart-container h2 {
+            font-size: 1.6rem;
+            font-weight: 600;
+            margin-bottom: 25px;
+            color: var(--dark-color);
+        }
+
+        .chart-wrapper {
+            height: 400px;
+            position: relative;
+        }
+
+        .alerts-container {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 30px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+            margin-bottom: 30px;
+        }
+
+        .alerts-container h2 {
+            font-size: 1.6rem;
+            font-weight: 600;
+            margin-bottom: 25px;
+            color: var(--dark-color);
+        }
+
+        .alert {
+            display: flex;
+            align-items: flex-start;
+            padding: 20px;
+            margin-bottom: 15px;
+            border-radius: 10px;
+            background: var(--light-color);
+            transition: var(--transition);
+        }
+
+        .alert:hover {
+            transform: translateX(5px);
+        }
+
+        .alert-critical {
+            border-left: 5px solid var(--danger-color);
+            background: rgba(242, 184, 200, 0.1);
+        }
+
+        .alert-warning {
+            border-left: 5px solid var(--warning-color);
+            background: rgba(247, 37, 133, 0.1);
+        }
+
+        .alert-info {
+            border-left: 5px solid var(--success-color);
+            background: rgba(76, 201, 240, 0.1);
+        }
+
+        .alert-icon {
+            font-size: 1.5rem;
+            margin-right: 15px;
+            margin-top: 2px;
+        }
+
+        .alert-content {
+            flex: 1;
+        }
+
+        .alert-title {
+            font-weight: 600;
+            margin-bottom: 5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .alert-message {
+            color: var(--gray-color);
+            font-size: 0.95rem;
+            margin-bottom: 8px;
+        }
+
+        .alert-time {
+            font-size: 0.85rem;
+            color: var(--gray-color);
+        }
+
+        .alert-badge {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+
+        .badge-critical { background: var(--danger-color); color: white; }
+        .badge-warning { background: var(--warning-color); color: white; }
+        .badge-info { background: var(--success-color); color: white; }
+
+        .sessions-container {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 30px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+            margin-bottom: 30px;
+        }
+
+        .sessions-container h2 {
+            font-size: 1.6rem;
+            font-weight: 600;
+            margin-bottom: 25px;
+            color: var(--dark-color);
+        }
+
+        .sessions-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .sessions-table th {
+            text-align: left;
+            padding: 15px;
+            background: var(--light-color);
+            font-weight: 600;
+            color: var(--dark-color);
+            border-bottom: 2px solid #dee2e6;
+        }
+
+        .sessions-table td {
+            padding: 15px;
+            border-bottom: 1px solid #dee2e6;
+        }
+
+        .sessions-table tr:hover {
+            background: rgba(0,0,0,0.02);
+        }
+
+        .session-status {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-active { background: #4ade80; }
+        .status-idle { background: #fbbf24; }
+        .status-inactive { background: #6c757d; }
+
+        .controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 30px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+        }
+
+        .time-range {
+            display: flex;
+            gap: 10px;
+        }
+
+        .time-btn {
+            padding: 10px 20px;
+            border: none;
+            background: var(--light-color);
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: var(--transition);
+        }
+
+        .time-btn:hover {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .time-btn.active {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .refresh-btn {
+            padding: 12px 30px;
+            border: none;
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            color: white;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            transition: var(--transition);
+        }
+
+        .refresh-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(67, 97, 238, 0.4);
+        }
+
+        .footer {
+            text-align: center;
+            padding: 30px;
+            color: rgba(255, 255, 255, 0.8);
+            font-size: 0.9rem;
+        }
+
+        .footer a {
+            color: white;
+            text-decoration: none;
+            margin: 0 10px;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 1200px) {
+            .dashboard-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 768px) {
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .header {
+                flex-direction: column;
+                gap: 20px;
+                text-align: center;
+            }
+            
+            .header-stats {
+                justify-content: center;
+            }
+            
+            .stat-value {
+                font-size: 2.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-content">
+                <h1>UDP性能监控仪表板</h1>
+                <p>实时监控P2P文件传输系统的UDP性能指标和网络状态</p>
+            </div>
+            <div class="header-stats">
+                <div class="stat-badge">
+                    <i class="fas fa-server"></i>
+                    <span>服务器运行中</span>
+                </div>
+                <div class="stat-badge">
+                    <i class="fas fa-clock"></i>
+                    <span id="uptime">0h 0m</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="dashboard-grid">
+            <div class="dashboard-card">
+                <div class="card-header">
+                    <h3>消息发送速率</h3>
+                    <i class="fas fa-paper-plane"></i>
+                </div>
+                <div class="stat-value" id="message-rate">0</div>
+                <div class="stat-label">当前消息发送速率</div>
+                <div class="stat-trend">
+                    <span class="trend-up"><i class="fas fa-arrow-up"></i> 稳定</span>
+                    <span>msg/s</span>
+                </div>
+            </div>
+
+            <div class="dashboard-card">
+                <div class="card-header">
+                    <h3>丢包率</h3>
+                    <i class="fas fa-exclamation-triangle"></i>
+                </div>
+                <div class="stat-value" id="packet-loss">0.0%</div>
+                <div class="stat-label">网络丢包率</div>
+                <div class="stat-trend">
+                    <span class="trend-neutral"><i class="fas fa-minus"></i> 正常</span>
+                    <span>阈值: 2%</span>
+                </div>
+            </div>
+
+            <div class="dashboard-card">
+                <div class="card-header">
+                    <h3>平均延迟</h3>
+                    <i class="fas fa-tachometer-alt"></i>
+                </div>
+                <div class="stat-value" id="avg-rtt">0ms</div>
+                <div class="stat-label">平均往返时间</div>
+                <div class="stat-trend">
+                    <span class="trend-down"><i class="fas fa-arrow-down"></i> 良好</span>
+                    <span>阈值: 500ms</span>
+                </div>
+            </div>
+
+            <div class="dashboard-card">
+                <div class="card-header">
+                    <h3>活跃会话</h3>
+                    <i class="fas fa-users"></i>
+                </div>
+                <div class="stat-value" id="active-sessions">0</div>
+                <div class="stat-label">当前活跃连接数</div>
+                <div class="stat-trend">
+                    <span class="trend-up"><i class="fas fa-arrow-up"></i> 在线</span>
+                    <span>最大: 1000</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <h2>性能趋势图</h2>
+            <div class="chart-wrapper">
+                <canvas id="performance-chart"></canvas>
+            </div>
+        </div>
+
+        <div class="alerts-container">
+            <h2>告警信息</h2>
+            <div id="alerts-list">
+                <!-- 告警信息将通过JavaScript动态加载 -->
+            </div>
+        </div>
+
+        <div class="sessions-container">
+            <h2>活跃会话</h2>
+            <table class="sessions-table">
+                <thead>
+                    <tr>
+                        <th>会话ID</th>
+                        <th>远程地址</th>
+                        <th>状态</th>
+                        <th>发送消息</th>
+                        <th>接收消息</th>
+                        <th>丢包率</th>
+                        <th>平均RTT</th>
+                    </tr>
+                </thead>
+                <tbody id="sessions-table-body">
+                    <!-- 会话数据将通过JavaScript动态加载 -->
+                </tbody>
+            </table>
+        </div>
+
+        <div class="controls">
+            <div class="time-range">
+                <button class="time-btn active" onclick="changeTimeRange('1h')">1小时</button>
+                <button class="time-btn" onclick="changeTimeRange('6h')">6小时</button>
+                <button class="time-btn" onclick="changeTimeRange('24h')">24小时</button>
+                <button class="time-btn" onclick="changeTimeRange('7d')">7天</button>
+            </div>
+            <button class="refresh-btn" onclick="refreshData()">
+                <i class="fas fa-sync-alt"></i>
+                <span>刷新数据</span>
+            </button>
+        </div>
+
+        <div class="footer">
+            <p>UDP性能监控系统 v1.0.0 | 最后更新: <span id="last-update">正在获取...</span></p>
+            <p>
+                <a href="/monitor/api/udp/overview" target="_blank">API文档</a> | 
+                <a href="/monitor/api/udp/stats" target="_blank">详细统计</a> | 
+                <a href="/monitor/api/udp/report" target="_blank">完整报告</a>
+            </p>
+        </div>
+    </div>
+
+    <script>
+        // 全局变量
+        let performanceChart;
+        let currentTimeRange = '1h';
+        let wsConnection = null;
+        const API_BASE = '/monitor/api/udp';
+        const WS_URL = 'ws://' + window.location.hostname + ':8089';
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            initCharts();
+            initWebSocket();
+            loadInitialData();
+            
+            // 每30秒自动刷新数据
+            setInterval(loadPerformanceData, 30000);
+            
+            // 每5分钟更新历史数据
+            setInterval(loadHistoryData, 300000);
+        });
+
+        // 初始化图表
+        function initCharts() {
+            const ctx = document.getElementById('performance-chart').getContext('2d');
+            
+            performanceChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        {
+                            label: '消息发送速率',
+                            data: [],
+                            borderColor: '#4361ee',
+                            backgroundColor: 'rgba(67, 97, 238, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.4
+                        },
+                        {
+                            label: '丢包率',
+                            data: [],
+                            borderColor: '#f72585',
+                            backgroundColor: 'rgba(247, 37, 133, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.4
+                        },
+                        {
+                            label: '平均延迟',
+                            data: [],
+                            borderColor: '#4cc9f0',
+                            backgroundColor: 'rgba(76, 201, 240, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false
+                        }
+                    },
+                    scales: {
+                        x: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: '时间'
+                            }
+                        },
+                        y: {
+                            display: true,
+                            title: {
+                                display: true,
+                                text: '数值'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // 初始化WebSocket连接
+        function initWebSocket() {
+            try {
+                wsConnection = new WebSocket(WS_URL);
+                
+                wsConnection.onopen = function() {
+                    console.log('WebSocket连接已建立');
+                    
+                    // 订阅性能数据
+                    const subscribeMsg = {
+                        action: 'subscribe',
+                        dataTypes: ['performance', 'alert']
+                    };
+                    wsConnection.send(JSON.stringify(subscribeMsg));
+                };
+                
+                wsConnection.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    handleWebSocketMessage(data);
+                };
+                
+                wsConnection.onclose = function() {
+                    console.log('WebSocket连接已关闭');
+                    // 5秒后尝试重连
+                    setTimeout(initWebSocket, 5000);
+                };
+                
+                wsConnection.onerror = function(error) {
+                    console.error('WebSocket错误:', error);
+                };
+                
+            } catch (error) {
+                console.error('初始化WebSocket失败:', error);
+            }
+        }
+
+        // 处理WebSocket消息
+        function handleWebSocketMessage(data) {
+            switch (data.type) {
+                case 'performance':
+                    updatePerformanceData(data.data);
+                    break;
+                    
+                case 'alert':
+                    addAlert(data.data);
+                    break;
+                    
+                case 'welcome':
+                    console.log('WebSocket服务器欢迎消息:', data.data.message);
+                    break;
+                    
+                case 'subscription_confirmed':
+                    console.log('订阅已确认:', data.data.subscribedTypes);
+                    break;
+            }
+        }
+
+        // 加载初始数据
+        function loadInitialData() {
+            loadPerformanceData();
+            loadAlerts();
+            loadSessions();
+            loadHistoryData();
+        }
+
+        // 加载性能数据
+        function loadPerformanceData() {
+            fetch(API_BASE + '/overview')
+                .then(response => response.json())
+                .then(data => {
+                    updatePerformanceData(data);
+                })
+                .catch(error => {
+                    console.error('加载性能数据失败:', error);
+                });
+        }
+
+        // 更新性能数据
+        function updatePerformanceData(data) {
+            // 更新统计卡片
+            if (data.messageRate) {
+                document.getElementById('message-rate').textContent = data.messageRate;
+            }
+            if (data.packetLossRate) {
+                document.getElementById('packet-loss').textContent = data.packetLossRate;
+            }
+            if (data.averageRtt) {
+                document.getElementById('avg-rtt').textContent = data.averageRtt;
+            }
+            if (data.activeSessions) {
+                document.getElementById('active-sessions').textContent = data.activeSessions;
+            }
+            
+            // 更新最后更新时间
+            const now = new Date();
+            document.getElementById('last-update').textContent = 
+                now.toLocaleTimeString('zh-CN', { 
+                    hour12: false,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+        }
+
+        // 加载告警
+        function loadAlerts() {
+            fetch(API_BASE + '/alerts')
+                .then(response => response.json())
+                .then(data => {
+                    updateAlerts(data.alerts);
+                })
+                .catch(error => {
+                    console.error('加载告警失败:', error);
+                });
+        }
+
+        // 更新告警
+        function updateAlerts(alerts) {
+            const alertsList = document.getElementById('alerts-list');
+            alertsList.innerHTML = '';
+            
+            if (!alerts || alerts.length === 0) {
+                alertsList.innerHTML = '<div class="alert alert-info">暂无告警信息</div>';
+                return;
+            }
+            
+            alerts.forEach(alert => {
+                const alertDiv = document.createElement('div');
+                alertDiv.className = `alert alert-${alert.level.toLowerCase()}`;
+                
+                let icon = 'ℹ️';
+                let badgeClass = 'badge-info';
+                
+                if (alert.level === 'CRITICAL') {
+                    icon = '🚨';
+                    badgeClass = 'badge-critical';
+                } else if (alert.level === 'WARNING') {
+                    icon = '⚠️';
+                    badgeClass = 'badge-warning';
+                }
+                
+                const time = new Date(alert.timestamp).toLocaleTimeString('zh-CN', {
+                    hour12: false,
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+                
+                alertDiv.innerHTML = `
+                    <div class="alert-icon">${icon}</div>
+                    <div class="alert-content">
+                        <div class="alert-title">
+                            <span class="alert-badge ${badgeClass}">${alert.level}</span>
+                            <span>${alert.type}</span>
+                        </div>
+                        <div class="alert-message">${alert.message}</div>
+                        <div class="alert-time">${time}</div>
+                    </div>
+                `;
+                
+                alertsList.appendChild(alertDiv);
+            });
+        }
+
+        // 添加新告警
+        function addAlert(alert) {
+            const alertsList = document.getElementById('alerts-list');
+            
+            // 移除"暂无告警信息"提示
+            if (alertsList.children.length === 1 && 
+                alertsList.children[0].textContent.includes('暂无告警信息')) {
+                alertsList.innerHTML = '';
+            }
+            
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${alert.level.toLowerCase()}`;
+            
+            let icon = 'ℹ️';
+            let badgeClass = 'badge-info';
+            
+            if (alert.level === 'CRITICAL') {
+                icon = '🚨';
+                badgeClass = 'badge-critical';
+            } else if (alert.level === 'WARNING') {
+                icon = '⚠️';
+                badgeClass = 'badge-warning';
+            }
+            
+            const time = new Date(alert.timestamp).toLocaleTimeString('zh-CN', {
+                hour12: false,
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            
+            alertDiv.innerHTML = `
+                <div class="alert-icon">${icon}</div>
+                <div class="alert-content">
+                    <div class="alert-title">
+                        <span class="alert-badge ${badgeClass}">${alert.level}</span>
+                        <span>${alert.type}</span>
+                    </div>
+                    <div class="alert-message">${alert.message}</div>
+                    <div class="alert-time">${time}</div>
+                </div>
+            `;
+            
+            // 插入到顶部
+            alertsList.insertBefore(alertDiv, alertsList.firstChild);
+            
+            // 限制最多显示10个告警
+            if (alertsList.children.length > 10) {
+                alertsList.removeChild(alertsList.lastChild);
+            }
+        }
+
+        // 加载会话数据
+        function loadSessions() {
+            fetch(API_BASE + '/sessions')
+                .then(response => response.json())
+                .then(data => {
+                    updateSessionsTable(data.sessions);
+                })
+                .catch(error => {
+                    console.error('加载会话数据失败:', error);
+                });
+        }
+
+        // 更新会话表格
+        function updateSessionsTable(sessions) {
+            const tableBody = document.getElementById('sessions-table-body');
+            tableBody.innerHTML = '';
+            
+            if (!sessions || sessions.length === 0) {
+                tableBody.innerHTML = `
+                    <tr>
+                        <td colspan="7" style="text-align: center; padding: 40px;">
+                            暂无活跃会话
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+            
+            sessions.forEach(session => {
+                const row = document.createElement('tr');
+                
+                let statusClass = 'status-inactive';
+                let statusText = '离线';
+                
+                if (session.status === 'active') {
+                    statusClass = 'status-active';
+                    statusText = '活跃';
+                } else if (session.status === 'idle') {
+                    statusClass = 'status-idle';
+                    statusText = '空闲';
+                }
+                
+                row.innerHTML = `
+                    <td>${session.id}</td>
+                    <td>${session.remoteAddress}</td>
+                    <td>
+                        <span class="session-status ${statusClass}"></span>
+                        ${statusText}
+                    </td>
+                    <td>${session.messagesSent.toLocaleString()}</td>
+                    <td>${session.messagesReceived.toLocaleString()}</td>
+                    <td>${session.packetLossRate}%</td>
+                    <td>${session.averageRtt}ms</td>
+                `;
+                
+                tableBody.appendChild(row);
+            });
+        }
+
+        // 加载历史数据
+        function loadHistoryData() {
+            fetch(API_BASE + '/history?type=' + currentTimeRange + '&limit=60')
+                .then(response => response.json())
+                .then(data => {
+                    updateChart(data.dataPoints);
+                })
+                .catch(error => {
+                    console.error('加载历史数据失败:', error);
+                });
+        }
+
+        // 更新图表
+        function updateChart(dataPoints) {
+            if (!dataPoints || dataPoints.length === 0) return;
+            
+            const labels = [];
+            const messageRates = [];
+            const packetLossRates = [];
+            const averageRtts = [];
+            
+            dataPoints.forEach(point => {
+                const time = new Date(point.timestamp);
+                labels.push(time.toLocaleTimeString('zh-CN', {
+                    hour12: false,
+                    hour: '2-digit',
+                    minute: '2-digit'
+                }));
+                
+                messageRates.push(point.messageRate || 0);
+                packetLossRates.push(point.packetLossRate || 0);
+                averageRtts.push(point.averageRtt || 0);
+            });
+            
+            performanceChart.data.labels = labels;
+            performanceChart.data.datasets[0].data = messageRates;
+            performanceChart.data.datasets[1].data = packetLossRates;
+            performanceChart.data.datasets[2].data = averageRtts;
+            performanceChart.update();
+        }
+
+        // 切换时间范围
+        function changeTimeRange(range) {
+            currentTimeRange = range;
+            
+            // 更新按钮状态
+            document.querySelectorAll('.time-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            // 重新加载数据
+            loadHistoryData();
+        }
+
+        // 刷新数据
+        function refreshData() {
+            const btn = event.target.closest('.refresh-btn');
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>刷新中...</span>';
+            
+            Promise.all([
+                loadPerformanceData(),
+                loadAlerts(),
+                loadSessions(),
+                loadHistoryData()
+            ]).then(() => {
+                setTimeout(() => {
+                    btn.innerHTML = '<i class="fas fa-sync-alt"></i><span>刷新数据</span>';
+                }, 500);
+            }).catch(error => {
+                console.error('刷新数据失败:', error);
+                btn.innerHTML = '<i class="fas fa-sync-alt"></i><span>刷新数据</span>';
+            });
+        }
+
+        // 更新运行时间
+        function updateUptime() {
+            const startTime = Date.now() - (24 * 60 * 60 * 1000); // 假设运行24小时
+            const uptime = Date.now() - startTime;
+            const hours = Math.floor(uptime / (1000 * 60 * 60));
+            const minutes = Math.floor((uptime % (1000 * 60 * 60)) / (1000 * 60));
+            document.getElementById('uptime').textContent = `${hours}h ${minutes}m`;
+        }
+
+        // 初始化运行时间
+        updateUptime();
+        setInterval(updateUptime, 60000); // 每分钟更新一次
+    </script>
+</body>
+</html>
