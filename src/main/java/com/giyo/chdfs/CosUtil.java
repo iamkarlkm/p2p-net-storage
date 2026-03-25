@@ -70,9 +70,9 @@ public class CosUtil {
 			"yzkj-dzyxdagl-13-1255000016", "yzkj-dzyxdagl-14-1255000016",
 			"yzkj-dzyxdagl-15-1255000016", "yzkj-dzyxdagl-16-1255000016" };
 
-	private final static String SECRET_ID = "AKIDRXKmwmITKr4yZqmNebEXuxf37rGL6pEJ";
+	private final static String SECRET_ID = "";
 
-	private final static String SECRET_KEY = "oISHmxoMat1pJSIp2vTjeFWVAVVAqA9n";
+	private final static String SECRET_KEY = "";
 
 	//private final static String COS_REGION = "kmbdc";
 
