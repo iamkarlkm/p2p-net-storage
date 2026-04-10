@@ -32,7 +32,7 @@ public abstract class ReferencedSingleton {
             try {
                 t = clazz.getDeclaredConstructor(params).newInstance(key);
                 ReferencedSingleton ref = (ReferencedSingleton) t;
-                ref.refCount++;
+                ref.refCount = 1;
                 ref.key = key;
                 ref.isRunning = true;
                 REFERENCED_SINGLETON_MAP.put(key, ref);
@@ -43,7 +43,9 @@ public abstract class ReferencedSingleton {
                         HashMap<Object, ReferencedSingleton> REFERENCED_SINGLETON_MAP = CLASS_REFERENCED_SINGLETON_MAP.get(clazz);
                         if (REFERENCED_SINGLETON_MAP != null) {
                             ReferencedSingleton s0 = REFERENCED_SINGLETON_MAP.remove(key);
-                            s0.released();
+                            if (s0 != null) {
+                                s0.released();
+                            }
                         }
                     }
                 }));
@@ -60,9 +62,10 @@ public abstract class ReferencedSingleton {
                 throw new RuntimeException(ex);
             }
 
+        } else {
+            ReferencedSingleton ref = (ReferencedSingleton) t;
+            ref.retain();
         }
-        ReferencedSingleton ref = (ReferencedSingleton) t;
-        ref.refCount--;
         return t;
     }
 
@@ -79,7 +82,7 @@ public abstract class ReferencedSingleton {
             try {
                 t = clazz.getDeclaredConstructor(params).newInstance(keys);
                 final ReferencedSingleton ref = (ReferencedSingleton) t;
-                ref.refCount++;
+                ref.refCount = 1;
                 ref.keyWrapper = kw;
                 ref.isRunning = true;
                 REFERENCED_SINGLETON_MAP.put(kw, ref);
@@ -92,7 +95,9 @@ public abstract class ReferencedSingleton {
                         HashMap<Object, ReferencedSingleton> REFERENCED_SINGLETON_MAP = CLASS_REFERENCED_SINGLETON_MAP.get(clazz);
                         if (REFERENCED_SINGLETON_MAP != null) {
                             ReferencedSingleton s0 = REFERENCED_SINGLETON_MAP.remove(kw);
-                            s0.released();
+                            if (s0 != null) {
+                                s0.released();
+                            }
                         }
                     }
                 }));
@@ -109,6 +114,9 @@ public abstract class ReferencedSingleton {
                 throw new RuntimeException(ex);
             }
 
+        } else {
+            ReferencedSingleton ref = (ReferencedSingleton) t;
+            ref.retain();
         }
 
         return t;
@@ -132,22 +140,21 @@ public abstract class ReferencedSingleton {
 
     public void released() {
         log.info("ReferencedSingleton {} released,refCont = {}", this.getClass(),refCount);
+        if (refCount <= 0) {
+            return;
+        }
         refCount--;
-        if (refCount == 0) {
-            if (key != null) {
-                HashMap<Object, ReferencedSingleton> REFERENCED_SINGLETON_MAP = CLASS_REFERENCED_SINGLETON_MAP.get(this.getClass());
-                if (REFERENCED_SINGLETON_MAP != null) {
-                    ReferencedSingleton s0 = REFERENCED_SINGLETON_MAP.remove(key);
-                    s0.singletonFinalized();
+        if (refCount <= 0) {
+            refCount = 0;
+            isRunning = false;
+            singletonFinalized();
+            HashMap<Object, ReferencedSingleton> REFERENCED_SINGLETON_MAP = CLASS_REFERENCED_SINGLETON_MAP.get(this.getClass());
+            if (REFERENCED_SINGLETON_MAP != null) {
+                if (key != null) {
+                    REFERENCED_SINGLETON_MAP.remove(key);
+                } else if (keyWrapper != null) {
+                    REFERENCED_SINGLETON_MAP.remove(keyWrapper);
                 }
-
-            } else if (keyWrapper != null) {
-                HashMap<Object, ReferencedSingleton> REFERENCED_SINGLETON_MAP = CLASS_REFERENCED_SINGLETON_MAP.get(this.getClass());
-                if (REFERENCED_SINGLETON_MAP != null) {
-                    ReferencedSingleton s0 = REFERENCED_SINGLETON_MAP.remove(keyWrapper);
-                    s0.singletonFinalized();
-                }
-
             }
         }
     }

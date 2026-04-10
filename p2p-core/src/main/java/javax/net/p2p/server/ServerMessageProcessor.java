@@ -41,8 +41,10 @@ import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.auth.AuthEnforcer;
 import javax.net.p2p.channel.AbstractTcpMessageProcessor;
 import javax.net.p2p.interfaces.P2PCommandHandler;
+import javax.net.p2p.interfaces.P2PChannelAwareCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
 import lombok.extern.slf4j.Slf4j;
 
@@ -109,15 +111,24 @@ public class ServerMessageProcessor extends AbstractTcpMessageProcessor {
         log.debug("channel {} read msg ->\n{}", ctx.channel().id(), msg);
         
         // 响应消息初始化
-        P2PWrapper p2p = null;
+        P2PWrapper p2p;
+
+        P2PWrapper denied = AuthEnforcer.check(ctx.channel(), msg);
+        if (denied != null) {
+            ctx.channel().writeAndFlush(denied);
+            return;
+        }
         
         // 根据消息命令类型查找对应的处理器
         // HANDLER_REGISTRY_MAP是父类维护的命令处理器注册表
         P2PCommandHandler handler = (P2PCommandHandler) HANDLER_REGISTRY_MAP.get(msg.getCommand());
         
         if (handler != null) {
-            // 找到处理器，执行具体的业务逻辑
-            p2p = handler.process(msg);
+            if (handler instanceof P2PChannelAwareCommandHandler) {
+                p2p = ((P2PChannelAwareCommandHandler) handler).process(ctx, msg);
+            } else {
+                p2p = handler.process(msg);
+            }
         } else {
             // 未知命令类型，返回错误响应
             // 保持原消息序列号，便于客户端匹配请求响应

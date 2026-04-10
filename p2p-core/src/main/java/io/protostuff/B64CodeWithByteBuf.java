@@ -5,6 +5,9 @@ package io.protostuff;
 import io.netty.buffer.ByteBuf;
 import java.io.IOException;
 import java.io.OutputStream;
+/**
+ * B64CodeWithByteBuf。
+ */
 
 
 public final class B64CodeWithByteBuf

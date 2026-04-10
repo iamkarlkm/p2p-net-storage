@@ -16,7 +16,6 @@ import javax.net.p2p.exception.RequestTimeoutException;
 import javax.net.p2p.model.P2PWrapper;
 import lombok.extern.slf4j.Slf4j;
 import javax.net.p2p.interfaces.P2PMessageService;
-import javax.net.p2p.server.AbstractP2PServer;
 
 /**
  *
@@ -94,7 +93,7 @@ public abstract class AbstractSendMesageExecutor extends PooledableAdapter imple
             connected = false;
             channel.close();
             notifyClosed();
-            release();//回归对象池
+            recycle();//回归对象池
         }
     }
 
@@ -263,7 +262,6 @@ public abstract class AbstractSendMesageExecutor extends PooledableAdapter imple
 
     public Future<P2PWrapper> asyncExcute(P2PWrapper request, long timeout, TimeUnit unit) {
         int requestId = request.getSeq();
-        System.out.println("requestId:"+requestId);
         try {
             //异步等待服务器回应->唤醒->返回结果
             ChannelAwaitOnMessage task = messageService.pollChannelAwaitOnMessage(request, timeout, unit);
@@ -308,7 +306,6 @@ public abstract class AbstractSendMesageExecutor extends PooledableAdapter imple
     }
 
     public void sendResponse(P2PWrapper response) throws InterruptedException {
-        System.out.println("responseQueue.put(response) => " + responseQueue.size());
         //requestQueue.put(request);if full await 无限等待
         responseQueue.put(response);
     }
@@ -369,5 +366,10 @@ public abstract class AbstractSendMesageExecutor extends PooledableAdapter imple
     }
 
     public abstract void connect(EventLoopGroup io_work_group, Bootstrap bootstrap);
+
+    public void reconnect(){
+       // connect(io_work_group, bootstrap);
+       log.info("reconnect");
+    }
 
 }

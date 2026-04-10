@@ -21,6 +21,9 @@ import io.netty.handler.codec.socksx.SocksPortUnificationServerHandler;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 
+/**
+ * SOCKS 服务端 ChannelInitializer：为新连接安装解码器与业务处理器。
+ */
 public final class SocksServerInitializer extends ChannelInitializer<SocketChannel> {
     @Override
     public void initChannel(SocketChannel ch) throws Exception {

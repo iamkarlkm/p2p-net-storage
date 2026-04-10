@@ -29,6 +29,9 @@ import io.netty.handler.codec.socksx.v5.Socks5CommandStatus;
 import io.netty.util.concurrent.FutureListener;
 import io.netty.util.concurrent.Promise;
 
+/**
+ * SOCKS CONNECT 处理器：根据 Socks4/5 CONNECT 请求建立到目标主机的出站连接，并桥接数据转发。
+ */
 public final class SocksServerConnectHandler extends SimpleChannelInboundHandler<SocksMessage> {
 
     private final Bootstrap b = new Bootstrap();

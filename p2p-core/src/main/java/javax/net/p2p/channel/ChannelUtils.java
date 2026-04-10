@@ -18,6 +18,9 @@ import javax.net.p2p.client.pooled.MyClientPoolMessagerProcessor;
 import javax.net.p2p.server.ServerUdpMessageProcessor;
 import javax.net.p2p.udp.UdpReliabilityHandler;
 
+/**
+ * Netty Channel 属性工具类：统一存取 seq、magic、auth 信息与业务处理器等 AttributeKey。
+ */
 public class ChannelUtils {
     public static final int MESSAGE_LENGTH = 16;
     public static final AttributeKey<Map<Integer, Object>> DATA_MAP_ATTRIBUTEKEY = AttributeKey.valueOf("DATA_MAP");
@@ -25,6 +28,14 @@ public class ChannelUtils {
     public static final AttributeKey<AtomicInteger> MESSAGE_SEQUENCE = AttributeKey.valueOf("MESSAGE_SEQUENCE");
 	
 	public static final AttributeKey<Integer> MAGIC = AttributeKey.valueOf("MAGIC");
+
+    public static final AttributeKey<byte[]> XOR_KEY = AttributeKey.valueOf("XOR_KEY");
+
+    public static final AttributeKey<String> AUTH_USER_ID = AttributeKey.valueOf("AUTH_USER_ID");
+
+    public static final AttributeKey<Boolean> AUTH_LOGGED_IN = AttributeKey.valueOf("AUTH_LOGGED_IN");
+
+    public static final AttributeKey<Boolean> HANDSHAKE_PLAINTEXT_RESP = AttributeKey.valueOf("HANDSHAKE_PLAINTEXT_RESP");
 	
 	public static final AttributeKey<SimpleChannelInboundHandler> BUSINESS_PROCESSOR = AttributeKey.valueOf("BUSINESS_PROCESSOR");
     

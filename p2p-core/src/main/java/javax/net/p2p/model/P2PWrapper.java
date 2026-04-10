@@ -41,11 +41,11 @@ import javax.net.p2p.common.pool.PooledObjects;
  * - 需要对象复用的高并发场景
  * 
  * @author iamkarl@163.com
- * @param <T> 包装的数据类型
+ * @param <T> 包装的数据类型  
  * @version 1.0
  * @since 2025
  */
-public class P2PWrapper<T> extends PooledableAdapter implements ReferenceCounted {
+public class P2PWrapper<T> extends PooledableAdapter implements ReferenceCounted{
 
     /** 
      * 消息序列号 - 用于消息的唯一标识和顺序控制
@@ -89,15 +89,15 @@ public class P2PWrapper<T> extends PooledableAdapter implements ReferenceCounted
      */
     protected T data;
 
-    protected P2PWrapper() {
+    public P2PWrapper() {
     }
 
-    protected P2PWrapper(P2PCommand command, T data) {
+    public P2PWrapper(P2PCommand command, T data) {
         this.command = command;
         this.data = data;
     }
 
-    protected P2PWrapper(int seq, P2PCommand command, T data) {
+    public P2PWrapper(int seq, P2PCommand command, T data) {
         this.seq = seq;
         this.command = command;
         this.data = data;
@@ -224,14 +224,12 @@ public class P2PWrapper<T> extends PooledableAdapter implements ReferenceCounted
 
     @Override
     public void clear() {
-        seq = 0;
-        command = null;
         data = null;
     }
     
     @Override
-    public boolean release() {
-        return ConcurrentObjectPool.get().offer(this);
+    public void recycle() {
+        ConcurrentObjectPool.get().offer(this);
     }
 
     @Override
@@ -259,11 +257,19 @@ public class P2PWrapper<T> extends PooledableAdapter implements ReferenceCounted
         return this;
     }
 
+    @Override
+    public boolean release(int decrement) {
+        this.recycle();
+        return true;
+    }
 
     @Override
-    public boolean release(int i) {
-        return release();
+    public boolean release() {
+        this.recycle();
+        return true;
     }
+
+
     
     
    

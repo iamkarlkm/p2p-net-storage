@@ -71,8 +71,8 @@ public class StreamP2PWrapper<T> extends P2PWrapper<T> {
     }
     
     @Override
-    public boolean release() {
-        return ConcurrentObjectPool.get().offer(this);
+    public void recycle() {
+        ConcurrentObjectPool.get().offer(this);
     }
     
     static class ConcurrentObjectPool {

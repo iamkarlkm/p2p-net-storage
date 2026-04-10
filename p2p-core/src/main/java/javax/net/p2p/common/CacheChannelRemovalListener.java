@@ -4,9 +4,6 @@ package javax.net.p2p.common;
 import com.google.common.cache.RemovalCause;
 import com.google.common.cache.RemovalListener;
 import com.google.common.cache.RemovalNotification;
-import io.netty.channel.Channel;
-import io.netty.channel.pool.SimpleChannelPool;
-import javax.net.p2p.client.P2PClient;
 import javax.net.p2p.model.P2PWrapper;
 import lombok.extern.slf4j.Slf4j;
 

@@ -24,6 +24,9 @@ import io.netty.util.ReferenceCountUtil;
 import javax.net.p2p.common.pool.Pooledable;
 import lombok.extern.slf4j.Slf4j;
 
+/**
+ * 数据转发处理器：把当前 Channel 的数据转发到 relayChannel。
+ */
 @Slf4j
 public final class RelayHandler extends ChannelInboundHandlerAdapter {
 

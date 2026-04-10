@@ -1,5 +1,11 @@
 package javax.net.p2p.benchmark;
 
+import java.io.BufferedOutputStream;
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
+import java.io.PrintStream;
+import java.io.UnsupportedEncodingException;
+import java.nio.charset.StandardCharsets;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.common.pool.CustomObjectPool;
 import javax.net.p2p.common.pool.HybridObjectPool;
@@ -8,8 +14,12 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import javax.net.p2p.common.pool.ClonePooledObjects;
 import javax.net.p2p.common.pool.HybridObjectPool;
 import javax.net.p2p.common.pool.P2PWrapper;
+import javax.net.p2p.common.pool.PooledObjectFactory;
+import javax.net.p2p.common.pool.PooledObjects;
+import javax.net.p2p.common.pool.PooledableTest;
 
 /**
  *
@@ -24,7 +34,7 @@ import javax.net.p2p.common.pool.P2PWrapper;
 @Slf4j
 public class ObjectPoolBenchmark {
 
-    private static final int ITERATIONS = 1_000_000;
+    private static  int ITERATIONS = 1_000_000;
     private static final int THREAD_COUNT = 100;
     private static final CustomObjectPool<P2PWrapper> CUSTOM_POOL
         = new CustomObjectPool<>(() -> new P2PWrapper(), 8192);
@@ -43,17 +53,18 @@ public class ObjectPoolBenchmark {
         long start = System.nanoTime();
 
         for (int i = 0; i < ITERATIONS; i++) {
-            P2PWrapper wrapper = new P2PWrapper();
-            wrapper.setSeq(i);
-            wrapper.setCommand(P2PCommand.HEART_PING);
-            wrapper.setTimestamp(System.currentTimeMillis());
+            javax.net.p2p.model.P2PWrapper wrapper = javax.net.p2p.model.P2PWrapper.build(i, P2PCommand.HAND);
+//            P2PWrapper wrapper = new P2PWrapper();
+//            wrapper.setSeq(i);
+//            wrapper.setCommand(P2PCommand.HEART_PING);
+//            wrapper.setTimestamp(System.currentTimeMillis());
 // 让GC回收
         }
 
         long duration = System.nanoTime() - start;
-
+long memAfter = getUsedMemory();
         System.gc();
-        long memAfter = getUsedMemory();
+        
         long gcAfter = getGCCount();
 
         return new BenchmarkResult(
@@ -64,9 +75,53 @@ public class ObjectPoolBenchmark {
             gcAfter - gcBefore
         );
     }
-
+    
     /**
      *
+     * 测试1：直接创建对象
+     */
+    public static BenchmarkResult testHjkCreation() {
+        log.info("开始测试: PooledObjects创建对象");
+        //ClonePooledObjects<javax.net.p2p.model.P2PWrapper> pool = new ClonePooledObjects(4096);
+        PooledObjects<javax.net.p2p.model.P2PWrapper> pool = new PooledObjects(512,new PooledObjectFactory<javax.net.p2p.model.P2PWrapper>() {
+            @Override
+            public javax.net.p2p.model.P2PWrapper newInstance() {
+                return new javax.net.p2p.model.P2PWrapper();
+            }
+        });
+        System.gc();
+        long memBefore = getUsedMemory();
+        long gcBefore = getGCCount();
+
+        long start = System.nanoTime();
+
+        for (int i = 0; i < ITERATIONS; i++) {
+            javax.net.p2p.model.P2PWrapper wrapper = pool.poll();
+            wrapper.setSeq(i);
+            wrapper.setCommand(P2PCommand.HEART_PING);
+            //wrapper.setData(System.currentTimeMillis());
+            pool.offer(wrapper);
+
+        }
+
+        long duration = System.nanoTime() - start;
+long memAfter = getUsedMemory();
+        System.gc();
+        
+        long gcAfter = getGCCount();
+
+        return new BenchmarkResult(
+            "PooledObjects",
+            duration,
+            ITERATIONS,
+            memAfter - memBefore,
+            gcAfter - gcBefore
+        );
+    }
+
+
+    /**
+     *ClonePooledObjects
      * 测试2：自定义对象池
      */
     public static BenchmarkResult testCustomPool() {
@@ -97,9 +152,9 @@ public class ObjectPoolBenchmark {
         }
 
         long duration = System.nanoTime() - start;
-
+ long memAfter = getUsedMemory();
         System.gc();
-        long memAfter = getUsedMemory();
+       
         long gcAfter = getGCCount();
 
         return new BenchmarkResult(
@@ -137,9 +192,9 @@ public class ObjectPoolBenchmark {
         }
 
         long duration = System.nanoTime() - start;
-
+ long memAfter = getUsedMemory();
         System.gc();
-        long memAfter = getUsedMemory();
+       
         long gcAfter = getGCCount();
 
         return new BenchmarkResult(
@@ -191,9 +246,9 @@ public class ObjectPoolBenchmark {
 
         executor.shutdown();
         executor.awaitTermination(10, TimeUnit.SECONDS);
-
+long memAfter = getUsedMemory();
         System.gc();
-        long memAfter = getUsedMemory();
+        
         long gcAfter = getGCCount();
 
         return new BenchmarkResult(
@@ -260,12 +315,20 @@ public class ObjectPoolBenchmark {
      *
      * 主方法：运行所有基准测试
      */
-    public static void main(String[] args) throws InterruptedException {
+    public static void main(String[] args) throws InterruptedException, UnsupportedEncodingException {
+        //System.setOut(new PrintStream(System.out, true, StandardCharsets.UTF_8));
+        //System.setOut(new PrintStream(new FileOutputStream(FileDescriptor.out), true, "UTF-8"));
         log.info("=== 对象池性能基准测试 ===");
+        //ITERATIONS = 10000000;
         log.info("迭代次数: {}", ITERATIONS);
         log.info("并发线程: {}\n", THREAD_COUNT);
 
-// 测试1
+
+         BenchmarkResult resultHjk = testHjkCreation();
+        resultHjk.print();
+        log.info("");
+        
+        // 测试1
         BenchmarkResult result1 = testDirectCreation();
         result1.print();
         log.info("");

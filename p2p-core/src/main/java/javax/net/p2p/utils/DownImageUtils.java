@@ -5,13 +5,16 @@
  */
 package javax.net.p2p.utils;
 
+import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import javax.net.p2p.api.P2PCommand;
-import javax.net.p2p.client.P2PClient;
+import javax.net.p2p.client.P2PClientTcp;
 import javax.net.p2p.model.FileDataModel;
 import javax.net.p2p.model.LssjImageModel;
 import javax.net.p2p.model.P2PWrapper;
+import javax.net.p2p.server.AbstractP2PServer;
+import javax.net.p2p.server.P2PServerTcp;
 
 /**
  *
@@ -20,10 +23,10 @@ import javax.net.p2p.model.P2PWrapper;
 public class DownImageUtils {
 
 
-    public static byte[] getImageData(int storeId, String fileName, String fileName2) throws Exception {
-
+    public static byte[] getImageData(P2PClientTcp client,int storeId, String fileName, String fileName2) throws Exception {
+        
         P2PWrapper p2p = P2PWrapper.build(P2PCommand.GET_FILE, new LssjImageModel(storeId, fileName, fileName2));
-        P2PWrapper response = (P2PWrapper) P2PClient.getInstance().excute(p2p);
+        P2PWrapper response = (P2PWrapper) client.excute(p2p);
         //P2PCommandHandler handler = (P2PCommandHandler) registryMap.get(response.getCommand());
         //System.out.println(handler);
         //if(handler!=null){
@@ -48,7 +51,8 @@ public class DownImageUtils {
 //        byte[] bytes = getImageData(766l, "1.png");
 //        Files.write(Paths.get("E:/VEH_IMAGES/2.png"), bytes);
         //P2PClient client = new P2PClient(InetAddress.getLocalHost(), P2PServer.SERVER_PORT);
-         byte[] bytes = getImageData(766, "2019-12-25/1.png", "2019-12-25/1.png");
+        P2PClientTcp client = P2PClientTcp.getInstance(P2PClientTcp.class, "127.0.0.1",AbstractP2PServer.SERVER_PORT);
+         byte[] bytes = getImageData(client,766, "2019-12-25/1.png", "2019-12-25/1.png");
         Files.write(Paths.get("/opt/2.jpg"), bytes);
     }
 }

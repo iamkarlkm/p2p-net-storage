@@ -1,6 +1,7 @@
 
 package javax.net.p2p.interfaces;
 
+import javax.net.p2p.common.AbstractSendMesageExecutor;
 import javax.net.p2p.model.StreamP2PWrapper;
 import javax.net.p2p.server.ServerSendUdpMesageExecutor;
 
@@ -10,7 +11,7 @@ import javax.net.p2p.server.ServerSendUdpMesageExecutor;
  */
 public interface StreamRequest {
     
-    StreamP2PWrapper request(ServerSendUdpMesageExecutor executor,StreamP2PWrapper message);
-    void cancel(ServerSendUdpMesageExecutor executor,StreamP2PWrapper message);
+    StreamP2PWrapper request(AbstractSendMesageExecutor executor,StreamP2PWrapper message);
+    void cancel(AbstractSendMesageExecutor executor,StreamP2PWrapper message);
     
 }

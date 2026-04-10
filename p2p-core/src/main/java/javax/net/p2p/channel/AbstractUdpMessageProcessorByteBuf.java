@@ -28,6 +28,9 @@ import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.utils.SerializationUtil;
 import lombok.extern.slf4j.Slf4j;
+/**
+ * AbstractUdpMessageProcessorByteBuf。
+ */
 
 @Slf4j
 public abstract class AbstractUdpMessageProcessorByteBuf extends SimpleChannelInboundHandler<ByteBuf> {

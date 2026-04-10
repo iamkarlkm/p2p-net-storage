@@ -92,6 +92,9 @@ public enum P2PCommand {
     
     /** 操作取消响应 */
     STD_CANCEL(-1101),
+
+    /** 未知命令响应，表示服务器不支持该命令 */
+    STD_UNKNOWN(-1102),
     
     /** 停止操作响应 */
     STD_STOP(-102),
@@ -251,6 +254,16 @@ public enum P2PCommand {
     
     /** UDP流操作确认2 */
     UDP_STREAM_ACK2(209),
+
+    WS_FRAME(210),
+
+    WS_FRAME_ACK(211),
+
+    WS_FRAME_RESET(212),
+
+    WS_SESSION_HELLO(213),
+
+    WS_SESSION_STATE(214),
     
     // ============== 遗留系统命令 ==============
 
@@ -349,7 +362,15 @@ public enum P2PCommand {
     IM_CONNECTION_TEST(13001),
 
     /** IM_错误响应 */
-    IM_ERROR_RESPONSE(13002), DATA_TRANSFER(21000);
+    IM_ERROR_RESPONSE(13002),
+    
+    CACHE_STRING_COMMAND(22000),
+    
+    CACHE_BYTES_COMMAND(22001),
+
+    CACHE_LOCK_COMMAND(22002),
+    
+    DATA_TRANSFER(21000);
     /** 命令的数值编码，用于网络传输和序列化 */
     private final int value;
 

@@ -4,6 +4,8 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufInputStream;
 import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.buffer.Unpooled;
+import io.netty.buffer.UnpooledByteBufAllocator;
 import io.protostuff.LinkedBuffer;
 import io.protostuff.ProtostuffIOUtil;
 import io.protostuff.ProtostuffOutputWithByteBuf;
@@ -15,7 +17,10 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.exception.DataLengthLimitedException;
+import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.model.SerializeWrapper;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -121,6 +126,7 @@ public class SerializationUtil {
         int frameLenthOffset = byteBuf.writerIndex();
         byteBuf.writeInt(0);
         byteBuf.writeInt(magic);
+        //byteBuf.writeInt(hash);
         final ProtostuffOutputWithByteBuf output = new ProtostuffOutputWithByteBuf(byteBuf);
         try
         {
@@ -131,9 +137,10 @@ public class SerializationUtil {
             throw new RuntimeException("Serializing to a byte array threw an IOException " +
                     "(should never happen).", e);
         }
-        byteBuf.markWriterIndex();
-        byteBuf.writeByte(0);
-        byteBuf.resetWriterIndex();
+        //P2PWrapper request = SerializationUtil.deserialize(P2PWrapper.class, output.byteBuf);
+        // byteBuf.markWriterIndex();
+        //byteBuf.writeByte(0);
+        // byteBuf.resetWriterIndex();
         byteBuf.setInt(frameLenthOffset,output.getSize());
     }
     
@@ -215,12 +222,12 @@ public class SerializationUtil {
     @SuppressWarnings("unchecked")
     public static ByteBuf serializeToByteBuf(Object obj,int magic) {
         Class<?> clazz = (Class<?>) obj.getClass();
-//        LinkedBuffer buffer = BUFFERS.get();
-//        if (buffer == null) {//存储buffer到线程局部变量中，避免每次序列化操作都分配内存提高序列化性能
-//            buffer = LinkedBuffer.allocate(LinkedBuffer.DEFAULT_BUFFER_SIZE);
-//            BUFFERS.set(buffer);
-//        }
-//        try {
+       LinkedBuffer buffer = BUFFERS.get();
+       if (buffer == null) {//存储buffer到线程局部变量中，避免每次序列化操作都分配内存提高序列化性能
+           buffer = LinkedBuffer.allocate(LinkedBuffer.DEFAULT_BUFFER_SIZE);
+           BUFFERS.set(buffer);
+       }
+       try {
             Object serializeObject = obj;
             Schema schema = WRAPPER_SCHEMA;
             if (clazz.isArray() || Collection.class.isAssignableFrom(clazz)
@@ -230,19 +237,17 @@ public class SerializationUtil {
                 schema = RuntimeSchema.getSchema(clazz);
             }
             ByteBuf out = tryGetDirectBuffer(512);
-            //out.retain();
             serialize(serializeObject, schema, magic, out);
-//            byte[] bytes = ProtostuffIOUtil.toByteArray(serializeObject, schema, buffer);
-//            
-//
-//            out.writeInt(bytes.length);
-//            out.writeInt(magic);
-//            out.writeBytes(bytes);
+        //    byte[] bytes = ProtostuffIOUtil.toByteArray(serializeObject, schema, buffer);
+           
+        //    out.writeInt(bytes.length);
+        //    out.writeInt(magic);
+        //    out.writeBytes(bytes);
 
             return out;
-//        } finally {
-//            buffer.clear();
-//        }
+       } finally {
+           buffer.clear();
+       }
     }
     
    
@@ -473,7 +478,6 @@ public class SerializationUtil {
         try {//先获取可读字节数
             final byte[] data = new byte[length];
             in.readBytes(data);
-            System.out.println("data:"+data.length);
             //ByteBufInputStream input = new ByteBufInputStream(in);
             if (clazz.isArray() || Collection.class.isAssignableFrom(clazz)
                 || Map.class.isAssignableFrom(clazz) || Set.class.isAssignableFrom(clazz)) {//Protostuff 不支持序列化/反序列化数组、集合等对象,特殊处理
@@ -543,6 +547,20 @@ public class SerializationUtil {
     }
 
     public static void main(String[] args) throws Exception {
+        
+        ByteBuf inBuffer = Unpooled.buffer();
+        SerializationUtil.serializeToByteBuf(P2PWrapper.build(1,P2PCommand.HEART_PONG), inBuffer,3);
+        int frameLengthInt = inBuffer.readInt();//保存frame字节数
+         int   magic = inBuffer.readInt();
+         System.out.println("magic:"+magic);
+         System.out.println("frameLengthInt:"+frameLengthInt);
+        byte[] data = new byte[frameLengthInt];
+                inBuffer.readBytes(data);
+ P2PWrapper request = SerializationUtil.deserialize(P2PWrapper.class, data);
+ System.out.println(request);
+    }
+
+    public static void main2(String[] args) throws Exception {
         System.out.println("String[abcd]:" + SerializationUtil.serialize("abcd").length);
         byte[] array = "abcd".getBytes();
         Class c = String[].class;

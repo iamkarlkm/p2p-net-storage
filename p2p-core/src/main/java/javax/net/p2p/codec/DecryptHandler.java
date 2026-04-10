@@ -12,6 +12,9 @@ import javax.crypto.spec.SecretKeySpec;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.List;
+/**
+ * DecryptHandler。
+ */
 
 @Slf4j
 public class DecryptHandler extends MessageToMessageDecoder<ByteBuf> {

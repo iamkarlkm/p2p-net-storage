@@ -11,6 +11,9 @@ import javax.net.p2p.channel.AbstractStreamResponseAdapter;
 import javax.net.p2p.client.ClientSendMesageExecutor;
 import javax.net.p2p.common.ChannelAwaitOnMessage;
 import javax.net.p2p.model.P2PWrapper;
+/**
+ * P2PClientService。
+ */
 
 public interface P2PClientService {
 

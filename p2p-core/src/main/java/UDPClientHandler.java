@@ -23,6 +23,9 @@ import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.utils.SerializationUtil;
 import lombok.extern.slf4j.Slf4j;
 
+/**
+ * UDP 客户端处理器：接收 DatagramPacket 并反序列化为 {@link P2PWrapper}。
+ */
 @Slf4j
 public class UDPClientHandler extends SimpleChannelInboundHandler<DatagramPacket> {
 

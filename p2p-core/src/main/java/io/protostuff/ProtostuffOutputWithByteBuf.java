@@ -28,6 +28,9 @@ import static io.protostuff.WireFormat.makeTag;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+/**
+ * ProtostuffOutputWithByteBuf。
+ */
 
 
 public final class ProtostuffOutputWithByteBuf extends WriteSessionWithByteBuf implements Output

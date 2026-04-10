@@ -425,7 +425,7 @@ public class OptimizedClientSendTcpMesageExecutor extends ClientSendMesageExecut
      * @return 是否成功释放
      */
     @Override
-    public boolean release() {
+    public void recycle() {
         try {
             // 清理资源
             if (channel != null && channel.isActive()) {
@@ -450,10 +450,8 @@ public class OptimizedClientSendTcpMesageExecutor extends ClientSendMesageExecut
             }
             
             log.debug("Optimized executor released for {}", remote);
-            return true;
         } catch (Exception e) {
             log.error("Failed to release executor for {}: {}", remote, e.getMessage());
-            return false;
         }
     }
 }

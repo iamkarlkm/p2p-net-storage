@@ -22,6 +22,9 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 
+/**
+ * SOCKS 代理服务端启动入口（Netty ServerBootstrap）。
+ */
 public final class SocksServer {
 
     static final int PORT = 9080;

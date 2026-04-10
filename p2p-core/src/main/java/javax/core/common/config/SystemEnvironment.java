@@ -5,6 +5,9 @@ package javax.core.common.config;
 import java.util.Iterator;
 import java.util.Map.Entry;
 import java.util.Properties;
+/**
+ * SystemEnvironment。
+ */
 
 public class SystemEnvironment {
  

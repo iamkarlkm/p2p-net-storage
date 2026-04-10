@@ -13,18 +13,16 @@ import java.io.FileOutputStream;
 import java.io.PrintStream;
 import javax.net.p2p.channel.PipelineInitializer;
 import javax.net.p2p.codec.P2PWrapperEncoder;
-import static javax.net.p2p.server.AbstractP2PServer.SERVER_PORT;
 import lombok.extern.slf4j.Slf4j;
+/**
+ * P2PServerTcp。
+ */
 
 @Slf4j
 public class P2PServerTcp {
-
-    //public final static String SERVER_IP = "86.85.160.18";//车管所历史数据服务器
-    /**
-     * 支队数据域tencent对象云存储服务器gaw映射,端口6060
-     */
-//    public static String SERVER_IP = "86.84.250.66";//cos image server
     
+    public static int SERVER_PORT = 6060;
+
     private final int port;
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;

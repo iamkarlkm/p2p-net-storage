@@ -9,6 +9,9 @@ import java.util.LinkedList;
 import java.util.List;
 import javax.net.p2p.utils.SecurityUtils;
 //public class MyMapUnit64<K extends HashCode64,V> implements Serializable{
+/**
+ * HashMapUnit256。
+ */
 
 public class HashMapUnit256<K, V> implements Serializable {
 

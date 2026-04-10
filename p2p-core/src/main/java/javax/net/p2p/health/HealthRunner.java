@@ -1,4 +1,7 @@
 package javax.net.p2p.health;
+/**
+ * HealthRunner。
+ */
 
 public class HealthRunner {
     public static void main(String[] args) throws Exception {

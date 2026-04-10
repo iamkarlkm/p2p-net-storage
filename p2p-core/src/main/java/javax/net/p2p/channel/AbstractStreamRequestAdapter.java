@@ -5,6 +5,8 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Future;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+
+import javax.net.p2p.common.AbstractSendMesageExecutor;
 import javax.net.p2p.common.ExecutorServicePool;
 import javax.net.p2p.common.pool.ClonePooledObjects;
 import javax.net.p2p.common.pool.ClonePooledableAdapter;
@@ -33,7 +35,7 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
 
     //protected static final ThreadLocal<Boolean> canceled = new ThreadLocal();
     protected boolean continued;
-    protected ServerSendUdpMesageExecutor executor;
+    protected AbstractSendMesageExecutor executor;
 
     private P2PWrapper request;
 
@@ -138,7 +140,7 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
         }
     }
 
-    public AbstractStreamRequestAdapter asyncProcess(ServerSendUdpMesageExecutor executor, AbstractStreamRequestAdapter handler, P2PWrapper request) {
+    public AbstractStreamRequestAdapter asyncProcess(AbstractSendMesageExecutor executor, AbstractStreamRequestAdapter handler, P2PWrapper request) {
         try {
             if (handler instanceof StreamRequest) {//(文件上传/发布)流消息请求处理,异步回调
                 StreamP2PWrapper streamMessage0 = (StreamP2PWrapper) request;
@@ -200,7 +202,7 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
     public void loadParams(Object... params) {
         switch (params.length) {
             case 2: {
-                this.executor = (ServerSendUdpMesageExecutor) params[0];
+                this.executor = (AbstractSendMesageExecutor) params[0];
                 this.request = (P2PWrapper) params[1];
                 this.continued = true;
                 Future f = ExecutorServicePool.P2P_REFERENCED_SERVER_ASYNC_POOLS.submit(this);
@@ -211,14 +213,14 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
                 this.continued = true;
                 this.requestId = (Integer) params[0];
                 this.streamRequest = (StreamRequest) this;
-                this.executor = (ServerSendUdpMesageExecutor) params[1];
+                this.executor = (AbstractSendMesageExecutor) params[1];
                 this.streamMessage = (StreamP2PWrapper) params[2];
                 Future f = ExecutorServicePool.P2P_REFERENCED_SERVER_ASYNC_POOLS.submit(this);
                 FUTURE_MAP.put(requestId, f);
                 break;
             }
             default:
-                throw new IllegalArgumentException("expected params {ServerSendUdpMesageExecutor,P2PWrapper} or {Integer,ServerSendUdpMesageExecutor,StreamP2PWrapper}");
+                throw new IllegalArgumentException("expected params {AbstractSendMesageExecutor,P2PWrapper} or {Integer,ServerSendUdpMesageExecutor,StreamP2PWrapper}");
         }
 
     }
@@ -230,6 +232,6 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
 
     }
 
-    public abstract void processStream(ServerSendUdpMesageExecutor executor, P2PWrapper request) throws InterruptedException;
+    public abstract void processStream(AbstractSendMesageExecutor executor, P2PWrapper request) throws InterruptedException;
 
 }

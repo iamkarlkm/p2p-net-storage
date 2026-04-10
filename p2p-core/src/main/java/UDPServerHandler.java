@@ -30,6 +30,9 @@ import javax.net.p2p.codec.P2PWrapperEncoder;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.utils.SerializationUtil;
 
+/**
+ * UDP 服务端处理器：接收 DatagramPacket 并返回应答包。
+ */
 @Slf4j
 public class UDPServerHandler extends SimpleChannelInboundHandler<DatagramPacket> {
 

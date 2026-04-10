@@ -22,7 +22,7 @@ public abstract class AbstractP2PServer extends ServerReferencedSingleton {
     protected static final int DEFAULT_CORESIZE = 2;
     protected static final int DEFAULT_MAGIC  = P2PWrapperEncoder.MAGIC;
     public static String SERVER_IP = "127.0.0.1";
-    public static Integer SERVER_PORT = 6060;
+    public static int SERVER_PORT = 6060;
     
     protected int coreSize;
     protected int queueSize;

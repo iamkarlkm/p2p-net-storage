@@ -27,7 +27,7 @@ public interface Pooledable<T> {
      */
     void loadParams(Object... params);
    
-    boolean release();
+    void recycle();
        
     
 }

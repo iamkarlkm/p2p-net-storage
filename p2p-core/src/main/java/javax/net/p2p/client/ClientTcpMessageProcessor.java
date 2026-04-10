@@ -1,10 +1,16 @@
 package javax.net.p2p.client;
 
 import io.netty.channel.ChannelHandlerContext;
+
+import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.channel.AbstractTcpMessageProcessor;
+import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.interfaces.P2PMessageService;
 import javax.net.p2p.model.P2PWrapper;
 import lombok.extern.slf4j.Slf4j;
+/**
+ * ClientTcpMessageProcessor。
+ */
 
 @Slf4j
 public class ClientTcpMessageProcessor extends AbstractTcpMessageProcessor {
@@ -48,6 +54,7 @@ public class ClientTcpMessageProcessor extends AbstractTcpMessageProcessor {
         if(log.isDebugEnabled()){
             log.debug("channel {} read msg ->\n{}", ctx.channel().id(), response);
         }
+        
         client.complete(response);
     }
 

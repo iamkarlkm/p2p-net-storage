@@ -39,7 +39,7 @@
 		 <!--日志消息格式配置-->
         <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
             <pattern>${pattern}</pattern>
-             <charset>GBK</charset>
+             <charset>UTF-8</charset>
         </encoder>
         <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
             <level>ALL</level>

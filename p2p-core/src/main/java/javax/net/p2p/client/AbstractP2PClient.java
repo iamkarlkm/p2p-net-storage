@@ -15,7 +15,7 @@ import javax.net.p2p.common.AbstractP2PMessageServiceAdapter;
 public abstract class AbstractP2PClient extends AbstractP2PMessageServiceAdapter {
     
     public static String SERVER_IP = "127.0.0.1";
-    public static Integer SERVER_PORT = 6060;
+    public static int SERVER_PORT = 6060;
     
     private int clientRefCount = 0;
 

@@ -20,6 +20,9 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.util.concurrent.Promise;
 
+/**
+ * 客户端连接 promise 处理器：在 channelActive 时完成 promise 并移除自身。
+ */
 public final class ClientPromiseHandler extends ChannelInboundHandlerAdapter {
 
     private final Promise<Channel> promise;

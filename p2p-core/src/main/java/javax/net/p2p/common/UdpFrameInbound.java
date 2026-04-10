@@ -141,7 +141,7 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
                 lock.unlock();
             }
         }
-        release();//回归对象池
+        recycle();//回归对象池
 
     }
 
@@ -160,8 +160,8 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
     }
 
     @Override
-    public boolean release() {
-        return ConcurrentObjectPool.get().offer(this);
+    public void recycle() {
+        ConcurrentObjectPool.get().offer(this);
     }
     
     public void channelRead0(ChannelHandlerContext ctx, DatagramPacket datagramPacket) throws Exception{
@@ -345,7 +345,7 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
                 log.error("close() Exception -> {}", ex.getMessage());
             }
         }
-        release();
+        recycle();
     }
 
     static class ConcurrentObjectPool {

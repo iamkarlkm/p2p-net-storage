@@ -1,0 +1,12 @@
+enabled: false
+xorKeyLength: 4096
+keyDir: ""
+client:
+  user: ""
+  userId: ""
+  privateKey: ""
+  serverPublicKey: ""
+server:
+  privateKey: ""
+  clientPublicKeys: {}
+  allowCommands: {}

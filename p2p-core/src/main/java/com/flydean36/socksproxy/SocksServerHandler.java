@@ -26,6 +26,9 @@ import io.netty.handler.codec.socksx.v4.Socks4CommandType;
 import io.netty.handler.codec.socksx.v5.*;
 import lombok.extern.slf4j.Slf4j;
 
+/**
+ * SOCKS 服务端主处理器：处理 SOCKS4/5 握手与命令请求，并切换到 CONNECT 处理器。
+ */
 @Slf4j
 @Sharable
 public final class SocksServerHandler extends SimpleChannelInboundHandler<SocksMessage> {

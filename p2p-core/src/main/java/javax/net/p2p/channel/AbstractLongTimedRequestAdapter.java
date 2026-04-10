@@ -4,6 +4,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Future;
 import javax.net.p2p.common.pool.ClonePooledObjects;
+import javax.net.p2p.common.AbstractSendMesageExecutor;
 import javax.net.p2p.common.ExecutorServicePool;
 import javax.net.p2p.common.pool.ClonePooledableAdapter;
 import javax.net.p2p.interfaces.P2PCommandHandler;
@@ -27,7 +28,7 @@ public abstract class AbstractLongTimedRequestAdapter extends ClonePooledableAda
     
     private static final ClonePooledObjects<AbstractLongTimedRequestAdapter> TASK_POOL = new ClonePooledObjects(4096);
    
-    protected ServerSendUdpMesageExecutor executor;
+    protected AbstractSendMesageExecutor executor;
     protected P2PWrapper request;
 
     Future future = null;
@@ -58,7 +59,7 @@ public abstract class AbstractLongTimedRequestAdapter extends ClonePooledableAda
    
     @Override
     public void loadParams(Object... params) {
-        this.executor = (ServerSendUdpMesageExecutor) params[0];
+        this.executor = (AbstractSendMesageExecutor) params[0];
         this.request = (P2PWrapper) params[1];
         if(future!=null && !future.isDone()){
             try{
@@ -77,7 +78,7 @@ public abstract class AbstractLongTimedRequestAdapter extends ClonePooledableAda
     
   
 
-    public AbstractLongTimedRequestAdapter asyncProcess(ServerSendUdpMesageExecutor executor, AbstractLongTimedRequestAdapter handler, P2PWrapper request) {
+    public AbstractLongTimedRequestAdapter asyncProcess(AbstractSendMesageExecutor executor, AbstractLongTimedRequestAdapter handler, P2PWrapper request) {
         try {
             //一次性的单向/有限流处理
             //带参数重用对象AbstractLongTimedRequestAdapter类必须@Override loadParams(executor,request)

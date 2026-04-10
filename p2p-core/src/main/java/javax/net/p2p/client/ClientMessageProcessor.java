@@ -17,7 +17,6 @@ import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.common.CacheChannelRemovalListener;
 import javax.net.p2p.common.ChannelAwaitOnMessage;
 import javax.net.p2p.common.ExecutorServicePool;
-import javax.net.p2p.interfaces.P2PClientService;
 import javax.net.p2p.exception.RequestTimeoutException;
 import javax.net.p2p.model.P2PWrapper;
 import lombok.extern.slf4j.Slf4j;
@@ -35,15 +34,15 @@ public class ClientMessageProcessor extends SimpleChannelInboundHandler<P2PWrapp
 //    public final static ConcurrentHashMap<P2PCommand, P2PCommandHandler> CLIENT_HANDLER_REGISTRY_MAP = new ConcurrentHashMap<>();
 //
 //	private static final List<String> CLASS_CACHE = new ArrayList<>();
-    private P2PClient client;
+    private P2PClientTcp client;
 
     
 
-    public P2PClient getClient() {
+    public P2PClientTcp getClient() {
         return client;
     }
 
-    public void setClient(P2PClient client) {
+    public void setClient(P2PClientTcp client) {
         this.client = client;
     }
     private boolean isConnected = false;
@@ -62,7 +61,7 @@ public class ClientMessageProcessor extends SimpleChannelInboundHandler<P2PWrapp
 
     private int timeOutCountLimit = 6;
 
-    public ClientMessageProcessor(P2PClient client) {
+    public ClientMessageProcessor(P2PClientTcp client) {
         this.client = client;
         this.lastActiveTime = System.currentTimeMillis();
     }

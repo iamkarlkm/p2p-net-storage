@@ -93,8 +93,8 @@ public class UdpReliabilityManager {
         }
         
         void release() {
-            if (message != null && message.refCnt() > 0) {
-                message.release();
+            if (message != null ) {
+                message.recycle();
             }
         }
     }

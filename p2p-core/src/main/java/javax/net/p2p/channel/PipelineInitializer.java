@@ -14,8 +14,9 @@ import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.util.Attribute;
 import java.security.cert.CertificateException;
-import javax.net.p2p.codec.P2PWrapperDecoder;
 import javax.net.p2p.codec.P2PWrapperEncoder;
+import javax.net.p2p.codec.P2PWrapperSecureDecoder;
+import javax.net.p2p.codec.P2PWrapperSecureEncoder;
 import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.config.TcpOptimizationConfig;
 import javax.net.p2p.monitor.UdpMonitorDecorator;
@@ -54,8 +55,8 @@ public class PipelineInitializer  {
             .addLast(new IdleStateHandler(0, 0, 5)) // 5 seconds read idle time
             //                .addLast(new LengthFieldBasedFrameDecoder(Integer.MAX_VALUE, 0, 4,0,4))
             //                .addLast(new LengthFieldPrepender(4))
-            .addLast("P2PWrapperDecoder", new P2PWrapperDecoder())
-            .addLast("P2PWrapperEncoder", new P2PWrapperEncoder())
+            .addLast("P2PWrapperDecoder", new P2PWrapperSecureDecoder())
+            .addLast("P2PWrapperEncoder", new P2PWrapperSecureEncoder())
             //				.addLast("encoder", new P2PWrapperDecoder())
             //                .addLast("decoder", new P2PWrapperEncoder())
             .addLast("BusinessProseccor", businessProseccor);

@@ -145,7 +145,7 @@ public class ServerSendUdpMesageExecutor extends AbstractSendMesageExecutor {
             connected = false;
             channel.close();
             notifyClosed();
-            release();//回归对象池
+            recycle();//回归对象池
         }
     }
     
@@ -488,8 +488,8 @@ public class ServerSendUdpMesageExecutor extends AbstractSendMesageExecutor {
     }
 
     @Override
-    public boolean release() {
-        return ConcurrentObjectPool.get(queueSize).offer(this);
+    public void recycle() {
+        ConcurrentObjectPool.get(queueSize).offer(this);
     }
 
     @Override

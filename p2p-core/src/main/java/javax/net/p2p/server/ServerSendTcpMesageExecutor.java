@@ -73,8 +73,8 @@ public class ServerSendTcpMesageExecutor extends AbstractSendMesageExecutor {
     }
 
     @Override
-    public boolean release() {
-        return ConcurrentObjectPool.get(queueSize).offer(this);
+    public void recycle() {
+        ConcurrentObjectPool.get(queueSize).offer(this);
     }
 
     static class ConcurrentObjectPool {

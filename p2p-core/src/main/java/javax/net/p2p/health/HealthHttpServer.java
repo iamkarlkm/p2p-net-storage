@@ -10,6 +10,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Executors;
+/**
+ * HealthHttpServer。
+ */
 
 public class HealthHttpServer {
     private final int port;

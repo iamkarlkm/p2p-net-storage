@@ -225,13 +225,12 @@ public class ClientSendUdpMesageExecutor extends ClientSendMesageExecutor {
     }
     
     @Override
-    public boolean release() {
+    public void recycle() {
         // 将对象归还给池
         PooledObjects<ClientSendUdpMesageExecutor> pool = ConcurrentObjectPool.get(queueSize);
         if (pool != null) {
-            return pool.offer(this);
+            pool.offer(this);
         }
-        return false;
     }
 
     static class ConcurrentObjectPool {

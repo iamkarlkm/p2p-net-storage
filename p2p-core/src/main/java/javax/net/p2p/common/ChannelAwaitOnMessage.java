@@ -61,17 +61,21 @@ public class ChannelAwaitOnMessage<T> extends PooledableAdapter implements Calla
         lock.lock();
         try {
             isFree = false;//标识使用中
-            if (timeout > 0) {
-                awaitCondition.await(timeout, TimeUnit.MILLISECONDS);
-            } else {
-                awaitCondition.await();
-            }
-            while (timeoutReset) {
-                timeoutReset = false;
+            long remaining = timeout;
+            while (result == null && exception == null) {
                 if (timeout > 0) {
-                    awaitCondition.await(timeout, TimeUnit.MILLISECONDS);
+                    if (remaining <= 0) {
+                        break;
+                    }
+                    long start = System.currentTimeMillis();
+                    awaitCondition.await(remaining, TimeUnit.MILLISECONDS);
+                    remaining -= (System.currentTimeMillis() - start);
                 } else {
                     awaitCondition.await();
+                }
+                if (timeoutReset) {
+                    timeoutReset = false;
+                    remaining = timeout;
                 }
             }
             T r = result;
@@ -85,7 +89,7 @@ public class ChannelAwaitOnMessage<T> extends PooledableAdapter implements Calla
             P2PWrapper e = P2PWrapper.build(P2PCommand.STD_ERROR, exception.getMessage()!=null?exception.getMessage():exception.getClass());
             return (T) e;
         } finally {
-            release();//回归对象池
+            recycle();//回归对象池
             lock.unlock();
         }
 
@@ -161,16 +165,15 @@ public class ChannelAwaitOnMessage<T> extends PooledableAdapter implements Calla
     }
     
     @Override
-    public boolean release() {
+    public void recycle() {
         lock.lock();
         try {
             if(isFree){
-                return ConcurrentObjectPool.get().offer(this);
+                ConcurrentObjectPool.get().offer(this);
             }
         } finally {
             lock.unlock();
         }
-        return false;
     }
 
     public void release(Channel c) {
@@ -210,7 +213,8 @@ public class ChannelAwaitOnMessage<T> extends PooledableAdapter implements Calla
 
     @Override
     public String toString() {
-        return "ChannelAwaitOnMessage{" + "result=" + result + ", exception=" + exception + ", timeout=" + timeout + ", timeoutReset=" + timeoutReset + ", isFree=" + isFree + ", future=" + future + '}';
+        Boolean done = future == null ? null : future.isDone();
+        return "ChannelAwaitOnMessage{" + "result=" + result + ", exception=" + exception + ", timeout=" + timeout + ", timeoutReset=" + timeoutReset + ", isFree=" + isFree + ", futureDone=" + done + '}';
     }
 
     
