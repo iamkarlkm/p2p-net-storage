@@ -23,6 +23,11 @@ import com.qcloud.cos.transfer.TransferManager;
 import com.qcloud.cos.utils.Md5Utils;
 
 
+/**
+ * 腾讯云 COS SDK 的复制文件示例代码（包含小文件 copyObject 与大文件 TransferManager）。
+ *
+ * <p>该类为演示/实验用途，不参与 p2p 主流程。</p>
+ */
 public class CopyFileDemo {
     // copyObject最大支持5G文件的copy, 5G以上的文件copy请参照TransferManagerDemo中的copy示例
     public static void copySmallFileDemo() {

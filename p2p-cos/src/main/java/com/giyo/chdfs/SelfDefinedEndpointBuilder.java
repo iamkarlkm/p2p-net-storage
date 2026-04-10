@@ -4,6 +4,9 @@ package com.giyo.chdfs;
 import com.qcloud.cos.endpoint.EndpointBuilder;
 import com.qcloud.cos.region.Region;
 
+/**
+ * COS EndpointBuilder 的自定义实现：按 region + domain 拼接生成 Endpoint。
+ */
 public class SelfDefinedEndpointBuilder implements EndpointBuilder {
 	private String region;
 

@@ -24,6 +24,9 @@ import com.qcloud.cos.endpoint.EndpointBuilder;
 import com.qcloud.cos.internal.BucketNameUtils;
 import com.qcloud.cos.region.Region;
 
+/**
+ * COS EndpointBuilder 的自定义实现：根据 Region 构造 KMS 专用域名。
+ */
 public class RegionKmsEndpointBuilder implements EndpointBuilder {
     private Region region;
 

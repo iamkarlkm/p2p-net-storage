@@ -22,6 +22,11 @@ import javax.net.p2p.utils.P2PUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
 
+/**
+ * COS 分片下载处理器：负责下载单个分片并写入目标文件。
+ *
+ * <p>作为 Runnable 在多线程下载时被调度执行。</p>
+ */
 public class CosFileSegmentsGetProcessor implements Runnable {
 
 

@@ -13,6 +13,11 @@ import javax.net.p2p.utils.P2PCosUtils;
 import javax.net.p2p.utils.P2PUtils;
 import javax.net.p2p.utils.SecurityUtils;
 
+/**
+ * COS 分片上传处理器：负责读取单个分片并上传到 COS。
+ *
+ * <p>作为 Runnable 在多线程上传时被调度执行。</p>
+ */
 public class CosFileSegmentsPutProcessor implements Runnable {
 
 	
@@ -81,4 +86,3 @@ public class CosFileSegmentsPutProcessor implements Runnable {
 	
 
 }
-
