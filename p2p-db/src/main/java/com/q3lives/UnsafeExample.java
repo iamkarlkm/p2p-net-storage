@@ -4,6 +4,15 @@ import sun.misc.Unsafe;
 
 import java.lang.reflect.Field;
 
+/**
+ * 使用 Unsafe 的演示代码。
+ *
+ * <p>该类包含两部分：</p>
+ * <ul>
+ *   <li>main：演示最高位 bit 的计算</li>
+ *   <li>main1：演示堆外内存分配/读写/释放（需要反射获取 Unsafe）</li>
+ * </ul>
+ */
 public class UnsafeExample {
 
     public static void main(String[] args) {

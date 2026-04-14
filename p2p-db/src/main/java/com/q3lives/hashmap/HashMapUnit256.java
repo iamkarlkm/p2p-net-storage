@@ -9,6 +9,11 @@ import java.util.Set;
 import java.util.Map.Entry;
 //public class MyMapUnit64<K extends HashCode64,V> implements Serializable{
 
+/**
+ * 基于分层 hash（按 byte 分段）实现的实验性 Map 单元（256 路分叉）。
+ *
+ * <p>该类主要用于性能/冲突处理实验，不参与 ds 存储主流程。</p>
+ */
 public class HashMapUnit256<K, V> implements Serializable {
 
     /**

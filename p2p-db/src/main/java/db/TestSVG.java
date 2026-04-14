@@ -9,6 +9,11 @@ import org.apache.batik.transcoder.TranscoderInput;
 import org.apache.batik.transcoder.TranscoderOutput;
 import org.apache.batik.transcoder.image.PNGTranscoder;
 
+/**
+ * 使用 Apache Batik 将 SVG/TIFF 等资源转码为 PNG 的示例。
+ *
+ * <p>该文件为演示/实验用途，不参与 ds 存储主流程。</p>
+ */
 public class TestSVG {
     String filePath="";
     TestSVG(String filePath) throws Exception {

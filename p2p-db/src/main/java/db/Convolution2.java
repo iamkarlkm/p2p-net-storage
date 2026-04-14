@@ -8,6 +8,11 @@ import java.io.File;
 import java.util.Arrays;
 // import org.apache.commons.lang3.ArrayUtils;
 
+/**
+ * 纯 Java 的卷积/图像处理实验代码。
+ *
+ * <p>该文件为演示/实验用途，不参与 ds 存储主流程。</p>
+ */
 public class Convolution2 {
 
 	/**

@@ -4,7 +4,7 @@
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>com.q3lives</groupId>
-        <artifactId>ImageFileServer</artifactId>
+        <artifactId>P2PStorageSystem</artifactId>
         <version>1.0.0</version>
     </parent>
     <artifactId>p2p-db</artifactId>
@@ -17,7 +17,6 @@
         <dependency>
             <groupId>junit</groupId>
             <artifactId>junit</artifactId>
-            <version>4.13.2</version>
             <scope>test</scope>
         </dependency>
         <dependency>
@@ -118,6 +117,12 @@
             <groupId>com.alibaba.fastffi</groupId>
             <artifactId>llvm4jni-runtime</artifactId>
             <version>${fastffi.revision}</version>
+        </dependency>
+        <dependency>
+            <groupId>dev.zio</groupId>
+            <artifactId>zio-logging-slf4j_3</artifactId>
+            <version>2.5.0</version>
+            <type>jar</type>
         </dependency>
     </dependencies>
 

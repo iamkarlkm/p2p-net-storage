@@ -1,5 +1,6 @@
 package ds;
 
+import com.q3lives.ds.collections.DsHashMap;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -19,10 +20,24 @@ public class DsHashMapTest {
     public void setUp() throws Exception {
         // 创建临时测试文件
         dataFile = new File("test_dshashmap.dat");
-        if (dataFile.exists()) {
-            dataFile.delete();
-        }
+        deleteWithSidecars(dataFile);
         dsHashMap = new DsHashMap(dataFile);
+    }
+
+    private static void deleteWithSidecars(File f) {
+        File[] files = new File[] {
+                f,
+                new File(f.getAbsolutePath() + ".k16"),
+                new File(f.getAbsolutePath() + ".k32"),
+                new File(f.getAbsolutePath() + ".k64"),
+                new File(f.getAbsolutePath() + ".m32"),
+                new File(f.getAbsolutePath() + ".m64")
+        };
+        for (File x : files) {
+            if (x.exists()) {
+                x.delete();
+            }
+        }
     }
 
     @After
@@ -51,12 +66,12 @@ public class DsHashMapTest {
     @Test
     public void testRemove() throws Exception {
         dsHashMap.put(50L, 500L);
-        assertTrue("应该包含key=50", dsHashMap.containsKey(50L));
+        assertNotNull("应该包含key=50", dsHashMap.get(50L));
 
         boolean removed = dsHashMap.remove(50L);
         assertTrue("移除应该成功", removed);
 
-        assertFalse("移除后不应该包含key=50", dsHashMap.containsKey(50L));
+        assertNull("移除后不应该包含key=50", dsHashMap.get(50L));
         assertNull("移除后获取应该返回null", dsHashMap.get(50L));
 
         boolean removedAgain = dsHashMap.remove(50L);
@@ -65,36 +80,34 @@ public class DsHashMapTest {
 
     @Test
     public void testContainsKey() throws Exception {
-        assertFalse("空Map不应该包含任意key", dsHashMap.containsKey(99L));
+        assertNull("空Map不应该包含任意key", dsHashMap.get(99L));
         dsHashMap.put(99L, 999L);
-        assertTrue("插入后应该包含key", dsHashMap.containsKey(99L));
+        assertNotNull("插入后应该包含key", dsHashMap.get(99L));
     }
 
     @Test
     public void testHashCollision() throws Exception {
-        // level 0: shift 0, mask 0xf. (bits 0-3)
-        // level 1: shift 4, mask 0xffc. (bits 6-15 effectively, because bottom 2 bits of shifted are 0)
-        // 1L = 1. level 0 hash = 1. level 1 hash = 0.
-        // 65L = 64 + 1. level 0 hash = 1. level 1 hash = (65 >>> 4) & 0xffc = 4 & 0xffc = 4.
-        // 129L = 128 + 1. level 0 hash = 1. level 1 hash = (129 >>> 4) & 0xffc = 8 & 0xffc = 8.
-        
+        // DsHashMap uses an 8-level 256-ary trie based on little-endian bytes of the long key.
+        // 1L      -> bytes[0]=1, bytes[1]=0
+        // 257L    -> bytes[0]=1, bytes[1]=1
+        // 513L    -> bytes[0]=1, bytes[1]=2
         dsHashMap.put(1L, 10L);
-        dsHashMap.put(65L, 650L);
-        dsHashMap.put(129L, 1290L);
+        dsHashMap.put(257L, 2570L);
+        dsHashMap.put(513L, 5130L);
 
         assertEquals("获取冲突的key=1应该成功", 10L, dsHashMap.get(1L).longValue());
-        assertEquals("获取冲突的key=65应该成功", 650L, dsHashMap.get(65L).longValue());
-        assertEquals("获取冲突的key=129应该成功", 1290L, dsHashMap.get(129L).longValue());
+        assertEquals("获取冲突的key=257应该成功", 2570L, dsHashMap.get(257L).longValue());
+        assertEquals("获取冲突的key=513应该成功", 5130L, dsHashMap.get(513L).longValue());
 
-        assertTrue("应该包含所有冲突的key", dsHashMap.containsKey(1L));
-        assertTrue("应该包含所有冲突的key", dsHashMap.containsKey(65L));
-        assertTrue("应该包含所有冲突的key", dsHashMap.containsKey(129L));
+        assertNotNull("应该包含所有冲突的key", dsHashMap.get(1L));
+        assertNotNull("应该包含所有冲突的key", dsHashMap.get(257L));
+        assertNotNull("应该包含所有冲突的key", dsHashMap.get(513L));
 
-        dsHashMap.remove(65L);
-        assertFalse("移除后不应包含key=65", dsHashMap.containsKey(65L));
-        assertNull("移除后获取应为null", dsHashMap.get(65L));
+        dsHashMap.remove(257L);
+        assertNull("移除后不应包含key=257", dsHashMap.get(257L));
+        assertNull("移除后获取应为null", dsHashMap.get(257L));
         
         assertEquals("移除中间节点不影响其他冲突节点", 10L, dsHashMap.get(1L).longValue());
-        assertEquals("移除中间节点不影响其他冲突节点", 1290L, dsHashMap.get(129L).longValue());
+        assertEquals("移除中间节点不影响其他冲突节点", 5130L, dsHashMap.get(513L).longValue());
     }
 }

@@ -9,6 +9,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Map.Entry;
 
+/**
+ * 基于分层 hash 的实验性 Set 单元（256 桶，最多 4 层）。
+ *
+ * <p>该类主要用于结构/冲突处理实验，不参与 ds 存储主流程。</p>
+ */
 public class MySetUnit<K> implements Serializable {
 
     /**

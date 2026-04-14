@@ -12,6 +12,11 @@ import java.io.UnsupportedEncodingException;
 import static org.bytedeco.opencv.global.opencv_imgcodecs.imread;
 import static org.bytedeco.opencv.global.opencv_imgproc.putText;
 
+/**
+ * JavaCV/OpenCV 的快速验证代码（读取图片并进行绘制/显示等操作）。
+ *
+ * <p>该文件为演示/实验用途，不参与 ds 存储主流程。</p>
+ */
 public class QuickTest {
 	//static { Loader.load(); }
 	

@@ -1,5 +1,6 @@
 package ds;
 
+import com.q3lives.ds.kv.DsKVStore;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -47,7 +48,8 @@ public class DsKVStoreTest {
         String value = "Hello, DsKVStore!";
 
         // 写入数据
-        kvStore.put(key, value);
+        long indexId = kvStore.put(key, value);
+        assertTrue(indexId > 0);
         assertTrue(kvStore.containsKey(key));
         assertEquals(1, kvStore.size());
 

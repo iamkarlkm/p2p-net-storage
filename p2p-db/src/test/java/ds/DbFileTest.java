@@ -1,5 +1,7 @@
 package ds;
 
+import com.q3lives.ds.fs.FileMetadata;
+import com.q3lives.ds.legacy.db.DbFile;
 import org.junit.Before;
 import org.junit.Test;
 import java.io.File;

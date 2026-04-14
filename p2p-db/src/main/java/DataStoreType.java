@@ -1,3 +1,8 @@
+/**
+ * 存储系统内部使用的数据类型枚举（用于标识不同数据结构/元数据分类）。
+ *
+ * <p>注意：该文件位于 default package（无 package 声明），主要用于实验/演示。</p>
+ */
 public enum DataStoreType {
     MFT(1),
     Mirror(2),

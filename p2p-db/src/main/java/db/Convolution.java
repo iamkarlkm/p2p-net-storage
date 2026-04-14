@@ -22,6 +22,11 @@ import static org.opencv.imgproc.Imgproc.INTER_LINEAR;
 import static org.opencv.imgproc.Imgproc.INTER_MAX;
 // import org.apache.commons.lang3.ArrayUtils;
 
+/**
+ * 图像卷积/降采样相关的实验代码（包含 OpenCV 调用与自定义汇总函数）。
+ *
+ * <p>该文件为演示/实验用途，不参与 ds 存储主流程。</p>
+ */
 public class Convolution {
 
 

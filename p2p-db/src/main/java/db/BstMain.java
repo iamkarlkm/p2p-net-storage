@@ -1,5 +1,8 @@
 package db;
 
+/**
+ * 二叉搜索树节点（示例代码）。
+ */
 class TreeNode {
     int val;
     TreeNode left;
@@ -12,6 +15,9 @@ class TreeNode {
     }
 }
 
+/**
+ * 二叉搜索树实现（仅包含 insert 示例）。
+ */
 class BinarySearchTree {
     TreeNode root;
 
@@ -35,6 +41,11 @@ class BinarySearchTree {
     }
 }
 
+/**
+ * 二叉搜索树构建示例入口。
+ *
+ * <p>该文件为演示/实验用途，不参与 ds 存储主流程。</p>
+ */
 public class BstMain {
     public static void main(String[] args) {
         int[] arr = {10, 5, 15, 3, 7, 12, 18};

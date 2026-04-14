@@ -1,5 +1,9 @@
 
-// 实现简单的只读文件系统
+/**
+ * 基于 Dokan 的只读文件系统最小示例。
+ *
+ * <p>该文件为演示/实验用途，不参与 ds 存储主流程。</p>
+ */
 public class SimpleReadOnlyFileSystem {
     public static void main(String[] args) {
         DokanLibrary.DOKAN_OPTIONS options = new DokanLibrary.DOKAN_OPTIONS();

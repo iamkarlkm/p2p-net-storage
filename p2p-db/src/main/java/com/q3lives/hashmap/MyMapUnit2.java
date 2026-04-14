@@ -8,6 +8,11 @@ import java.util.List;
 import java.util.Set;
 import java.util.Map.Entry;
 
+/**
+ * 基于分层 hash（每层取 4bit）实现的实验性 Map 单元。
+ *
+ * <p>该类主要用于结构/冲突处理实验，不参与 ds 存储主流程。</p>
+ */
 public class MyMapUnit2<K, V> implements Serializable {
 
     /**

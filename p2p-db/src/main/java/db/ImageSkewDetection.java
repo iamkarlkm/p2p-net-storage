@@ -12,6 +12,11 @@ import java.util.List;
 
 import static org.opencv.core.CvType.CV_8UC1;
 
+/**
+ * 基于 OpenCV 的图像倾斜检测与校正示例。
+ *
+ * <p>该文件为演示/实验用途，不参与 ds 存储主流程。</p>
+ */
 public class ImageSkewDetection {
 
     public static Mat detectAndCorrectSkew(Mat image) {

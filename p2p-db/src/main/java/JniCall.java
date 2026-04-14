@@ -1,3 +1,8 @@
+/**
+ * JNI 调用示例（声明 native 方法并提供 main 测试入口）。
+ *
+ * <p>该文件为演示/实验用途，不参与 ds 存储主流程。</p>
+ */
 public class JniCall {
 
     public native void callJava();

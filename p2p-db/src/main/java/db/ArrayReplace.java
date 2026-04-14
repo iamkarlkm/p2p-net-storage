@@ -5,6 +5,11 @@ import java.util.Arrays;
 
 
 
+/**
+ * 有序数组替换/插入的示例代码（基于二分查找定位并通过移位维持有序）。
+ *
+ * <p>该文件为演示/实验用途，不参与 ds 存储主流程。</p>
+ */
 public class ArrayReplace {
 	
 	public static void main(String[] args) {

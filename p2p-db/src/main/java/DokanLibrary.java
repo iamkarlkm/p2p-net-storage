@@ -8,7 +8,11 @@ import com.sun.jna.win32.StdCallLibrary;
 import java.util.Arrays;
 import java.util.List;
 
-// 定义 Dokan 库接口
+/**
+ * Dokan (Windows) 的 JNA 绑定接口。
+ *
+ * <p>提供 DokanMain 入口与所需的 Options/Operations 结构体定义。</p>
+ */
 public interface DokanLibrary extends StdCallLibrary {
     DokanLibrary INSTANCE = Native.load("dokan2.dll", DokanLibrary.class);
 

@@ -18,6 +18,11 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URL;
 
+/**
+ * OpenCV 图像处理工具/示例（显示、缩放、灰度转换等）。
+ *
+ * <p>该文件为演示/实验用途，不参与 ds 存储主流程。</p>
+ */
 public class OpenCVImage {
 	public static void loadDll() {
 		// 解决awt报错问题

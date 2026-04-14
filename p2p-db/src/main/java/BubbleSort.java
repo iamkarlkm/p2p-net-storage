@@ -1,6 +1,11 @@
 
 import java.util.Arrays;
 
+/**
+ * 简单的冒泡排序示例（包含全量排序与子数组排序）。
+ *
+ * <p>该文件为演示/测试用途，不参与 ds 存储主流程。</p>
+ */
 public class BubbleSort {
     public static void main(String[] args) {
         int[] arr = { 5, 2, 8, 7, 1 };
