@@ -28,6 +28,9 @@ import io.netty.channel.MessageSizeEstimator;
 import io.netty.channel.RecvByteBufAllocator;
 import io.netty.channel.WriteBufferWaterMark;
 import io.netty.channel.socket.ServerSocketChannelConfig;
+/**
+ * MBUDPServerChannelConfig。
+ */
 
 public class MBUDPServerChannelConfig extends DefaultChannelConfig implements ServerSocketChannelConfig 
 {

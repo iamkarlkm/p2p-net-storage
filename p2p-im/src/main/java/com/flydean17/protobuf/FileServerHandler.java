@@ -11,6 +11,9 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.stream.ChunkedFile;
 import java.io.RandomAccessFile;
+/**
+ * FileServerHandler。
+ */
 
 public class FileServerHandler extends SimpleChannelInboundHandler<String> {
 

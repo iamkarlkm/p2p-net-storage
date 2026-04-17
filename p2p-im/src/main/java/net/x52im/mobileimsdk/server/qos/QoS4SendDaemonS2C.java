@@ -15,7 +15,9 @@
  * QoS4SendDaemonS2C.java at 2023-9-21 15:24:55, code by Jack Jiang.
  */
 package net.x52im.mobileimsdk.server.qos;
-
+/**
+ * QoS4SendDaemonS2C。
+ */
 public class QoS4SendDaemonS2C extends QoS4SendDaemonRoot
 {
 	private static volatile QoS4SendDaemonS2C instance = null;

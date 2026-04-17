@@ -821,14 +821,14 @@ public class DbString {
             }
             
             // fallback to nextOffset
-            headerOpLock.lock();
+            headerOpLockWrite.lock();
             try {
                 long offset = nextOffset;
                 nextOffset += unitSize;
                 headerBuffer.putLong(8, nextOffset);
                 return offset;
             } finally {
-                headerOpLock.unlock();
+                headerOpLockWrite.unlock();
             }
         }
 
@@ -925,12 +925,12 @@ public class DbString {
          */
         public long add(byte[] data) throws IOException {
             long offset = allocateOffset();
-            headerOpLock.lock();
+            headerOpLockWrite.lock();
             try {
                 writeBytes(offset, data);
                 return offset;
             } finally {
-                headerOpLock.unlock();
+                headerOpLockWrite.unlock();
             }
         }
         

@@ -7,6 +7,7 @@ import javax.net.p2p.common.pool.ClonePooledObjects;
 import javax.net.p2p.common.AbstractSendMesageExecutor;
 import javax.net.p2p.common.ExecutorServicePool;
 import javax.net.p2p.common.pool.ClonePooledableAdapter;
+import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.CancelP2PWrapper;
 import javax.net.p2p.model.P2PWrapper;
@@ -32,6 +33,7 @@ public abstract class AbstractLongTimedRequestAdapter extends ClonePooledableAda
     protected P2PWrapper request;
 
     Future future = null;
+    protected volatile boolean canceled = false;
    
 
     @Override
@@ -40,9 +42,17 @@ public abstract class AbstractLongTimedRequestAdapter extends ClonePooledableAda
             //log.info("AbstractLongTimedRequestAdapter \n run  -> request:{}", request);
             P2PWrapper response = process(request);
 //            log.info("AbstractLongTimedRequestAdapter  \n return  -> response:{}", response);
-            executor.sendResponse(response);
+            if (!canceled) {
+                executor.sendResponse(response);
+            }
         } catch (InterruptedException ex) {
-            log.error("request:{}  -> exception:{}", request, ex.getMessage());
+            try {
+                canceled = true;
+                if (executor != null && request != null) {
+                    executor.sendResponse(P2PWrapper.build(request.getSeq(), P2PCommand.STD_CANCEL, "canceled"));
+                }
+            } catch (Exception ignored) {
+            }
         }finally{
             release();//回归对象池
         }
@@ -55,6 +65,7 @@ public abstract class AbstractLongTimedRequestAdapter extends ClonePooledableAda
         this.executor = null;
         future = FUTURE_MAP.remove(request.getSeq());
         this.request = null;
+        canceled = false;
     }
    
     @Override
@@ -92,10 +103,19 @@ public abstract class AbstractLongTimedRequestAdapter extends ClonePooledableAda
     public void asyncProcess(P2PWrapper request) {
         try {
 //            log.info("AbstractLongTimedRequestAdapter:{} \n -> request:{}", handler, request);
-            if (request instanceof CancelP2PWrapper) {
+            boolean isCancel = request instanceof CancelP2PWrapper;
+            if (!isCancel) {
+                P2PCommand cmd = request.getCommand();
+                isCancel = cmd == P2PCommand.STD_CANCEL || cmd == P2PCommand.STD_STOP;
+            }
+            if (isCancel) {
+                canceled = true;
                 Future f = FUTURE_MAP.remove(request.getSeq());
-                if(f!=null){
+                if (f != null) {
                     f.cancel(true);
+                }
+                if (executor != null) {
+                    executor.sendResponse(P2PWrapper.build(request.getSeq(), P2PCommand.STD_CANCEL, "canceled"));
                 }
             }
             

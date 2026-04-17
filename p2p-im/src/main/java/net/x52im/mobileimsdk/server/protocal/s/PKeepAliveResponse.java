@@ -15,7 +15,9 @@
  * PKeepAliveResponse.java at 2023-9-21 15:24:54, code by Jack Jiang.
  */
 package net.x52im.mobileimsdk.server.protocal.s;
-
+/**
+ * PKeepAliveResponse。
+ */
 public class PKeepAliveResponse
 {
 

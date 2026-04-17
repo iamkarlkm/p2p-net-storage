@@ -1,0 +1,2 @@
+C:\msys64\mingw64\bin\ar.exe qc libp2pws_c.a CMakeFiles/p2pws_c.dir/src/p2p_ws.c.obj CMakeFiles/p2pws_c.dir/src/p2pws_buf.c.obj CMakeFiles/p2pws_c.dir/src/p2pws_pb.c.obj CMakeFiles/p2pws_c.dir/src/p2pws_ws.c.obj CMakeFiles/p2pws_c.dir/src/p2pws_crypto.c.obj CMakeFiles/p2pws_c.dir/src/p2pws_yaml.c.obj CMakeFiles/p2pws_c.dir/src/p2pws_messages.c.obj CMakeFiles/p2pws_c.dir/src/p2pws_fs.c.obj
+C:\msys64\mingw64\bin\ranlib.exe libp2pws_c.a

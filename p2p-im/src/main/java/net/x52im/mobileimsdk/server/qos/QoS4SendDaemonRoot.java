@@ -32,6 +32,9 @@ import net.x52im.mobileimsdk.server.utils.LocalSendHelper;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+/**
+ * QoS4SendDaemonRoot。
+ */
 
 public class QoS4SendDaemonRoot
 {

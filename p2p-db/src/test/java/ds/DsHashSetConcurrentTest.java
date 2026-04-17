@@ -1,6 +1,6 @@
 package ds;
 
-import com.q3lives.ds.collections.DsHashSet;
+import com.q3lives.ds.collections.DsHashSetI64;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -17,7 +17,7 @@ import static org.junit.Assert.*;
 
 public class DsHashSetConcurrentTest {
 
-    private DsHashSet dsHashSet;
+    private DsHashSetI64 dsHashSet;
     private File dataFile;
 
     @Before
@@ -26,7 +26,7 @@ public class DsHashSetConcurrentTest {
         if (dataFile.exists()) {
             dataFile.delete();
         }
-        dsHashSet = new DsHashSet(dataFile);
+        dsHashSet = new DsHashSetI64(dataFile);
     }
 
     @After

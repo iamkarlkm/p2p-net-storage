@@ -1,5 +1,6 @@
 package ds.cache;
 
+import com.q3lives.ds.cache.RedisStringCache;
 import java.io.File;
 import org.junit.Before;
 import org.junit.Test;

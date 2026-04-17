@@ -28,6 +28,9 @@ import net.x52im.mobileimsdk.server.processor.OnlineProcessor;
 import net.x52im.mobileimsdk.server.protocal.CharsetHelper;
 import net.x52im.mobileimsdk.server.protocal.Protocal;
 import net.x52im.mobileimsdk.server.protocal.ProtocalFactory;
+/**
+ * ServerToolKits。
+ */
 
 public class ServerToolKits
 {	

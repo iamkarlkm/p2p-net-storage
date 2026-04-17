@@ -5,6 +5,7 @@ import io.protostuff.LinkedBuffer;
 import io.protostuff.ProtostuffIOUtil;
 import io.protostuff.Schema;
 import io.protostuff.runtime.RuntimeSchema;
+import java.io.Serializable;
 
 import java.util.Collection;
 import java.util.HashSet;

@@ -18,6 +18,11 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import lombok.extern.slf4j.Slf4j;
 
+/**
+ * 基于 NIO WatchService 的目录监听服务。
+ *
+ * <p>支持 include/exclude 规则与线程池调度，用于触发后续同步处理。</p>
+ */
 @Slf4j
 public class FilesWatchService {
 

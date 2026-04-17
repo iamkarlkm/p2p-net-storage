@@ -9,7 +9,7 @@ import java.util.Arrays;
 import javax.net.p2p.utils.SecurityUtils;
 
 /**
- *
+ * 文件上传下载分段。
  * @author karl
  */
 public class FileSegmentsDataModel {

@@ -27,7 +27,9 @@ import net.x52im.mobileimsdk.server.utils.ServerToolKits;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+/**
+ * MBTCPClientInboundHandler。
+ */
 public class MBTCPClientInboundHandler extends SimpleChannelInboundHandler<ByteBuf>
 {
 	private static Logger logger = LoggerFactory.getLogger(MBTCPClientInboundHandler.class); 

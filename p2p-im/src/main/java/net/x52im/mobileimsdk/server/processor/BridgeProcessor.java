@@ -24,7 +24,9 @@ import net.x52im.mobileimsdk.server.utils.LocalSendHelper;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+/**
+ * BridgeProcessor。
+ */
 public abstract class BridgeProcessor // extends MQProvider
 {
 	private static Logger logger = LoggerFactory.getLogger(BridgeProcessor.class);  

@@ -32,6 +32,9 @@ import io.netty.channel.EventLoop;
 import io.netty.channel.socket.DatagramPacket;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.internal.RecyclableArrayList;
+/**
+ * MBUDPChannel。
+ */
 
 public class MBUDPChannel extends AbstractChannel 
 {

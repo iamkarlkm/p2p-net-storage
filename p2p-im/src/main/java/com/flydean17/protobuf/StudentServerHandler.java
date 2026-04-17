@@ -19,7 +19,9 @@ import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import lombok.extern.slf4j.Slf4j;
-
+/**
+ * StudentServerHandler。
+ */
 @Slf4j
 public class StudentServerHandler extends SimpleChannelInboundHandler<Student> {
 

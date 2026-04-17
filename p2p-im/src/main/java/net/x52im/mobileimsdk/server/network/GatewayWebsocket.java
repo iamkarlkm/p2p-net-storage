@@ -38,6 +38,9 @@ import net.x52im.mobileimsdk.server.network.websocket.MBWebsocketClientInboundHa
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+/**
+ * GatewayWebsocket。
+ */
 
 public class GatewayWebsocket extends Gateway
 {

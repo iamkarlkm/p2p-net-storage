@@ -1,7 +1,7 @@
 /*
  * Copyright (C) 2023  即时通讯网(52im.net) & Jack Jiang.
  * The MobileIMSDK v6.4 Project. 
- * All rights reserved.
+ * Allrights reserved.
  * 
  * > Github地址：https://github.com/JackJiang2011/MobileIMSDK
  * > 文档地址：  http://www.52im.net/forum-89-1.html
@@ -17,7 +17,9 @@
 package net.x52im.mobileimsdk.server.protocal;
 
 import java.io.UnsupportedEncodingException;
-
+/**
+ * CharsetHelper。
+ */
 public class CharsetHelper
 {
 	public final static String ENCODE_CHARSET = "UTF-8";

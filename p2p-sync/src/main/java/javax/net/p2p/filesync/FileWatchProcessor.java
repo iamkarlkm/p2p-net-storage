@@ -10,6 +10,11 @@ import java.nio.channels.FileLock;
 import java.nio.file.Path;
 import lombok.extern.slf4j.Slf4j;
 
+/**
+ * 文件变更处理器：在收到文件事件后尝试以共享锁探测文件是否仍在写入中。
+ *
+ * <p>用于过滤“文件正在被写入”导致的连续变更事件。</p>
+ */
 @Slf4j
 public class FileWatchProcessor implements Runnable {
 		private final Path path;

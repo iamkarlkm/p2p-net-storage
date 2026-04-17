@@ -32,6 +32,9 @@ import net.x52im.mobileimsdk.server.network.udp.MBUDPServerChannel;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+/**
+ * GatewayUDP。
+ */
 
 public class GatewayUDP extends Gateway
 {

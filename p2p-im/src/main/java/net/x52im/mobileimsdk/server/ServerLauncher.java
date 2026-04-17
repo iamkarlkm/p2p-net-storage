@@ -29,6 +29,9 @@ import net.x52im.mobileimsdk.server.qos.QoS4SendDaemonS2C;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+/**
+ * ServerLauncher。
+ */
 
 public abstract class ServerLauncher 
 {

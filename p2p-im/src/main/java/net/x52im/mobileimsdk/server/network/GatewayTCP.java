@@ -36,6 +36,9 @@ import net.x52im.mobileimsdk.server.network.tcp.MBTCPClientInboundHandler;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+/**
+ * GatewayTCP。
+ */
 
 public class GatewayTCP extends Gateway
 {

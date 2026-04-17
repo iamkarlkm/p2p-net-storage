@@ -14,7 +14,9 @@
  * under the License.
  */
 package com.flydean17.protobuf;
-
+/**
+ * StudentOuterClass。
+ */
 public final class StudentOuterClass {
   private StudentOuterClass() {}
   public static void registerAllExtensions(

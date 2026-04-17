@@ -119,6 +119,30 @@ public class P2PConfig {
         return bundle.getString(key);
     }
 
+    public static String getOptionalProperty(String key) {
+        String v = SystemPropertyUtil.get(key);
+        if (v != null && !v.isBlank()) {
+            return v.trim();
+        }
+        v = System.getenv(key.toUpperCase().replace('.', '_'));
+        if (v != null && !v.isBlank()) {
+            return v.trim();
+        }
+        ResourceBundle b = bundle;
+        if (b == null) {
+            return null;
+        }
+        try {
+            v = b.getString(key);
+            if (v == null || v.isBlank()) {
+                return null;
+            }
+            return v.trim();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     public static String getUploadPath() {
         return bundle.getString("upload.root.path");
     }

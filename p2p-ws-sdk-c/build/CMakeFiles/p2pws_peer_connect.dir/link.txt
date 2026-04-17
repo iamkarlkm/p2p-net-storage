@@ -1,0 +1,3 @@
+C:\msys64\mingw64\bin\cmake.exe -E rm -f CMakeFiles\p2pws_peer_connect.dir/objects.a
+C:\msys64\mingw64\bin\ar.exe qc CMakeFiles\p2pws_peer_connect.dir/objects.a @CMakeFiles\p2pws_peer_connect.dir\objects1.rsp
+C:\msys64\mingw64\bin\gcc.exe -Wl,--whole-archive CMakeFiles\p2pws_peer_connect.dir/objects.a -Wl,--no-whole-archive -o p2pws_peer_connect.exe -Wl,--out-implib,libp2pws_peer_connect.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\p2pws_peer_connect.dir\linkLibs.rsp

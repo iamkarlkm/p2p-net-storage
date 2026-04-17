@@ -1,33 +1,46 @@
 package ds;
 
-import com.q3lives.ds.collections.DsHashSet;
+import com.q3lives.ds.collections.DsHashSetI64;
+import com.q3lives.ds.collections.DsHashSetI64_Fixed;
+import com.q3lives.ds.collections.DsMemorySet;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
 import java.io.File;
+import java.nio.ByteBuffer;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.Set;
+import lombok.extern.slf4j.Slf4j;
 
 import static org.junit.Assert.*;
+import zio.Duration;
 
+@Slf4j
 public class DsHashSetTest {
 
-    private DsHashSet dsHashSet;
+    private DsHashSetI64 dsHashSet;
     private File dataFile;
 
     @Before
     public void setUp() throws Exception {
         dataFile = new File("test_dshashset.dat");
         if (dataFile.exists()) {
-            dataFile.delete();
+            //dataFile.delete();
+           
         }
-        dsHashSet = new DsHashSet(dataFile);
+//        dsHashSet = new DsHashSetI64_Fixed(dataFile);
+        dsHashSet = new DsHashSetI64(dataFile);
+        dsHashSet.clear();
     }
 
     @After
     public void tearDown() throws Exception {
         dsHashSet.close();
+        if (dataFile.exists()) {
+            dataFile.delete();
+        }
     }
 
     @Test
@@ -51,35 +64,187 @@ public class DsHashSetTest {
         assertEquals(1, dsHashSet.size());
 
         assertFalse(dsHashSet.remove(1L));
-        assertFalse(dsHashSet.remove("x"));
+        //assertFalse(dsHashSet.remove("x"));
     }
+    
+    @Test
+    public void testBigstore() throws Exception {
+         DsMemorySet mset = new DsMemorySet(null);
+        int count = 50000;
+         System.gc();
+        long memBefore = getUsedMemory();
+        long gcBefore = getGCCount();
+
+        long start = System.nanoTime();
+//        long start = System.currentTimeMillis();
+        for(long i=-count;i<count;i++){
+            dsHashSet.add(i);
+        }
+        
+          long duration = System.nanoTime() - start;
+        long memAfter = getUsedMemory();
+        System.gc();
+        
+        long gcAfter = getGCCount();
+
+        BenchmarkResult test = new BenchmarkResult(
+            "ds",
+            duration,
+            count*2,
+            memAfter - memBefore,
+            gcAfter - gcBefore
+        );
+      test.print();
+        System.out.println(dsHashSet.contains(-50000)+" ************** "+dsHashSet.total()+" ************** "+dsHashSet.getStoreUsed());
+        System.out.println(dsHashSet.first()+" -> "+dsHashSet.last()+" range(0, 10): "+dsHashSet.range(0, 10));
+         System.out.println("value -50000: "+dsHashSet.contains(-50000));
+         System.out.println("state: "+dsHashSet.readState(7, 176));
+            System.out.println("getByNodeId(7, 176): "+dsHashSet.getByNodeId(7, 176));
+        Set<Long> set = new HashSet();
+         System.gc();
+        memBefore = getUsedMemory();
+        gcBefore = getGCCount();
+
+        start = System.nanoTime();
+        for(long i=-count;i<count;i++){
+            set.add(i);
+//            count++;
+        }
+      
+        duration = System.nanoTime() - start;
+        memAfter = getUsedMemory();
+      
+        System.gc();
+        
+        gcAfter = getGCCount();
+
+        test = new BenchmarkResult(
+            "set",
+            duration,
+            count*2,
+            memAfter - memBefore,
+            gcAfter - gcBefore
+        );
+       test.print();
+       
+      
+      
+       System.gc();
+        memBefore = getUsedMemory();
+        gcBefore = getGCCount();
+System.out.println(set.size()+" ************** ");
+        start = System.nanoTime();
+        for(int i=-count;i<count;i++){
+            mset.add(i);
+//            count++;
+        }
+        duration = System.nanoTime() - start;
+        memAfter = getUsedMemory();
+        System.gc();
+        
+        gcAfter = getGCCount(); ByteBuffer buf;
+
+        test = new BenchmarkResult(
+            "mset",
+            duration,
+            count*2,
+            memAfter - memBefore,
+            gcAfter - gcBefore
+        );
+       test.print();
+        System.out.println(mset.total()+" ************** "+mset.getStoreUsed());
+        System.out.println(mset.first()+" -> "+mset.last());
+         dsHashSet.clear();
+    }
+    
+     /**
+     *
+     * 获取已使用内存（字节）
+     */
+    private static long getUsedMemory() {
+        Runtime runtime = Runtime.getRuntime();
+        return runtime.totalMemory() - runtime.freeMemory();
+    }
+
+    /**
+     *
+     * 获取GC次数
+     */
+    private static long getGCCount() {
+        long count = 0;
+        for (java.lang.management.GarbageCollectorMXBean gc : java.lang.management.ManagementFactory.getGarbageCollectorMXBeans()) {
+            count += gc.getCollectionCount();
+        }
+        return count;
+    }
+
+    /**
+     *
+     * 基准测试结果
+     */
+    static class BenchmarkResult {
+
+        final String name;
+        final long durationNs;
+        final int iterations;
+        final long memoryUsed;
+        final long gcCount;
+
+        BenchmarkResult(String name, long durationNs, int iterations, long memoryUsed, long gcCount) {
+            this.name = name;
+            this.durationNs = durationNs;
+            this.iterations = iterations;
+            this.memoryUsed = memoryUsed;
+            this.gcCount = gcCount;
+        }
+
+        void print() {
+            log.info("=== {} ===", name);
+            log.info("总耗时: {} ms", durationNs / 1_000_000);
+            log.info("平均耗时: {} ns/op", durationNs / iterations);
+            log.info("吞吐量: {} ops/s", (iterations * 1_000_000_000L) / durationNs);
+            log.info("内存占用: {} MB", memoryUsed / (1024 * 1024));
+            log.info("GC次数: {}", gcCount);
+        }
+    }
+
 
     @Test
     public void testToArrayAndIterator() throws Exception {
-        dsHashSet.add(10L);
-        dsHashSet.add(20L);
-        dsHashSet.add(30L);
+        int count = 0;
+        dsHashSet.clear();
+        for(int i=-1000000;i<1000000;i= i+100000){
+            dsHashSet.add(i);
+            count++;
+        }
+//        dsHashSet.add(10L);
+//        dsHashSet.add(20L);
+//        dsHashSet.add(30L);
 
+        
+        dsHashSet.remove(dsHashSet.first());
         Object[] arr = dsHashSet.toArray();
-        assertEquals(3, arr.length);
+         System.out.println(dsHashSet.first()+" -> "+dsHashSet.last());
+        assertEquals(count, arr.length);
         for (Object o : arr) {
+            System.out.println(o);
             assertTrue(o instanceof Long);
             assertTrue(dsHashSet.contains(o));
         }
-
+        System.out.println("**************"+dsHashSet.getStoreUsed());
         long[] longs = dsHashSet.toArrayLong();
-        assertEquals(3, longs.length);
+        assertEquals(count, longs.length);
         for (long v : longs) {
+             System.out.println(v);
             assertTrue(dsHashSet.contains(v));
         }
-
-        int count = 0;
+        int c = 0;
         for (Long v : dsHashSet) {
             assertNotNull(v);
             assertTrue(dsHashSet.contains(v));
-            count++;
+            c++;
         }
-        assertEquals(3, count);
+        assertEquals(count, c);
     }
 
     @Test

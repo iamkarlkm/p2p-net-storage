@@ -1,6 +1,6 @@
 package ds;
 
-import com.q3lives.ds.util.DsString;
+import com.q3lives.ds.core.DsString;
 import java.io.File;
 import org.junit.Test;
 import static org.junit.Assert.*;

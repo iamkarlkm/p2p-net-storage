@@ -15,7 +15,9 @@
  * QoS4ReciveDaemonC2S.java at 2023-9-21 15:24:55, code by Jack Jiang.
  */
 package net.x52im.mobileimsdk.server.qos;
-
+/**
+ * QoS4ReciveDaemonC2S。
+ */
 public class QoS4ReciveDaemonC2S extends QoS4ReciveDaemonRoot
 {
 	private static volatile QoS4ReciveDaemonC2S instance = null;

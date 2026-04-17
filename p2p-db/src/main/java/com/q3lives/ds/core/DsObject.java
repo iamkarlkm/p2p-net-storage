@@ -1,5 +1,7 @@
 package com.q3lives.ds.core;
 
+import static com.q3lives.ds.core.DsMemory.BLOCK_SIZE;
+import com.q3lives.ds.fs.Ds128SuperInode;
 import jdk.internal.access.foreign.UnmapperProxy;
 
 import java.io.ByteArrayInputStream;
@@ -26,57 +28,77 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-
 /**
  * 基于内存映射文件(Memory Mapped Files, MappedByteBuffer)的持久化数据结构基类。
  * <p>
  * 本类主要负责底层的文件I/O操作和内存管理，为上层数据结构（如 {@link DsList}, {@link DsHashSet}）提供支持。
  * 主要功能包括：
  * <ul>
- *     <li><b>文件I/O管理：</b> 通过 {@link RandomAccessFile} 和 {@link FileChannel} 进行文件的读写操作。</li>
- *     <li><b>内存映射：</b> 将文件分块（Block）映射到内存中，生成 {@link MappedByteBuffer}，实现高效的随机访问。</li>
- *     <li><b>基本类型读写：</b> 提供了针对 long, int, short, byte, float, double 等基本数据类型的读写方法。</li>
- *     <li><b>缓冲池管理：</b> 维护了一个 {@link MappedByteBuffer} 的缓存池 (`datatBuffers`)，减少重复映射的开销。</li>
- *     <li><b>脏页管理：</b> 跟踪修改过的缓冲区 (`dirtyBuffers`)，并提供 {@link #sync()} 方法将数据持久化到磁盘。</li>
- *     <li><b>并发控制：</b> 提供了基础的锁机制（如 `headerOpLock`），并支持子类实现更细粒度的并发控制。</li>
+ * <li><b>文件I/O管理：</b> 通过 {@link RandomAccessFile} 和 {@link FileChannel}
+ * 进行文件的读写操作。</li>
+ * <li><b>内存映射：</b> 将文件分块（Block）映射到内存中，生成
+ * {@link MappedByteBuffer}，实现高效的随机访问。</li>
+ * <li><b>基本类型读写：</b> 提供了针对 long, int, short, byte, float, double
+ * 等基本数据类型的读写方法。</li>
+ * <li><b>缓冲池管理：</b> 维护了一个 {@link MappedByteBuffer} 的缓存池
+ * (`datatBuffers`)，减少重复映射的开销。</li>
+ * <li><b>脏页管理：</b> 跟踪修改过的缓冲区 (`dirtyBuffers`)，并提供 {@link #sync()}
+ * 方法将数据持久化到磁盘。</li>
+ * <li><b>并发控制：</b> 提供了基础的锁机制（如 `headerOpLock`），并支持子类实现更细粒度的并发控制。</li>
  * </ul>
  * </p>
  */
 public class DsObject {
-    
-    /** 启用分区(同一服务器分表空间(不同硬盘)存储,以纵向扩展/并行读写提高性能) */
+
+    /**
+     * 启用分区(同一服务器分表空间(不同硬盘)存储,以纵向扩展/并行读写提高性能)
+     */
     protected boolean isPatitioned = false;
-    
-    /** 启用分布式(不同服务器存储,以横向扩展/并行读写提高性能) */
+
+    /**
+     * 启用分布式(不同服务器存储,以横向扩展/并行读写提高性能)
+     */
     protected boolean isDistributed = false;
-    
+
     protected static final Charset UTF_8 = Charset.forName("UTF-8");
     protected static final int LONG_SIZE = 8;
     protected static final int INT_SIZE = 4;
     protected static final int MD5_SIZE = 16;
-    /** 计算 Ds128SuperInode 的字节大小: 8*10 + 4*2 + 16 */
-    protected static final int SIZE = 8 * 10 + 4 * 2 + 16; 
-    
-    /** 默认块尺寸 64KB -> 对应单个 MappedByteBuffer 的大小 */
-    protected static final int BLOCK_SIZE = 64*1024;
-    /** 用于初始化新块的零字节数组 */
+    /**
+     * 计算 Ds128SuperInode 的字节大小: 8*10 + 4*2 + 16
+     */
+    protected static final int SIZE = 8 * 10 + 4 * 2 + 16;
+
+    /**
+     * 默认块尺寸 64KB -> 对应单个 MappedByteBuffer 的大小
+     */
+    protected static final int BLOCK_SIZE = 64 * 1024;
+    /**
+     * 用于初始化新块的零字节数组
+     */
     protected static final byte[] ZERO_BLOCK_BYTES = new byte[BLOCK_SIZE];
-    
-     
-    
+
     // TODO: 实现缓存淘汰策略 (如 LRU)，防止大文件加载导致内存溢出 (OOM)。
     // 当前实现中，所有加载的缓冲区都会保留在内存中，直到显式卸载。
-    /** 数据缓冲区缓存池：Key为块索引(bufferIndex)，Value为映射的内存缓冲区 */
-    protected Map<Long,MappedByteBuffer> datatBuffers = new ConcurrentHashMap<>();
-    
-    /** 脏缓冲区集合：记录所有被修改但尚未同步到磁盘的缓冲区索引 */
-    protected Set<Long> dirtyBuffers = ConcurrentHashMap.newKeySet();
-    
-    // TODO: 考虑统一 datatBuffers 和 frameBuffers 的管理逻辑。
-    /** 帧缓冲区缓存池：用于存储非标准块大小的数据帧 */
-    protected Map<Long,MappedByteBuffer> frameBuffers = new ConcurrentHashMap<>();
+    /**
+     * 数据缓冲区缓存池：Key为块索引(bufferIndex)，Value为映射的内存缓冲区
+     */
+    protected Map<Long, MappedByteBuffer> datatBuffers = new ConcurrentHashMap<>();
 
-    /** 脏帧缓冲区集合 */
+    /**
+     * 脏缓冲区集合：记录所有被修改但尚未同步到磁盘的缓冲区索引
+     */
+    protected Set<Long> dirtyBuffers = ConcurrentHashMap.newKeySet();
+
+    // TODO: 考虑统一 datatBuffers 和 frameBuffers 的管理逻辑。
+    /**
+     * 帧缓冲区缓存池：用于存储非标准块大小的数据帧
+     */
+    protected Map<Long, MappedByteBuffer> frameBuffers = new ConcurrentHashMap<>();
+
+    /**
+     * 脏帧缓冲区集合
+     */
     protected Set<Long> dirtyFrameBuffers = ConcurrentHashMap.newKeySet();
 
     protected volatile long maxMappedBytes = 512L * 1024L * 1024L;
@@ -101,8 +123,10 @@ public class DsObject {
 
     protected static final byte BUF_KIND_DATA = 1;
     protected static final byte BUF_KIND_FRAME = 2;
+    protected final int headerSize;
 
     protected static final class BufferMeta {
+
         final long key;
         final int bytes;
         final byte kind;
@@ -120,6 +144,7 @@ public class DsObject {
     protected final Map<Long, BufferMeta> frameMetas = new ConcurrentHashMap<>();
 
     public static final class BufferStats {
+
         private final long maxMappedBytes;
         private final long mappedBytes;
         private final int dataBuffers;
@@ -136,8 +161,8 @@ public class DsObject {
         private final long flushNanos;
 
         public BufferStats(long maxMappedBytes, long mappedBytes, int dataBuffers, int frameBuffers, int dirtyDataBuffers, int dirtyFrames,
-                           long evictionAttempts, long evictionSuccess, long evictionBytes, long evictionDirtyCount,
-                           long flushCycles, long flushItems, long flushBytes, long flushNanos) {
+            long evictionAttempts, long evictionSuccess, long evictionBytes, long evictionDirtyCount,
+            long flushCycles, long flushItems, long flushBytes, long flushNanos) {
             this.maxMappedBytes = maxMappedBytes;
             this.mappedBytes = mappedBytes;
             this.dataBuffers = dataBuffers;
@@ -154,77 +179,155 @@ public class DsObject {
             this.flushNanos = flushNanos;
         }
 
-        public long getMaxMappedBytes() { return maxMappedBytes; }
-        public long getMappedBytes() { return mappedBytes; }
-        public int getDataBuffers() { return dataBuffers; }
-        public int getFrameBuffers() { return frameBuffers; }
-        public int getDirtyDataBuffers() { return dirtyDataBuffers; }
-        public int getDirtyFrames() { return dirtyFrames; }
-        public long getEvictionAttempts() { return evictionAttempts; }
-        public long getEvictionSuccess() { return evictionSuccess; }
-        public long getEvictionBytes() { return evictionBytes; }
-        public long getEvictionDirtyCount() { return evictionDirtyCount; }
-        public long getFlushCycles() { return flushCycles; }
-        public long getFlushItems() { return flushItems; }
-        public long getFlushBytes() { return flushBytes; }
-        public long getFlushNanos() { return flushNanos; }
+        public long getMaxMappedBytes() {
+            return maxMappedBytes;
+        }
+
+        public long getMappedBytes() {
+            return mappedBytes;
+        }
+
+        public int getDataBuffers() {
+            return dataBuffers;
+        }
+
+        public int getFrameBuffers() {
+            return frameBuffers;
+        }
+
+        public int getDirtyDataBuffers() {
+            return dirtyDataBuffers;
+        }
+
+        public int getDirtyFrames() {
+            return dirtyFrames;
+        }
+
+        public long getEvictionAttempts() {
+            return evictionAttempts;
+        }
+
+        public long getEvictionSuccess() {
+            return evictionSuccess;
+        }
+
+        public long getEvictionBytes() {
+            return evictionBytes;
+        }
+
+        public long getEvictionDirtyCount() {
+            return evictionDirtyCount;
+        }
+
+        public long getFlushCycles() {
+            return flushCycles;
+        }
+
+        public long getFlushItems() {
+            return flushItems;
+        }
+
+        public long getFlushBytes() {
+            return flushBytes;
+        }
+
+        public long getFlushNanos() {
+            return flushNanos;
+        }
     }
 
-    /** 数据缓冲区锁：用于控制对特定缓冲区的并发访问 */
+    /**
+     * 数据缓冲区锁：用于控制对特定缓冲区的并发访问
+     */
     protected static final int DATA_BUFFER_LOCK_STRIPES = 256;
     protected final ReentrantReadWriteLock[] dataBufferLocks = new ReentrantReadWriteLock[DATA_BUFFER_LOCK_STRIPES];
-    
-    //protected Map<Long,Long> datatBufferLastModified = new ConcurrentHashMap<>();//buffer最后修改时间
 
-    /** 默认的锁池大小 */
+    //protected Map<Long,Long> datatBufferLastModified = new ConcurrentHashMap<>();//buffer最后修改时间
+    /**
+     * 默认的锁池大小
+     */
     protected static final int DEFAULT_LOCK_POOL_SIZE = 50;
 
-    /** ID锁池：预先创建的一组锁，用于减少频繁创建/销毁锁对象的开销。容量通常对应批处理大小。 */
+    /**
+     * ID锁池：预先创建的一组锁，用于减少频繁创建/销毁锁对象的开销。容量通常对应批处理大小。
+     */
     protected ArrayBlockingQueue<ReentrantLock> idLockPool = new ArrayBlockingQueue<>(DEFAULT_LOCK_POOL_SIZE);
-
 
     protected ReentrantLock idOpLock = new ReentrantLock();
 
-    protected Map<Long,ReentrantLock> idLocks = new ConcurrentHashMap<>();
-    
-    /** 底层数据文件 */
+    protected Map<Long, ReentrantLock> idLocks = new ConcurrentHashMap<>();
+
+    /**
+     * 底层数据文件
+     */
     protected File dataFile;
 
     protected MappedByteBuffer headerBuffer;
 
-    /** 头信息操作锁：用于保护文件头部的并发修改 */
-    protected ReentrantLock headerOpLock = new ReentrantLock();
+    /**
+     * 头信息操作锁：用于保护文件头部的并发修改
+     */
+    protected ReentrantReadWriteLock headerOpLockRW = new ReentrantReadWriteLock();
+
+    protected ReentrantReadWriteLock.ReadLock headerOpLockRead = headerOpLockRW.readLock();
+    protected ReentrantReadWriteLock.WriteLock headerOpLockWrite = headerOpLockRW.writeLock();
     
-    /** 固定长度。数据单元大小 */
+    /**
+     * 全局读写锁
+     */
+    protected final ReentrantReadWriteLock globalLock;
+    protected final ReentrantReadWriteLock.ReadLock readLock;
+    protected final ReentrantReadWriteLock.WriteLock writeLock;
+
+   
+
+
+    /**
+     * 固定长度。数据单元大小
+     */
     public int dataUnitSize;
-    
-    /** 用于初始化数据块的零字节数组 */
-    protected final byte[] zero_block_unit = new byte[dataUnitSize];
+
+    /**
+     * 用于初始化数据块的零字节数组
+     */
+    protected final byte[] zero_block_unit;
     /**
      * 元数据块尺寸。TODO 用一个或多个统一的文件，统一管理元数据。元数据固定长度的4个文件:128,512,1024,4096
      */
     public int metaUnitSize;
-    
-   
-    
-    /** 同步操作锁：用于 sync() 方法 */
+
+    /**
+     * 同步操作锁：用于 sync() 方法
+     */
     protected ReentrantLock syncOpLock = new ReentrantLock();
-    /** 缓冲区操作锁 */
+    /**
+     * 缓冲区操作锁
+     */
     protected ReentrantLock bufferLock = new ReentrantLock();
 
     /**
      * 构造函数
+     *
      * @param dataFile 数据文件对象
      * @param dataUnitSize 数据单元大小（字节）
      */
     public DsObject(File dataFile, int dataUnitSize) {
+        this(dataFile, 0, dataUnitSize);
+    }
+
+    public DsObject(File dataFile, int headerSize, int dataUnitSize) {
         this.dataFile = dataFile;
         this.dataUnitSize = dataUnitSize;
+        this.headerSize = headerSize;
+        zero_block_unit = new byte[dataUnitSize];
+        this.globalLock = new ReentrantReadWriteLock();
+        this.readLock = globalLock.readLock();
+        this.writeLock = globalLock.writeLock();
         for (int i = 0; i < DATA_BUFFER_LOCK_STRIPES; i++) {
             dataBufferLocks[i] = new ReentrantReadWriteLock();
         }
         // 初始化锁池
-        for(int i=0;i<DEFAULT_LOCK_POOL_SIZE;i++){
+        for (int i = 0; i < DEFAULT_LOCK_POOL_SIZE; i++) {
 //        for(int i=0;i<5000;i++){
             idLockPool.add(new ReentrantLock());
         }
@@ -264,39 +367,39 @@ public class DsObject {
 
     public BufferStats getBufferStats() {
         return new BufferStats(
-                maxMappedBytes,
-                mappedBytes.get(),
-                datatBuffers.size(),
-                frameBuffers.size(),
-                dirtyBuffers.size(),
-                dirtyFrameBuffers.size(),
-                evictionAttempts.get(),
-                evictionSuccess.get(),
-                evictionBytes.get(),
-                evictionDirtyCount.get(),
-                flushCycles.get(),
-                flushItems.get(),
-                flushBytes.get(),
-                flushNanos.get()
+            maxMappedBytes,
+            mappedBytes.get(),
+            datatBuffers.size(),
+            frameBuffers.size(),
+            dirtyBuffers.size(),
+            dirtyFrameBuffers.size(),
+            evictionAttempts.get(),
+            evictionSuccess.get(),
+            evictionBytes.get(),
+            evictionDirtyCount.get(),
+            flushCycles.get(),
+            flushItems.get(),
+            flushBytes.get(),
+            flushNanos.get()
         );
     }
 
     public BufferStats getAndResetBufferStats() {
         return new BufferStats(
-                maxMappedBytes,
-                mappedBytes.get(),
-                datatBuffers.size(),
-                frameBuffers.size(),
-                dirtyBuffers.size(),
-                dirtyFrameBuffers.size(),
-                evictionAttempts.getAndSet(0),
-                evictionSuccess.getAndSet(0),
-                evictionBytes.getAndSet(0),
-                evictionDirtyCount.getAndSet(0),
-                flushCycles.getAndSet(0),
-                flushItems.getAndSet(0),
-                flushBytes.getAndSet(0),
-                flushNanos.getAndSet(0)
+            maxMappedBytes,
+            mappedBytes.get(),
+            datatBuffers.size(),
+            frameBuffers.size(),
+            dirtyBuffers.size(),
+            dirtyFrameBuffers.size(),
+            evictionAttempts.getAndSet(0),
+            evictionSuccess.getAndSet(0),
+            evictionBytes.getAndSet(0),
+            evictionDirtyCount.getAndSet(0),
+            flushCycles.getAndSet(0),
+            flushItems.getAndSet(0),
+            flushBytes.getAndSet(0),
+            flushNanos.getAndSet(0)
         );
     }
 
@@ -419,15 +522,21 @@ public class DsObject {
             double pressure = max > 0 ? (double) mappedBytes.get() / (double) max : 0.0;
             int dirtyCount = dirtyBuffers.size() + dirtyFrameBuffers.size();
             int m = 1 + (int) Math.floor(Math.min(4.0, Math.max(0.0, pressure) * 4.0));
-            if (dirtyCount > 1000) m += 4;
-            else if (dirtyCount > 200) m += 2;
-            else if (dirtyCount > 0) m += 1;
+            if (dirtyCount > 1000) {
+                m += 4;
+            } else if (dirtyCount > 200) {
+                m += 2;
+            } else if (dirtyCount > 0) {
+                m += 1;
+            }
             long prod = (long) budget * (long) m;
             budget = (int) Math.min(Integer.MAX_VALUE, prod);
         }
 
         for (Long bufferIndex : dirtyBuffers) {
-            if (budget <= 0) break;
+            if (budget <= 0) {
+                break;
+            }
             MappedByteBuffer buf = datatBuffers.get(bufferIndex);
             if (buf == null) {
                 dirtyBuffers.remove(bufferIndex);
@@ -461,7 +570,9 @@ public class DsObject {
         }
         try {
             for (Long pos : dirtyFrameBuffers) {
-                if (budget <= 0) break;
+                if (budget <= 0) {
+                    break;
+                }
                 MappedByteBuffer buf = frameBuffers.get(pos);
                 if (buf == null) {
                     dirtyFrameBuffers.remove(pos);
@@ -495,17 +606,16 @@ public class DsObject {
             adaptiveNextFlushNanos.set(System.nanoTime() + interval * 1_000_000L);
         }
     }
-    
 
     /**
      * 将 SuperInode 写入文件
+     *
      * @param inode 索引节点对象
      * @param filePath 文件路径
      * @throws IOException IO异常
      */
     public static void writeToFile(Ds128SuperInode inode, String filePath) throws IOException {
-        try (RandomAccessFile file = new RandomAccessFile(new File(filePath), "rw");
-             FileChannel channel = file.getChannel()) {
+        try (RandomAccessFile file = new RandomAccessFile(new File(filePath), "rw"); FileChannel channel = file.getChannel()) {
             MappedByteBuffer buffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, SIZE);
             inode.writeToMappedByteBuffer(buffer);
         }
@@ -513,30 +623,607 @@ public class DsObject {
 
     /**
      * 从文件读取 SuperInode
+     *
      * @param filePath 文件路径
      * @return 索引节点对象
      * @throws IOException IO异常
      */
     public static Ds128SuperInode readFromFile(String filePath) throws IOException {
-        try (RandomAccessFile file = new RandomAccessFile(new File(filePath), "r");
-             FileChannel channel = file.getChannel()) {
+        try (RandomAccessFile file = new RandomAccessFile(new File(filePath), "r"); FileChannel channel = file.getChannel()) {
             MappedByteBuffer buffer = channel.map(FileChannel.MapMode.READ_ONLY, 0, SIZE);
             Ds128SuperInode inode = new Ds128SuperInode();
             inode.readFromMappedByteBuffer(buffer);
             return inode;
         }
     }
+    
+    
+      /**
+     *
+     * DsObject 优化版本 主要改进： 统一使用辅助方法计算 buffer 索引和偏移 修复类型不一致问题 增强边界检查 添加性能优化
+     */
+// ============================================================================
+// 辅助方法优化版本
+// ============================================================================
+    /**
+     *
+     * 从绝对位置计算 buffer 索引
+     *
+     * @param position 绝对字节位置
+     * @return buffer 索引
+     */
+    protected long bufferIndexFromPosition(long position) {
+        return (int) (position / BLOCK_SIZE);
+    }
+
+    /**
+     *
+     * 从绝对位置计算 buffer 内偏移
+     *
+     * @param position 绝对字节位置
+     * @return buffer 内偏移量
+     */
+    protected int bufferOffsetFromPosition(long position) {
+        return (int) (position % BLOCK_SIZE);
+    }
+
+    /**
+     *
+     * 从数据 ID 计算 buffer 索引（考虑 headerSize）
+     *
+     * @param id 数据 ID
+     * @return buffer 索引
+     */
+    protected long bufferIndexFromId(long id) {
+        return bufferIndexFromPosition(id * dataUnitSize + headerSize);
+    }
+
+    /**
+     *
+     * 从数据 ID 计算绝对位置（考虑 headerSize）
+     *
+     * @param id 数据 ID
+     * @return 绝对字节位置
+     */
+    protected long bufferPositionFromId(long id) {
+        return id * dataUnitSize + headerSize;
+    }
+
+    /**
+     *
+     * 从数据 ID 和偏移计算 buffer 索引
+     *
+     * @param id 数据 ID
+     * @param offset 块内偏移
+     * @return buffer 索引
+     */
+    protected long bufferIndexFromId(long id, int offset) {
+        return bufferIndexFromPosition(id * dataUnitSize + headerSize + offset);
+    }
+
+    /**
+     *
+     * 从数据 ID 和偏移计算 buffer 内偏移
+     *
+     * @param id 数据 ID
+     * @param offset 块内偏移
+     * @return buffer 内偏移量
+     */
+    protected int bufferOffsetFromId(long id, int offset) {
+        return bufferOffsetFromPosition(id * dataUnitSize + headerSize + offset);
+    }
+
+    /**
+     *
+     * 检查读取操作是否会跨越 buffer 边界
+     *
+     * @param offset buffer 内偏移
+     * @param size 要读取的字节数
+     * @return true 如果会跨界
+     */
+    protected boolean willCrossBoundary(int offset, int size) {
+        return offset + size > BLOCK_SIZE;
+    }
+// ============================================================================
+// 优化后的读取方法
+// ============================================================================
+
+    /**
+     *
+     * 读取 byte 类型数据（优化版）
+     */
+    public byte readByte(long id, int position) throws IOException {
+        long absolutePos = bufferPositionFromId(id) + position;
+        long bufferIndex = bufferIndexFromPosition(absolutePos);
+        int offset = bufferOffsetFromPosition(absolutePos);
+
+        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+        try {
+            return buffer.get(offset);
+        } finally {
+            unlockBufferForRead(bufferIndex);
+        }
+    }
+
+    /**
+     *
+     * 读取 short 类型数据（优化版，增加边界检查）
+     */
+    public short readShort(long id, int position) throws IOException {
+        long absolutePos = bufferPositionFromId(id) + position;
+        long bufferIndex = bufferIndexFromPosition(absolutePos);
+        int offset = bufferOffsetFromPosition(absolutePos);
+
+// 边界检查：short 需要 2 字节
+        if (willCrossBoundary(offset, 2)) {
+            throw new IOException("Unaligned short read at offset=" + offset
+                + ", would cross buffer boundary");
+        }
+
+        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+        try {
+            return buffer.getShort(offset);
+        } finally {
+            unlockBufferForRead(bufferIndex);
+        }
+    }
+
+    /**
+     *
+     * 读取 int 类型数据（优化版，增加边界检查）
+     */
+    public int readInt(long id, int position) throws IOException {
+        long absolutePos = bufferPositionFromId(id) + position;
+        long bufferIndex = bufferIndexFromPosition(absolutePos);
+        int offset = bufferOffsetFromPosition(absolutePos);
+
+// 边界检查：int 需要 4 字节
+        if (willCrossBoundary(offset, 4)) {
+            throw new IOException("Unaligned int read at offset=" + offset
+                + ", would cross buffer boundary");
+        }
+
+        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+        try {
+            return buffer.getInt(offset);
+        } finally {
+            unlockBufferForRead(bufferIndex);
+        }
+    }
+
+    /**
+     *
+     * 读取 long 类型数据（优化版，增加边界检查）
+     */
+    public long readLong(long id, int position) throws IOException {
+        long absolutePos = bufferPositionFromId(id) + position;
+        long bufferIndex = bufferIndexFromPosition(absolutePos);
+        int offset = bufferOffsetFromPosition(absolutePos);
+
+// 边界检查：long 需要 8 字节
+        if (willCrossBoundary(offset, 8)) {
+            throw new IOException("Unaligned long read at offset=" + offset
+                + ", would cross buffer boundary");
+        }
+
+        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+        try {
+            return buffer.getLong(offset);
+        } finally {
+            unlockBufferForRead(bufferIndex);
+        }
+    }
+
+    /**
+     *
+     * 读取 long 数组（优化版，修复原有 bug）
+     */
+    public void readLongs(long position, long[] values) throws IOException {
+        if (values == null || values.length == 0) {
+            return;
+        }
+
+        for (int j = 0; j < values.length; j++) {
+            long pos = position + (long) j * 8L;
+            long bufferIndex = bufferIndexFromPosition(pos);
+            int offset = bufferOffsetFromPosition(pos);
+
+            // 边界检查
+            if (willCrossBoundary(offset, 8)) {
+                throw new IOException("Unaligned long read at offset=" + offset
+                    + ", array index=" + j);
+            }
+
+            MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+            try {
+                values[j] = buffer.getLong(offset);
+            } finally {
+                unlockBufferForRead(bufferIndex);
+            }
+        }
+    }
+
+    /**
+     *
+     * 读取字节数组（优化版，支持跨 buffer 读取）
+     */
+    public void readBytes(long id, int position, byte[] out, int offsetOut, int count)
+        throws IOException {
+        if (out == null || count <= 0) {
+            return;
+        }
+
+        if (offsetOut < 0 || offsetOut + count > out.length) {
+            throw new IllegalArgumentException(
+                "Invalid output array bounds: offsetOut=" + offsetOut
+                + ", count=" + count + ", array length=" + out.length);
+        }
+
+        long absolutePos = bufferPositionFromId(id) + position;
+        int remaining = count;
+        int outPos = offsetOut;
+
+        while (remaining > 0) {
+            long bufferIndex = bufferIndexFromPosition(absolutePos);
+            int offset = bufferOffsetFromPosition(absolutePos);
+            int take = Math.min(remaining, BLOCK_SIZE - offset);
+
+            MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+            try {
+                buffer.get(offset, out, outPos, take);
+            } finally {
+                unlockBufferForRead(bufferIndex);
+            }
+
+            remaining -= take;
+            outPos += take;
+            absolutePos += take;
+        }
+    }
+
+// ============================================================================
+// 优化后的写入方法
+// ============================================================================
+    /**
+     *
+     * 写入 byte 类型数据（优化版）
+     */
+    public void writeByte(long id, int position, byte value) throws IOException {
+        long absolutePos = bufferPositionFromId(id) + position;
+        long bufferIndex = bufferIndexFromPosition(absolutePos);
+        int offset = bufferOffsetFromPosition(absolutePos);
+
+        MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
+        try {
+            buffer.put(offset, value);
+        } finally {
+            unlockBufferForUpdate(bufferIndex);
+        }
+    }
+ 
+    /**
+     *
+     * 写入字节数组
+     */
+    public void writeBytesOffset(long position, byte[] data, int offset, int length)
+        throws IOException {
+
+        int remaining = length;
+        int srcPos = offset;
+        long currentPos = position;
+
+        while (remaining > 0) {
+            long bufferIndex = bufferIndexFromPosition(currentPos);
+            int bufferOffset = bufferOffsetFromPosition(currentPos);
+            int take = Math.min(remaining, BLOCK_SIZE - bufferOffset);
+
+            MappedByteBuffer buffer = loadBuffer(bufferIndex);
+            buffer.put(bufferOffset, data, srcPos, take);
+            dirty(currentPos);
+
+            remaining -= take;
+            srcPos += take;
+            currentPos += take;
+        }
+    }
+
+    /**
+     *
+     * 写入 short 类型数据（优化版，增加边界检查）
+     */
+    public void writeShort(long id, int position, short value) throws IOException {
+        long absolutePos = bufferPositionFromId(id) + position;
+        long bufferIndex = bufferIndexFromPosition(absolutePos);
+        int offset = bufferOffsetFromPosition(absolutePos);
+
+        if (willCrossBoundary(offset, 2)) {
+            throw new IOException("Unaligned short write at offset=" + offset);
+        }
+
+        MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
+        try {
+            buffer.putShort(offset, value);
+        } finally {
+            unlockBufferForUpdate(bufferIndex);
+        }
+    }
+
+    /**
+     *
+     * 写入 int 类型数据（优化版，增加边界检查）
+     */
+    public void writeInt(long id, int position, int value) throws IOException {
+        long absolutePos = bufferPositionFromId(id) + position;
+        long bufferIndex = bufferIndexFromPosition(absolutePos);
+        int offset = bufferOffsetFromPosition(absolutePos);
+
+        if (willCrossBoundary(offset, 4)) {
+            throw new IOException("Unaligned int write at offset=" + offset);
+        }
+
+        MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
+        try {
+            buffer.putInt(offset, value);
+        } finally {
+            unlockBufferForUpdate(bufferIndex);
+        }
+    }
+
+    /**
+     *
+     * 写入 long 类型数据（优化版，增加边界检查）
+     */
+    public void writeLong(long id, int position, long value) throws IOException {
+        long absolutePos = bufferPositionFromId(id) + position;
+        long bufferIndex = bufferIndexFromPosition(absolutePos);
+        int offset = bufferOffsetFromPosition(absolutePos);
+
+        if (willCrossBoundary(offset, 8)) {
+            throw new IOException("Unaligned long write at offset=" + offset);
+        }
+
+        MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
+        try {
+            buffer.putLong(offset, value);
+        } finally {
+            unlockBufferForUpdate(bufferIndex);
+        }
+    }
+
+    /**
+     *
+     * 写入 float 类型数据（优化版，增加边界检查）
+     */
+    public void writeFloat(long id, int position, float value) throws IOException {
+        long absolutePos = bufferPositionFromId(id) + position;
+        long bufferIndex = bufferIndexFromPosition(absolutePos);
+        int offset = bufferOffsetFromPosition(absolutePos);
+
+        if (willCrossBoundary(offset, 4)) {
+            throw new IOException("Unaligned float write at offset=" + offset);
+        }
+
+        MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
+        try {
+            buffer.putFloat(offset, value);
+        } finally {
+            unlockBufferForUpdate(bufferIndex);
+        }
+    }
+
+    /**
+     *
+     * 写入字节数组（优化版，支持跨 buffer 写入）
+     */
+    public void writeBytes(long id, int position, byte[] value, int offsetIn, int count)
+        throws IOException {
+        if (value == null || count <= 0) {
+            return;
+        }
+
+        if (offsetIn < 0 || offsetIn + count > value.length) {
+            throw new IllegalArgumentException(
+                "Invalid input array bounds: offsetIn=" + offsetIn
+                + ", count=" + count + ", array length=" + value.length);
+        }
+
+        long absolutePos = bufferPositionFromId(id) + position;
+        int remaining = count;
+        int inPos = offsetIn;
+
+        while (remaining > 0) {
+            long bufferIndex = bufferIndexFromPosition(absolutePos);
+            int offset = bufferOffsetFromPosition(absolutePos);
+            int take = Math.min(remaining, BLOCK_SIZE - offset);
+
+            MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
+            try {
+                buffer.put(offset, value, inPos, take);
+            } finally {
+                unlockBufferForUpdate(bufferIndex);
+            }
+
+            remaining -= take;
+            inPos += take;
+            absolutePos += take;
+        }
+    }
+
+// ============================================================================
+// 内部辅助方法优化
+// ============================================================================
+    /**
+     *
+     * 从绝对位置读取 long（优化版）
+     */
+    protected long loadLongOffset(long position) {
+        try {
+            long bufferIndex = bufferIndexFromPosition(position);
+            int offset = bufferOffsetFromPosition(position);
+
+            if (willCrossBoundary(offset, 8)) {
+                throw new IOException("Unaligned long read at position=" + position);
+            }
+
+            MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+            try {
+                return buffer.getLong(offset);
+            } finally {
+                unlockBufferForRead(bufferIndex);
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to load long at position=" + position, e);
+        }
+    }
+
+    /**
+     *
+     * 向绝对位置存储 short（优化版）
+     */
+    protected void storeShortOffset(long position, short value) throws IOException {
+        long bufferIndex = bufferIndexFromPosition(position);
+        int offset = bufferOffsetFromPosition(position);
+
+        if (willCrossBoundary(offset, 2)) {
+            throw new IOException("Unaligned short write at position=" + position);
+        }
+
+        MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
+        try {
+            buffer.putShort(offset, value);
+        } finally {
+            unlockBufferForUpdate(bufferIndex);
+        }
+    }
+
+    /**
+     *
+     * 从缓冲区数组读取 int（优化版）
+     */
+    public int readInt(int position, MappedByteBuffer... buffers) throws IOException {
+        int bufferIndex = (int) bufferIndexFromPosition(position);
+        int offset = bufferOffsetFromPosition(position);
+
+        if (bufferIndex >= buffers.length) {
+            throw new IOException("Buffer index out of bounds: " + bufferIndex);
+        }
+
+        if (willCrossBoundary(offset, 4)) {
+            throw new IOException("Unaligned int read at position=" + position);
+        }
+
+        return buffers[bufferIndex].getInt(offset);
+    }
+
+    /**
+     *
+     * 向缓冲区数组写入 int（优化版）
+     */
+    public int writeInt(int position, int value, MappedByteBuffer... buffers)
+        throws IOException {
+        int bufferIndex = (int) bufferIndexFromPosition(position);
+        int offset = bufferOffsetFromPosition(position);
+
+        if (bufferIndex >= buffers.length) {
+            throw new IOException("Buffer index out of bounds: " + bufferIndex);
+        }
+
+        if (willCrossBoundary(offset, 4)) {
+            throw new IOException("Unaligned int write at position=" + position);
+        }
+
+        buffers[bufferIndex].putInt(offset, value);
+        return bufferIndex;
+    }
+
+    /**
+     *
+     * 从缓冲区数组读取 long（优化版）
+     */
+    public long readLong(int position, MappedByteBuffer... buffers) throws IOException {
+        int bufferIndex = (int) bufferIndexFromPosition(position);
+        int offset = bufferOffsetFromPosition(position);
+
+        if (bufferIndex >= buffers.length) {
+            throw new IOException("Buffer index out of bounds: " + bufferIndex);
+        }
+
+        if (willCrossBoundary(offset, 8)) {
+            throw new IOException("Unaligned long read at position=" + position);
+        }
+
+        return buffers[bufferIndex].getLong(offset);
+    }
+
+    /**
+     *
+     * 向缓冲区数组写入 long（优化版）
+     */
+    public int writeLong(int position, long value, MappedByteBuffer... buffers)
+        throws IOException {
+        int bufferIndex = (int) bufferIndexFromPosition(position);
+        int offset = bufferOffsetFromPosition(position);
+
+        if (bufferIndex >= buffers.length) {
+            throw new IOException("Buffer index out of bounds: " + bufferIndex);
+        }
+
+        if (willCrossBoundary(offset, 8)) {
+            throw new IOException("Unaligned long write at position=" + position);
+        }
+
+        buffers[bufferIndex].putLong(offset, value);
+        return bufferIndex;
+    }
+
+    /**
+     *
+     * 读取字节数组到指定位置（优化版）
+     */
+    protected void loadBytesOffset(long position, byte[] dest, int destOffset, int length)
+        throws IOException {
+        if (dest == null || length <= 0) {
+            return;
+        }
+
+        if (destOffset < 0 || destOffset + length > dest.length) {
+            throw new IllegalArgumentException(
+                "Invalid destination bounds: destOffset=" + destOffset
+                + ", length=" + length + ", array length=" + dest.length);
+        }
+
+        int remaining = length;
+        int dp = destOffset;
+        long currentPos = position;
+
+        while (remaining > 0) {
+            long bufferIndex = bufferIndexFromPosition(currentPos);
+            int offset = bufferOffsetFromPosition(currentPos);
+            int take = Math.min(remaining, BLOCK_SIZE - offset);
+
+            MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+            try {
+                buffer.get(offset, dest, dp, take);
+            } finally {
+                unlockBufferForRead(bufferIndex);
+            }
+
+            remaining -= take;
+            dp += take;
+            currentPos += take;
+        }
+    }
 
     /**
      * 本类的简单自测入口（演示 super inode 的读写）。
      *
-     * <p>仅用于开发调试，不参与系统主流程。</p>
+     * <p>
+     * 仅用于开发调试，不参与系统主流程。</p>
      */
     public static void main(String[] args) {
         Ds128SuperInode inode = new Ds128SuperInode();
         //inode.magic = 0x123456789ABCDEFL;
         inode.i_root_node = 1L;
-       
 
         String filePath = "super_inode.dat";
         try {
@@ -547,36 +1234,20 @@ public class DsObject {
             e.printStackTrace();
         }
     }
-    
+
+  
+
     /**
      * 写入 long 类型数据
-     * @param id 数据ID (用于计算块索引)
-     * @param position 块内偏移量
-     * @param value 值
-     * @throws IOException IO异常
-     */
-    public void writeLong(long id,int position, long value) throws IOException {
-        long index = id*dataUnitSize+position;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
-        try {
-            buffer.putLong(offset, value);
-        } finally {
-            unlockBufferForUpdate(bufferIndex);
-        }
-    }
-    
-    /**
-     * 写入 long 类型数据
+     *
      * @param id 数据ID (用于计算块索引)
      * @param value 值
      * @throws IOException IO异常
      */
-    public void writeLong(long id,long value) throws IOException {
-        long index = id*dataUnitSize;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
+    public void writeLong(long id, long value) throws IOException {
+        long index = id * dataUnitSize;
+        Long bufferIndex = index / BLOCK_SIZE;
+        int offset = (int) (index % BLOCK_SIZE);
         MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
         try {
             buffer.putLong(offset, value);
@@ -587,13 +1258,14 @@ public class DsObject {
 
     /**
      * 在指定绝对位置存储 long 类型数据
+     *
      * @param position 绝对字节偏移量
      * @param value 值
      * @throws IOException IO异常
      */
     protected void storeLongOffset(long position, long value) throws IOException {
-       Long bufferIndex = position/BLOCK_SIZE;
-        int offset = (int) (position%BLOCK_SIZE);
+        Long bufferIndex = position / BLOCK_SIZE;
+        int offset = (int) (position % BLOCK_SIZE);
         MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
         try {
             buffer.putLong(offset, value);
@@ -601,9 +1273,10 @@ public class DsObject {
             unlockBufferForUpdate(bufferIndex);
         }
     }
-    
+
     /**
      * 在指定绝对位置存储 long 类型数据
+     *
      * @param position 绝对字节偏移量
      * @param values
      * @throws IOException IO异常
@@ -623,11 +1296,12 @@ public class DsObject {
                 unlockBufferForUpdate(bufferIndex);
             }
         }
-        
+
     }
-    
+
     /**
      * 在指定绝对位置读取 long 类型数据
+     *
      * @param position 绝对字节偏移量
      * @param values
      * @throws IOException IO异常
@@ -647,59 +1321,22 @@ public class DsObject {
                 unlockBufferForRead(bufferIndex);
             }
         }
-        
-    }
-    
-    
-    
-   /**
-    * 读取 long 类型数据
-    * @param id 数据ID
-    * @param position 块内偏移量
-    * @return 值
-    * @throws IOException IO异常
-    */
-   public long readLong(long id,int position) throws IOException {
-        long index = id*dataUnitSize+position;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
-        try {
-            return buffer.getLong(offset);
-        } finally {
-            unlockBufferForRead(bufferIndex);
-        }
-        
-    }
-   
-      /**
-    * 读取 long 类型数据
-    * @param id 数据ID
-    * @return 值
-    * @throws IOException IO异常
-    */
-   public long readLong(long id) throws IOException {
-        long index = id*dataUnitSize;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
-        try {
-            return buffer.getLong(offset);
-        } finally {
-            unlockBufferForRead(bufferIndex);
-        }
-        
+
     }
 
+  
+
     /**
-     * 从指定绝对位置读取 long 类型数据
-     * @param position 绝对字节偏移量
+     * 读取 long 类型数据
+     *
+     * @param id 数据ID
      * @return 值
      * @throws IOException IO异常
      */
-    protected long loadLongOffset(long position) throws IOException {
-        Long bufferIndex = position/BLOCK_SIZE;
-        int offset = (int) (position%BLOCK_SIZE);
+    public long readLong(long id) throws IOException {
+        long index = id * dataUnitSize;
+        Long bufferIndex = index / BLOCK_SIZE;
+        int offset = (int) (index % BLOCK_SIZE);
         MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
         try {
             return buffer.getLong(offset);
@@ -708,16 +1345,18 @@ public class DsObject {
         }
 
     }
-    
+
+
     /**
      * 从指定绝对位置读取 u16 类型数据
+     *
      * @param position 绝对字节偏移量
      * @return 值
      * @throws IOException IO异常
      */
     protected short loadShortOffset(long position) throws IOException {
-        Long bufferIndex = position/BLOCK_SIZE;
-        int offset = (int) (position%BLOCK_SIZE);
+        Long bufferIndex = position / BLOCK_SIZE;
+        int offset = (int) (position % BLOCK_SIZE);
         MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
         try {
             return buffer.getShort(offset);
@@ -726,16 +1365,17 @@ public class DsObject {
         }
 
     }
-    
+
     /**
      * 从指定绝对位置读取 u16 类型数据
+     *
      * @param position 绝对字节偏移量
      * @return 值
      * @throws IOException IO异常
      */
     protected int loadU16ByOffset(long position) throws IOException {
-        Long bufferIndex = position/BLOCK_SIZE;
-        int offset = (int) (position%BLOCK_SIZE);
+        Long bufferIndex = position / BLOCK_SIZE;
+        int offset = (int) (position % BLOCK_SIZE);
         MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
         try {
             return buffer.getShort(offset) & 0xFFFF;
@@ -744,16 +1384,17 @@ public class DsObject {
         }
 
     }
-    
+
     /**
      * 从指定绝对位置读取 u16 类型数据
+     *
      * @param position 绝对字节偏移量
      * @return 值
      * @throws IOException IO异常
      */
     protected long loadU32ByOffset(long position) throws IOException {
-        Long bufferIndex = position/BLOCK_SIZE;
-        int offset = (int) (position%BLOCK_SIZE);
+        Long bufferIndex = position / BLOCK_SIZE;
+        int offset = (int) (position % BLOCK_SIZE);
         MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
         try {
             return buffer.getInt(offset) & 0xFFFFFFFFL;
@@ -762,16 +1403,17 @@ public class DsObject {
         }
 
     }
-    
-     /**
+
+    /**
      * 从指定绝对位置读取 u8 类型数据
+     *
      * @param position 绝对字节偏移量
      * @return 值
      * @throws IOException IO异常
      */
     protected int loadU8ByOffset(long position) throws IOException {
-        Long bufferIndex = position/BLOCK_SIZE;
-        int offset = (int) (position%BLOCK_SIZE);
+        Long bufferIndex = position / BLOCK_SIZE;
+        int offset = (int) (position % BLOCK_SIZE);
         MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
         try {
             return buffer.get(offset) & 0xFF;
@@ -781,40 +1423,21 @@ public class DsObject {
 
     }
 
-    protected void loadBytesOffset(long position, byte[] dest, int destOffset, int length) throws IOException {
-        Long bufferIndex = position / BLOCK_SIZE;
-        int offset = (int) (position % BLOCK_SIZE);
-        int remaining = length;
-        int dp = destOffset;
-        while (remaining > 0) {
-            int take = Math.min(remaining, BLOCK_SIZE - offset);
-            MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
-            try {
-                buffer.get(offset, dest, dp, take);
-            } finally {
-                unlockBufferForRead(bufferIndex);
-            }
-            remaining -= take;
-            dp += take;
-            bufferIndex++;
-            offset = 0;
-        }
-    }
-
+ 
     protected ReentrantReadWriteLock getDataBufferLock(Long bufferIndex) {
         int idx = (int) (bufferIndex & (DATA_BUFFER_LOCK_STRIPES - 1));
         return dataBufferLocks[idx];
     }
 
+
     protected MappedByteBuffer loadBufferForRead(Long bufferIndex) throws IOException {
         ReentrantReadWriteLock lock = getDataBufferLock(bufferIndex);
-        lock.readLock().lock();
         MappedByteBuffer buffer = datatBuffers.get(bufferIndex);
         if (buffer != null) {
             touchDataBuffer(bufferIndex);
+            lock.readLock().lock();
             return buffer;
         }
-        lock.readLock().unlock();
 
         lock.writeLock().lock();
         try {
@@ -822,11 +1445,12 @@ public class DsObject {
             if (buffer == null) {
                 buffer = loadBuffer(bufferIndex);
             }
-            lock.readLock().lock();
+
         } finally {
             lock.writeLock().unlock();
         }
         touchDataBuffer(bufferIndex);
+        lock.readLock().lock();
         return buffer;
     }
 
@@ -879,30 +1503,44 @@ public class DsObject {
         boolean preferClean = evictPreferClean;
         if (preferClean) {
             for (BufferMeta m : dataMetas.values()) {
-                if (m.key == avoidDataBufferIndex) continue;
-                if (dirtyBuffers.contains(m.key)) continue;
+                if (m.key == avoidDataBufferIndex) {
+                    continue;
+                }
+                if (dirtyBuffers.contains(m.key)) {
+                    continue;
+                }
                 n = insertCandidate(cand, n, m);
             }
             for (BufferMeta m : frameMetas.values()) {
-                if (m.key == avoidFramePosition) continue;
-                if (dirtyFrameBuffers.contains(m.key)) continue;
+                if (m.key == avoidFramePosition) {
+                    continue;
+                }
+                if (dirtyFrameBuffers.contains(m.key)) {
+                    continue;
+                }
                 n = insertCandidate(cand, n, m);
             }
         }
         if (n == 0) {
             for (BufferMeta m : dataMetas.values()) {
-                if (m.key == avoidDataBufferIndex) continue;
+                if (m.key == avoidDataBufferIndex) {
+                    continue;
+                }
                 n = insertCandidate(cand, n, m);
             }
             for (BufferMeta m : frameMetas.values()) {
-                if (m.key == avoidFramePosition) continue;
+                if (m.key == avoidFramePosition) {
+                    continue;
+                }
                 n = insertCandidate(cand, n, m);
             }
         }
 
         for (int i = 0; i < n; i++) {
             BufferMeta victim = cand[i];
-            if (victim == null) continue;
+            if (victim == null) {
+                continue;
+            }
 
             if (victim.kind == BUF_KIND_DATA) {
                 Long bufferIndex = victim.key;
@@ -986,8 +1624,12 @@ public class DsObject {
         for (int i = Math.min(n - 1, cap - 1); i > 0; i--) {
             BufferMeta a = cand[i - 1];
             BufferMeta b = cand[i];
-            if (a == null || b == null) break;
-            if (b.lastAccessNanos >= a.lastAccessNanos) break;
+            if (a == null || b == null) {
+                break;
+            }
+            if (b.lastAccessNanos >= a.lastAccessNanos) {
+                break;
+            }
             cand[i - 1] = b;
             cand[i] = a;
         }
@@ -997,116 +1639,49 @@ public class DsObject {
     protected void loadBytesOffset(long position, byte[] dest) throws IOException {
         loadBytesOffset(position, dest, 0, dest.length);
     }
+
    
+
     /**
-     * 写入 int 类型数据
+     * 读取 int 类型数据
+     *
      * @param id 数据ID
-     * @param position 块内偏移量
-     * @param value 值
+     * @return 值
      * @throws IOException IO异常
      */
-    public void writeInt(long id,int position, int value) throws IOException {
-        long index = id*dataUnitSize+position;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
-        try {
-            buffer.putInt(offset, value);
-        } finally {
-            unlockBufferForUpdate(bufferIndex);
-        }
-    }
-    
-    /**
-    * 读取 int 类型数据
-    * @param id 数据ID
-    * @return 值
-    * @throws IOException IO异常
-    */
-   public short readShort(long id) throws IOException {
-       
+    public short readShort(long id) throws IOException {
+
         return readShort(id, 0);
-        
-    }
-    
-   /**
-    * 读取 int 类型数据
-    * @param id 数据ID
-    * @param position 块内偏移量
-    * @return 值
-    * @throws IOException IO异常
-    */
-   public short readShort(long id,int position) throws IOException {
-        long index = id*dataUnitSize+position;
-        long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
-        try {
-            return buffer.getShort(offset);
-        } finally {
-            unlockBufferForRead(bufferIndex);
-        }
-        
-    }
-    
-    /**
-    * 读取 int 类型数据
-    * @param id 数据ID
-    * @return 值
-    * @throws IOException IO异常
-    */
-   public int readInt(long id) throws IOException {
-       
-        return readInt(id, 0);
-        
-    }
-    
-   /**
-    * 读取 int 类型数据
-    * @param id 数据ID
-    * @param position 块内偏移量
-    * @return 值
-    * @throws IOException IO异常
-    */
-   public int readInt(long id,int position) throws IOException {
-        long index = id*dataUnitSize+position;
-        long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
-        try {
-            return buffer.getInt(offset);
-        } finally {
-            unlockBufferForRead(bufferIndex);
-        }
-        
+
     }
 
+ 
+
     /**
-     * 在指定绝对位置存储 int 类型数据
-     * @param position 绝对字节偏移量
-     * @param value 值
+     * 读取 int 类型数据
+     *
+     * @param id 数据ID
+     * @return 值
      * @throws IOException IO异常
      */
-    protected void storeShortOffset(long position, short value) throws IOException {
-        Long bufferIndex = position/BLOCK_SIZE;
-        int offset = (int) (position%BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
-        try {
-            buffer.putShort(offset, value);
-        } finally {
-            unlockBufferForUpdate(bufferIndex);
-        }
+    public int readInt(long id) throws IOException {
+
+        return readInt(id, 0);
+
     }
+
+ 
 
     /**
      * 在指定绝对位置存储 int 类型数据
+     *
      * @param position 绝对字节偏移量
      * @param value 值
      * @throws IOException IO异常
      */
     protected void storeIntOffset(long position, int value) throws IOException {
-        Long bufferIndex = position/BLOCK_SIZE;
-        int offset = (int) (position%BLOCK_SIZE);
+        Long bufferIndex = position / BLOCK_SIZE;
+        int offset = (int) (position % BLOCK_SIZE);
         MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
         try {
             buffer.putInt(offset, value);
@@ -1114,16 +1689,17 @@ public class DsObject {
             unlockBufferForUpdate(bufferIndex);
         }
     }
-    
+
     /**
      * 在指定绝对位置存储 byte 类型数据
+     *
      * @param position 绝对字节偏移量
      * @param value 值
      * @throws IOException IO异常
      */
     protected void storeByteOffset(long position, byte value) throws IOException {
-        Long bufferIndex = position/BLOCK_SIZE;
-        int offset = (int) (position%BLOCK_SIZE);
+        Long bufferIndex = position / BLOCK_SIZE;
+        int offset = (int) (position % BLOCK_SIZE);
         MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
         try {
             buffer.put(offset, value);
@@ -1131,10 +1707,10 @@ public class DsObject {
             unlockBufferForUpdate(bufferIndex);
         }
     }
-    
-    
+
     /**
      * 在指定绝对位置存储 long 类型数据
+     *
      * @param position 绝对字节偏移量
      * @param values
      * @throws IOException IO异常
@@ -1165,11 +1741,12 @@ public class DsObject {
             remaining -= can;
             pos += (long) can * 4L;
         }
-        
+
     }
-    
+
     /**
      * 在指定绝对位置读取 long 类型数据
+     *
      * @param position 绝对字节偏移量
      * @param values
      * @throws IOException IO异常
@@ -1200,18 +1777,19 @@ public class DsObject {
             remaining -= can;
             pos += (long) can * 4L;
         }
-        
+
     }
 
     /**
      * 从指定绝对位置读取 int 类型数据
+     *
      * @param position 绝对字节偏移量
      * @return 值
      * @throws IOException IO异常
      */
     protected int loadIntOffset(long position) throws IOException {
-        long bufferIndex = position/BLOCK_SIZE;
-        int offset = (int) (position%BLOCK_SIZE);
+        long bufferIndex = position / BLOCK_SIZE;
+        int offset = (int) (position % BLOCK_SIZE);
         MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
         try {
             return buffer.getInt(offset);
@@ -1221,109 +1799,20 @@ public class DsObject {
 
     }
 
-    /**
-     * 从给定的缓冲区数组中读取 int 数据（支持跨缓冲区）
-     * @param position 绝对字节偏移量
-     * @param buffers 缓冲区数组
-     * @return 值
-     * @throws IOException IO异常
-     */
-    public int readInt(int position,MappedByteBuffer... buffers) throws IOException {
-        int bufferIndex = position/BLOCK_SIZE;
-        int offset = (int) (position%BLOCK_SIZE);
-        MappedByteBuffer buffer = buffers[bufferIndex];;
-        return buffer.getInt(offset);
-    }
+
 
     /**
-     * 从给定的缓冲区数组中读取 long 数据
-     * @param position 绝对字节偏移量
-     * @param buffers 缓冲区数组
-     * @return 值
-     * @throws IOException IO异常
-     */
-    public long readLong(int position,MappedByteBuffer... buffers) throws IOException {
-        int bufferIndex = position/BLOCK_SIZE;
-        int offset = (int) (position%BLOCK_SIZE);
-        MappedByteBuffer buffer = buffers[bufferIndex];;
-        return buffer.getLong(offset);
-    }
-
-    /**
-     * 向给定的缓冲区数组写入 int 数据
-     * @param position 绝对字节偏移量
-     * @param value 值
-     * @param buffers 缓冲区数组
-     * @return 缓冲区索引
-     * @throws IOException IO异常
-     */
-    public int writeInt(int position,int value,MappedByteBuffer... buffers) throws IOException {
-        int bufferIndex = position/BLOCK_SIZE;
-        int offset = (int) (position%BLOCK_SIZE);
-        MappedByteBuffer buffer = buffers[bufferIndex];;
-        buffer.putInt(offset,value);
-        return bufferIndex;
-    }
-
-    /**
-     * 向给定的缓冲区数组写入 long 数据
-     * @param position 绝对字节偏移量
-     * @param value 值
-     * @param buffers 缓冲区数组
-     * @return 缓冲区索引
-     * @throws IOException IO异常
-     */
-    public int writeLong(int position,long value,MappedByteBuffer... buffers) throws IOException {
-        int bufferIndex = position/BLOCK_SIZE;
-        int offset = (int) (position%BLOCK_SIZE);
-        MappedByteBuffer buffer = buffers[bufferIndex];;
-        buffer.putLong(offset,value);
-        return bufferIndex;
-    }
-   
-   /**
-    * 写入 short 类型数据
-    */
-   public void writeShort(long id,int position, short value) throws IOException {
-        long index = id*dataUnitSize+position;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
-        try {
-            buffer.putShort(offset, value);
-        } finally {
-            unlockBufferForUpdate(bufferIndex);
-        }
-    }
-    
-  
-   
-   /**
-    * 写入 float 类型数据
-    */
-   public void writeFloat(long id,int position, float value) throws IOException {
-        long index = id*dataUnitSize+position;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
-        try {
-            buffer.putFloat(offset, value);
-        } finally {
-            unlockBufferForUpdate(bufferIndex);
-        }
-    }
-    
-   /**
-    * 读取 float 类型数据
+     * 读取 float 类型数据
+     *
      * @param id
      * @param position
-     * @return 
-     * @throws java.io.IOException 
-    */
-   public float readFloat(long id,int position) throws IOException {
-        long index = id*dataUnitSize+position;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
+     * @return
+     * @throws java.io.IOException
+     */
+    public float readFloat(long id, int position) throws IOException {
+        long index = id * dataUnitSize + position;
+        Long bufferIndex = index / BLOCK_SIZE;
+        int offset = (int) (index % BLOCK_SIZE);
         MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
         try {
             return buffer.getFloat(offset);
@@ -1331,18 +1820,19 @@ public class DsObject {
             unlockBufferForRead(bufferIndex);
         }
     }
-   
-   /**
-    * 写入 double 类型数据
+
+    /**
+     * 写入 double 类型数据
+     *
      * @param id
      * @param position
      * @param value
      * @throws java.io.IOException
-    */
-   public void writeDouble(long id,int position, double value) throws IOException {
-        long index = id*dataUnitSize+position;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
+     */
+    public void writeDouble(long id, int position, double value) throws IOException {
+        long index = id * dataUnitSize + position;
+        Long bufferIndex = index / BLOCK_SIZE;
+        int offset = (int) (index % BLOCK_SIZE);
         MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
         try {
             buffer.putDouble(offset, value);
@@ -1350,289 +1840,202 @@ public class DsObject {
             unlockBufferForUpdate(bufferIndex);
         }
     }
-    
-   /**
-    * 读取 double 类型数据
+
+    /**
+     * 读取 double 类型数据
+     *
      * @param id
      * @param position
-     * @return 
-     * @throws java.io.IOException 
-    */
-   public double readDouble(long id,int position) throws IOException {
-        long index = id*dataUnitSize+position;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
+     * @return
+     * @throws java.io.IOException
+     */
+    public double readDouble(long id, int position) throws IOException {
+        long index = id * dataUnitSize + position;
+        Long bufferIndex = index / BLOCK_SIZE;
+        int offset = (int) (index % BLOCK_SIZE);
         MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
         try {
             return buffer.getDouble(offset);
         } finally {
             unlockBufferForRead(bufferIndex);
         }
-        
+
     }
+
    
-   /**
-    * 写入 byte 类型数据
+
+
+    /**
+     * 读取字节数组
+     *
      * @param id
-     * @param position
-     * @param value
+     * @return
      * @throws java.io.IOException
-    */
-   public void writeByte(long id,int position, byte value) throws IOException {
-        long index = id*dataUnitSize+position;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
-        try {
-            buffer.put(offset, value);
-        } finally {
-            unlockBufferForUpdate(bufferIndex);
-        }
-    }
-    
-   /**
-    * 读取 byte 类型数据
-     * @param id
-     * @param position
-     * @return 
-     * @throws java.io.IOException 
-    */
-   public byte readByte(long id,int position) throws IOException {
-        long index = id*dataUnitSize+position;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
-        try {
-            return buffer.get(offset);
-        } finally {
-            unlockBufferForRead(bufferIndex);
-        }
-        
-    }
- 
-  
-   
-   /**
-    * 读取字节数组
-     * @param id
-     * @return 
-     * @throws java.io.IOException
-    * @throws DsDataReadingLessThanException 如果读取超出块边界
-    */
-   public byte[] readBytesWithId(long id) throws IOException {
+     * @throws DsDataReadingLessThanException 如果读取超出块边界
+     */
+    public byte[] readBytesWithId(long id) throws IOException {
         byte[] out = new byte[dataUnitSize];
         readBytes(id, 0, out);
         return out;
     }
-   
- /**
-    * 读取字节数组
+
+    /**
+     * 读取字节数组
+     *
      * @param id
      * @param position
      * @param out
      * @throws java.io.IOException
-    * @throws DsDataReadingLessThanException 如果读取超出块边界
-    */
-   public void readBytes(long id,int position, byte[] out) throws IOException {
-       readBytes(id, position, out, 0, out.length);
-        
+     * @throws DsDataReadingLessThanException 如果读取超出块边界
+     */
+    public void readBytes(long id, int position, byte[] out) throws IOException {
+        readBytes(id, position, out, 0, out.length);
+
     }
-   
-   /**
-    * 读取数据到字节数组的部分位置
-     * @param id
-     * @param position
-     * @param out
-     * @param offsetOut
-     * @param count
-     * @throws java.io.IOException
-    */
-   public void readBytes(long id,int position, byte[] out,int offsetOut,int count) throws IOException {
-        long pos = id * (long) dataUnitSize + position;
-        int remaining = count;
-        int outPos = offsetOut;
-        while (remaining > 0) {
-            Long bufferIndex = pos / BLOCK_SIZE;
-            int offset = (int) (pos % BLOCK_SIZE);
-            int take = Math.min(remaining, BLOCK_SIZE - offset);
-            MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
-            try {
-                buffer.get(offset, out, outPos, take);
-            } finally {
-                unlockBufferForRead(bufferIndex);
-            }
-            remaining -= take;
-            outPos += take;
-            pos += take;
-        }
-        
-    }
-   
-   /**
-    * 写入字节数组的部分内容
+
+ 
+
+    /**
+     * 写入字节数组的部分内容
+     *
      * @param id
      * @param value
      * @throws java.io.IOException
-    */
-   public void writeBytesWithId(long id, byte[] value) throws IOException {
+     */
+    public void writeBytesWithId(long id, byte[] value) throws IOException {
         writeBytes(id, 0, value);
     }
-   
-   /**
-    * 初始化数据块的零字节
+
+    /**
+     * 初始化数据块的零字节
+     *
      * @param id
      * @throws java.io.IOException
-    */
-   public void clearWithId(long id) throws IOException {
+     */
+    public void clearWithId(long id) throws IOException {
         writeBytes(id, 0, zero_block_unit);
     }
-    
-  
-   /**
-    * 写入字节数组
+
+    /**
+     * 写入字节数组
+     *
      * @param id
      * @param position
      * @param value
      * @throws java.io.IOException
-    * @throws DsDataOverFlowException 如果写入超出块边界
-    */
-   public void writeBytes(long id,int position, byte[] value) throws IOException {
+     * @throws DsDataOverFlowException 如果写入超出块边界
+     */
+    public void writeBytes(long id, int position, byte[] value) throws IOException {
         writeBytes(id, position, value, 0, value.length);
     }
-       
-   /**
-    * 写入字节数组的部分内容
-     * @param id
-     * @param position
-     * @param value
-     * @param offsetIn
-     * @param count
-     * @throws java.io.IOException
-    */
-   public void writeBytes(long id,int position, byte[] value,int offsetIn,int count) throws IOException {
-        long pos = id * (long) dataUnitSize + position;
-        int remaining = count;
-        int inPos = offsetIn;
-        while (remaining > 0) {
-            Long bufferIndex = pos / BLOCK_SIZE;
-            int offset = (int) (pos % BLOCK_SIZE);
-            int take = Math.min(remaining, BLOCK_SIZE - offset);
-            MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
-            try {
-                buffer.put(offset, value, inPos, take);
-            } finally {
-                unlockBufferForUpdate(bufferIndex);
-            }
-            remaining -= take;
-            inPos += take;
-            pos += take;
-        }
-    }
-    
 
-   
-   /**
-    * 写入 UTF-8 字符串
+ 
+
+    /**
+     * 写入 UTF-8 字符串
+     *
      * @param id
      * @param position
      * @param value
      * @param offsetIn
      * @param count
      * @throws java.io.IOException
-    */
-   public void writeUtf8(long id,int position, String value,int offsetIn,int count) throws IOException {
-        long index = id*dataUnitSize+position;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
+     */
+    public void writeUtf8(long id, int position, String value, int offsetIn, int count) throws IOException {
+        long index = id * dataUnitSize + position;
+        Long bufferIndex = index / BLOCK_SIZE;
+        int offset = (int) (index % BLOCK_SIZE);
         byte[] data = value.getBytes(UTF_8);
-        if((offset+count)<=BLOCK_SIZE){
+        if ((offset + count) <= BLOCK_SIZE) {
             MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
             try {
-                buffer.put(offset, data,offsetIn,count);
+                buffer.put(offset, data, offsetIn, count);
             } finally {
                 unlockBufferForUpdate(bufferIndex);
             }
-        }else{
+        } else {
             throw new DsDataOverFlowException();
         }
     }
-    
-   /**
-    * 读取 UTF-8 字符串
+
+    /**
+     * 读取 UTF-8 字符串
+     *
      * @param id
      * @param position
      * @param out
      * @param offsetOut
      * @param count
      * @throws java.io.IOException
-    */
-   public void readUtf8(long id,int position, byte[] out,int offsetOut,int count) throws IOException {
-        long index = id*dataUnitSize+position;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
-        if((offset+count)<=BLOCK_SIZE){
+     */
+    public void readUtf8(long id, int position, byte[] out, int offsetOut, int count) throws IOException {
+        long index = id * dataUnitSize + position;
+        Long bufferIndex = index / BLOCK_SIZE;
+        int offset = (int) (index % BLOCK_SIZE);
+        if ((offset + count) <= BLOCK_SIZE) {
             MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
             try {
-                buffer.get(offset,out,offsetOut,count);
+                buffer.get(offset, out, offsetOut, count);
             } finally {
                 unlockBufferForRead(bufferIndex);
             }
-        }else{
+        } else {
             throw new DsDataOverFlowException();
         }
-        
+
     }
-   
-   /**
-    * 写入整个数据单元
+
+    /**
+     * 写入整个数据单元
+     *
      * @param id
      * @param value
      * @param offsetIn
      * @throws java.io.IOException
-    */
-   public void writeUnit(long id, byte[] value,int offsetIn) throws IOException {
-        long index = id*dataUnitSize;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
-        if((offset+dataUnitSize)<=BLOCK_SIZE){
+     */
+    public void writeUnit(long id, byte[] value, int offsetIn) throws IOException {
+        long index = id * dataUnitSize;
+        Long bufferIndex = index / BLOCK_SIZE;
+        int offset = (int) (index % BLOCK_SIZE);
+        if ((offset + dataUnitSize) <= BLOCK_SIZE) {
             MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
             try {
                 buffer.put(offset, value, offsetIn, dataUnitSize);
             } finally {
                 unlockBufferForUpdate(bufferIndex);
             }
-        }else{
+        } else {
             throw new DsDataOverFlowException();
         }
     }
-    
-   /**
-    * 读取整个数据单元
+
+    /**
+     * 读取整个数据单元
+     *
      * @param id
      * @param out
      * @param offsetOut
      * @throws java.io.IOException
-    */
-   public void readUnit(long id, byte[] out,int offsetOut) throws IOException {
-        long index = id*dataUnitSize;
-        Long bufferIndex = index/BLOCK_SIZE;
-        int offset = (int) (index%BLOCK_SIZE);
-        if((offset+dataUnitSize)<=BLOCK_SIZE){
+     */
+    public void readUnit(long id, byte[] out, int offsetOut) throws IOException {
+        long index = id * dataUnitSize;
+        Long bufferIndex = index / BLOCK_SIZE;
+        int offset = (int) (index % BLOCK_SIZE);
+        if ((offset + dataUnitSize) <= BLOCK_SIZE) {
             MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
             try {
                 buffer.get(offset, out, offsetOut, dataUnitSize);
             } finally {
                 unlockBufferForRead(bufferIndex);
             }
-        }else{
+        } else {
             throw new DsDataOverFlowException();
         }
-        
+
     }
-    
+
     /**
-     * 加载指定索引的块(buffer)到内存。
-     * 如果文件不够大，会自动扩展文件大小。
+     * 加载指定索引的块(buffer)到内存。 如果文件不够大，会自动扩展文件大小。
      *
      * @param bufferIndex 块索引 (0-based)
      * @return 映射的 MappedByteBuffer
@@ -1653,8 +2056,7 @@ public class DsObject {
                 return buffer;
             }
             ensureCapacity(BLOCK_SIZE, bufferIndex, -1);
-            try (RandomAccessFile file = new RandomAccessFile(dataFile, "rw");
-                 FileChannel channel = file.getChannel()) {
+            try (RandomAccessFile file = new RandomAccessFile(dataFile, "rw"); FileChannel channel = file.getChannel()) {
                 long position = bufferIndex * BLOCK_SIZE;
                 if (file.length() >= position + BLOCK_SIZE) {
                     buffer = channel.map(FileChannel.MapMode.READ_WRITE, position, BLOCK_SIZE);
@@ -1677,6 +2079,7 @@ public class DsObject {
 
     /**
      * 卸载指定的缓冲区，并确保数据同步到磁盘。
+     *
      * @param bufferIndex 缓冲区索引
      * @throws IOException IO异常
      */
@@ -1703,6 +2106,7 @@ public class DsObject {
 
     /**
      * 卸载指定的帧缓冲区。
+     *
      * @param position 帧起始位置
      * @throws IOException IO异常
      */
@@ -1727,8 +2131,8 @@ public class DsObject {
     }
 
     /**
-     * 加载指定位置和长度的数据帧。
-     * 类似于 loadBuffer，但支持非标准块大小。
+     * 加载指定位置和长度的数据帧。 类似于 loadBuffer，但支持非标准块大小。
+     *
      * @param position 起始位置
      * @param length 长度
      * @return 映射的缓冲区
@@ -1743,30 +2147,28 @@ public class DsObject {
                 return buffer;
             }
             ensureCapacity(length, -1, position);
-            try (RandomAccessFile file = new RandomAccessFile(dataFile, "rw");
-                 FileChannel channel = file.getChannel()) {
-                long size = position+length;
-                if(file.length()>=size){
+            try (RandomAccessFile file = new RandomAccessFile(dataFile, "rw"); FileChannel channel = file.getChannel()) {
+                long size = position + length;
+                if (file.length() >= size) {
                     buffer = channel.map(FileChannel.MapMode.READ_WRITE, position, length);
-                }else{//初始化并新增数据区
+                } else {//初始化并新增数据区
                     long oldSize = file.length();
                     file.setLength(size);
                     buffer = channel.map(FileChannel.MapMode.READ_WRITE, position, length);
-                   int count = length/BLOCK_SIZE;
-                   int rest = length%BLOCK_SIZE;
-                   //初始化新增数据区
-                    for(int i=0;i<count;i++){
+                    int count = length / BLOCK_SIZE;
+                    int rest = length % BLOCK_SIZE;
+                    //初始化新增数据区
+                    for (int i = 0; i < count; i++) {
                         buffer.put(ZERO_BLOCK_BYTES);
                     }
-                    if(rest>0){
+                    if (rest > 0) {
                         byte[] data = new byte[rest];
                         buffer.put(data);
                     }
-                    if(position>oldSize){
-                        byte[] data = new byte[(int) (position-oldSize)];
+                    if (position > oldSize) {
+                        byte[] data = new byte[(int) (position - oldSize)];
                         try (
-                                ByteArrayInputStream in = new ByteArrayInputStream(data);
-                                ReadableByteChannel rc = Channels.newChannel(in);) {
+                            ByteArrayInputStream in = new ByteArrayInputStream(data); ReadableByteChannel rc = Channels.newChannel(in);) {
                             channel.transferFrom(channel, oldSize, data.length);
                         }
 
@@ -1785,34 +2187,37 @@ public class DsObject {
 
     /**
      * 加载缓冲区用于更新，并加锁。
+     *
      * @param bufferIndex 缓冲区索引
      * @return 映射的缓冲区
      * @throws IOException IO异常
      */
     protected MappedByteBuffer loadBufferForUpdate(Long bufferIndex) throws IOException {
         ReentrantReadWriteLock lock = getDataBufferLock(bufferIndex);
-        lock.writeLock().lock();
+        
         MappedByteBuffer buffer = datatBuffers.get(bufferIndex);
         if (buffer != null) {
             touchDataBuffer(bufferIndex);
+            lock.writeLock().lock();
             return buffer;
         }
         try {
             buffer = loadBuffer(bufferIndex);
             touchDataBuffer(bufferIndex);
+            lock.writeLock().lock();
             return buffer;
         } catch (IOException e) {
-            lock.writeLock().unlock();
             throw e;
         }
-
+        
     }
 
     /**
      * 释放更新锁，并将缓冲区标记为脏（需要同步）。
+     *
      * @param bufferIndex 缓冲区索引
      */
-    protected void unlockBufferForUpdate(Long bufferIndex)  {
+    protected void unlockBufferForUpdate(Long bufferIndex) {
         dirtyBuffers.add(bufferIndex);
         getDataBufferLock(bufferIndex).writeLock().unlock();
 
@@ -1820,33 +2225,32 @@ public class DsObject {
 
     /**
      * 释放缓冲区锁（不标记为脏）。
+     *
      * @param bufferIndex 缓冲区索引
      */
-    protected void unlockBuffer(Long bufferIndex)  {
+    protected void unlockBuffer(Long bufferIndex) {
         getDataBufferLock(bufferIndex).writeLock().unlock();
 
     }
-    
-      
+
     /**
-     * 将所有脏缓冲区（dirty buffers）同步到磁盘。
-     * 确保数据的持久性。
+     * 将所有脏缓冲区（dirty buffers）同步到磁盘。 确保数据的持久性。
      */
-    public void sync(){
+    public void sync() {
         if (syncOpLock.tryLock()) {
             try {
                 // TODO: 优化同步策略。目前遍历Set可能在大数据量下较慢。
                 // 考虑批量处理或异步同步。
-                for(Long i:dirtyBuffers){
+                for (Long i : dirtyBuffers) {
                     MappedByteBuffer buffer = datatBuffers.get(i);
-                    if(buffer!=null){
+                    if (buffer != null) {
                         buffer.force();
                     }
                 }
                 dirtyBuffers.clear();
-                for(Long i:dirtyFrameBuffers){
+                for (Long i : dirtyFrameBuffers) {
                     MappedByteBuffer buffer = frameBuffers.get(i);
-                    if(buffer!=null){
+                    if (buffer != null) {
                         buffer.force();
                     }
                 }
@@ -1856,24 +2260,26 @@ public class DsObject {
             }
         }
     }
-    
+
     /**
      * 标记指定缓冲区为脏（已修改）。
+     *
      * @param bufferIndex 缓冲区索引
      */
     public void dirty(Long bufferIndex) {
-        
-           // try {
-                //syncOpLock.lock();
-                dirtyBuffers.add(bufferIndex);
-           // } finally {
-                //syncOpLock.unlock();
-           // }
-        
+
+        // try {
+        //syncOpLock.lock();
+        dirtyBuffers.add(bufferIndex);
+        // } finally {
+        //syncOpLock.unlock();
+        // }
+
     }
 
     /**
      * 标记指定帧缓冲区为脏（已修改）。
+     *
      * @param position 帧位置
      */
     public void dirtyFrame(Long position) {
@@ -1890,13 +2296,13 @@ public class DsObject {
     private static Method UNMAPPER_METHOD;
     private static Object UNSAFE_OBJ;
     private static Method UNSAFE_INVOKE_CLEANER;
-    
+
     /**
      * 释放 MappedByteBuffer 占用的堆外内存。
      * <p>
-     * <b>警告：</b> 此方法使用反射访问 JDK 内部 API。
-     * 在较新版本的 JDK (9+) 中，如果未允许非法访问，可能会失败。
+     * <b>警告：</b> 此方法使用反射访问 JDK 内部 API。 在较新版本的 JDK (9+) 中，如果未允许非法访问，可能会失败。
      * </p>
+     *
      * @param buffer 要释放的缓冲区
      */
     public void unloadBuffer(MappedByteBuffer buffer) {
@@ -1926,4 +2332,6 @@ public class DsObject {
         }
 
     }
+
+  
 }

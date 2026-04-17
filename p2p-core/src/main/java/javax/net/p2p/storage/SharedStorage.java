@@ -28,5 +28,11 @@ public class SharedStorage {
          return STORAGE_MAP.get(storeId);
         
     }
+    
+    public final static File registerStorageLocation(int storeId,File dir){
+        
+         return STORAGE_MAP.put(storeId,dir);
+        
+    }
    
 }

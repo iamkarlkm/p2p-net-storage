@@ -1,0 +1,19 @@
+user_id: 1
+ws_url: ws://127.0.0.1:18094/p2p
+listen_port: 18092
+keyfile_path: ../keyfiles/demo.key
+key_id_sha256_hex: e32a9c0bc8374963ece200715b415958010167ba95298b99d94054575cc8e57c
+rsa_private_key_pem_path: ./keys/node1.pem
+crypto_mode: KEYFILE_XOR_RSA_OAEP
+reported_endpoints:
+  - transport: ws
+    addr: 127.0.0.1:18092
+storage_locations:
+  11: ./peer1_storage_11
+presence_cache_path: ./peer1_presence.json
+magic: 0x1234
+version: 1
+flags_plain: 4
+flags_encrypted: 5
+max_frame_payload: 4194304
+renew_seconds: 10

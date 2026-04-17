@@ -3,6 +3,7 @@ package javax.net.p2p.server.handler;
 import java.io.File;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.channel.AbstractStreamRequestAdapter;
+import javax.net.p2p.common.AbstractSendMesageExecutor;
 import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.FileDataModel;
@@ -24,7 +25,7 @@ public class FileGetStreamServerHandler extends AbstractStreamRequestAdapter imp
     }
 
     @Override
-    public void processStream(ServerSendUdpMesageExecutor executor, P2PWrapper request) throws InterruptedException {
+    public void processStream(AbstractSendMesageExecutor executor, P2PWrapper request) throws InterruptedException {
         try {
             if (request.getCommand() == P2PCommand.GET_FILE_STREAM) {
                 FileDataModel payload = (FileDataModel) request.getData();

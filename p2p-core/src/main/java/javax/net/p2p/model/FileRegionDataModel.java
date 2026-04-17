@@ -6,7 +6,7 @@
 package javax.net.p2p.model;
 
 /**
- * 以netty FileRegion 陌生上传下载文件 
+ * 以netty FileRegion 上传下载文件 
  * @author karl
  */
 public class FileRegionDataModel {

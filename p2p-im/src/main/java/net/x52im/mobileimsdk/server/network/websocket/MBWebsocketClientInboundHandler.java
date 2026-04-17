@@ -17,8 +17,7 @@
 package net.x52im.mobileimsdk.server.network.websocket;
 
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.SimpleChannelInboundHandler;
-import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
+import io.netty.channel.SimpleChannelInboundHandler;import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketFrame;
 import io.netty.handler.timeout.ReadTimeoutException;
 import net.x52im.mobileimsdk.server.ServerCoreHandler;
@@ -29,6 +28,9 @@ import net.x52im.mobileimsdk.server.utils.ServerToolKits;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+/**
+ * MBWebsocketClientInboundHandler。
+ */
 
 public class MBWebsocketClientInboundHandler  extends SimpleChannelInboundHandler<WebSocketFrame>
 {

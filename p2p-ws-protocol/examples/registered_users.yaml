@@ -1,0 +1,13 @@
+users:
+  - node_id64: 1
+    node_key_hex: 7f452ebef313d403ec564ba9bd51a1bebb36f011371e60a035ca20189c7961a5
+    pubkey_spki_der_base64: MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAy6HHkoPaB71WaC4VBfEv5ELsUOgI7OCF0f1dkYzYRPSNMtwk3irQU/+MtTN0isecsvifQ0W7paGl9a0iv4JF+bCR7JTL7V4Uglzxka1JCIsHydM947ZP7e4oNJC1bKwktApO8ArVrkAxUX0OoRtKr5CC69NoPwTWun0y+MMOIBiSIimHfZfgKhZZjgkJo5gMW9j85+wOJobtDLyXUfwTtc1Jq1qQPXtwxWvMJBCP+Wc7EF5D3EzlwAXd04umqJxQjJY+JkqxAtLEFxBdLtXgqzau0zYM3ZhWDO/adQql8izBnVNIltRR8zYtIjjDjSiEa9Etj4UfleP5MCFkHccg4QIDAQAB
+    enabled: true
+    allowed_crypto_modes:
+      - KEYFILE_XOR_RSA_OAEP
+  - node_id64: 2
+    node_key_hex: 58fac958914bf0fb5c953314ef580158fe59c177f9ceae8f0ba2a445308b5d84
+    pubkey_spki_der_base64: MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoBcXzwCRUHW6dqWGYHbMg2wg0wDwl6keBgwAJx5cwbnPs6dlCooobd2qcucY4V+d4kkjLIzzN99XFRO+ai+OCJLuLDc68u0ptFaH124MG5xPeIwrMCrsQDVXZRUS8aWqd6goGI9YK9KI7UmTCOY6t9AhhzsWobykgb7CxnCHRQ1HXLUvzeO6btiAJtHzQjMJCxch876pBgKZttGp0UjWrjT+tVQRFNhJcpvyi0ezr7XRqEltqKf6VF33fp1lVZorhHkAYcP1748U6zbU5HyYcbDdpfsMI9HJj/0p6Xw6dw2dO+FPCMca9t+LilodNH8aK7LrWo+i45r6bQ3F8fDBPQIDAQAB
+    enabled: true
+    allowed_crypto_modes:
+      - KEYFILE_XOR_RSA_OAEP

@@ -8,16 +8,10 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.MappedByteBuffer;
 import java.io.RandomAccessFile;
-import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.Calendar;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.Arrays;
-import java.util.List;
-import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.List;
@@ -811,14 +805,14 @@ public class DbSha256KV {
             }
             
             // fallback to nextOffset
-            headerOpLock.lock();
+            headerOpLockWrite.lock();
             try {
                 long offset = nextOffset;
                 nextOffset += unitSize;
                 headerBuffer.putLong(8, nextOffset);
                 return offset;
             } finally {
-                headerOpLock.unlock();
+                headerOpLockWrite.unlock();
             }
         }
 
@@ -915,12 +909,12 @@ public class DbSha256KV {
          */
         public long add(byte[] data) throws IOException {
             long offset = allocateOffset();
-            headerOpLock.lock();
+            headerOpLockWrite.lock();
             try {
                 writeBytes(offset, data);
                 return offset;
             } finally {
-                headerOpLock.unlock();
+                headerOpLockWrite.unlock();
             }
         }
         

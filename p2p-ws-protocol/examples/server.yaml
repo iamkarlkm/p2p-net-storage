@@ -1,0 +1,8 @@
+listen_port: 18090
+ws_path: /p2p
+keyfile_path: ../keyfiles/demo.key
+magic: 0x1234
+version: 1
+flags_plain: 4
+flags_encrypted: 5
+max_frame_payload: 4194304

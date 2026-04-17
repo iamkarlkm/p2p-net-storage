@@ -1,0 +1,16 @@
+user_id: 2
+ws_url: ws://127.0.0.1:18094/p2p
+listen_port: 18093
+keyfile_path: ../keyfiles/demo.key
+key_id_sha256_hex: e32a9c0bc8374963ece200715b415958010167ba95298b99d94054575cc8e57c
+rsa_private_key_pem_path: ./keys/node2.pem
+pubkey_spki_der_base64: MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoBcXzwCRUHW6dqWGYHbMg2wg0wDwl6keBgwAJx5cwbnPs6dlCooobd2qcucY4V+d4kkjLIzzN99XFRO+ai+OCJLuLDc68u0ptFaH124MG5xPeIwrMCrsQDVXZRUS8aWqd6goGI9YK9KI7UmTCOY6t9AhhzsWobykgb7CxnCHRQ1HXLUvzeO6btiAJtHzQjMJCxch876pBgKZttGp0UjWrjT+tVQRFNhJcpvyi0ezr7XRqEltqKf6VF33fp1lVZorhHkAYcP1748U6zbU5HyYcbDdpfsMI9HJj/0p6Xw6dw2dO+FPCMca9t+LilodNH8aK7LrWo+i45r6bQ3F8fDBPQIDAQAB
+crypto_mode: KEYFILE_XOR_RSA_OAEP
+reported_endpoints:
+  - transport: ws
+    addr: 127.0.0.1:18093
+magic: 0x1234
+version: 1
+flags_plain: 4
+flags_encrypted: 5
+max_frame_payload: 4194304

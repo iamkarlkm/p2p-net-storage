@@ -1,6 +1,6 @@
 package ds;
 
-import com.q3lives.ds.collections.DsHashMap;
+import com.q3lives.ds.collections.DsHashMapI64;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -13,14 +13,14 @@ import static org.junit.Assert.*;
 
 public class DsHashMapMapInterfaceTest {
 
-    private DsHashMap backing;
+    private DsHashMapI64 backing;
     private Map<Long, Long> map;
 
     @Before
     public void setUp() throws Exception {
         File dataFile = new File("test_dshashmap_map_iface.dat");
         deleteWithSidecars(dataFile);
-        backing = new DsHashMap(dataFile);
+        backing = new DsHashMapI64(dataFile);
         map = backing;
     }
 

@@ -1,11 +1,8 @@
-/*
- * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
- * Click nbfs://nbhost/SystemFileSystem/Templates/Classes/Class.java to edit this template
- */
+
 package javax.net.p2p.model;
 
 /**
- *
+ * 应用层封包,解包,流控。
  * @author Administrator
  */
 public class FrameSegmentModel {

@@ -15,23 +15,26 @@ import java.io.RandomAccessFile;
 import java.net.JarURLConnection;
 import java.net.URL;
 import java.util.Enumeration;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.jar.JarEntry;
 import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.api.P2PServiceCategory;
 import javax.net.p2p.channel.ChannelUtils;
 import javax.net.p2p.auth.utils.AuthCrypto;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
+import javax.net.p2p.server.P2PServiceManager;
 import javax.net.p2p.utils.SerializationUtil;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 public abstract class AbstractQuicMessageProcessor extends ByteToMessageDecoder {
 
-    protected final static HashMap<P2PCommand, P2PCommandHandler> HANDLER_REGISTRY_MAP = new HashMap<>();
+    protected static final java.util.concurrent.ConcurrentHashMap<P2PCommand, P2PCommandHandler> HANDLER_REGISTRY_MAP = new java.util.concurrent.ConcurrentHashMap<>();
+    protected static final java.util.concurrent.ConcurrentHashMap<P2PCommand, P2PCommandHandler> ALL_HANDLER_MAP = new java.util.concurrent.ConcurrentHashMap<>();
+    protected static final java.util.concurrent.ConcurrentHashMap<P2PServiceCategory, java.util.concurrent.ConcurrentHashMap<P2PCommand, P2PCommandHandler>> CATEGORY_HANDLER_MAP = new java.util.concurrent.ConcurrentHashMap<>();
 
     private static final Set<String> CLASS_CACHE = new HashSet<>();
 
@@ -222,6 +225,7 @@ public abstract class AbstractQuicMessageProcessor extends ByteToMessageDecoder 
     public static void registerProcessors() {
         try {
             scannerClass("javax.net.p2p.server.handler");
+            P2PServiceManager.initFromConfigOnce();
             doRegister();
             log.info("HANDLER_REGISTRY_MAP ->\n{}", HANDLER_REGISTRY_MAP);
         } catch (Exception ex) {
@@ -282,12 +286,23 @@ public abstract class AbstractQuicMessageProcessor extends ByteToMessageDecoder 
                 if (P2PCommandHandler.class.isAssignableFrom(clazz)) {
                     //P2PCommandHandler handler = clazz.newInstance();
                     P2PCommandHandler handler = (P2PCommandHandler) clazz.getDeclaredConstructor().newInstance();
-                    if (HANDLER_REGISTRY_MAP.get(handler.getCommand()) == null) {
-                        HANDLER_REGISTRY_MAP.put(handler.getCommand(), handler);
-                    } else {
-                        throw new RuntimeException("P2PCommandHandler register confilct:" + handler.getCommand()
+                    P2PCommand cmd = handler.getCommand();
+                    P2PCommandHandler prev = ALL_HANDLER_MAP.putIfAbsent(cmd, handler);
+                    if (prev != null) {
+                        throw new RuntimeException("P2PCommandHandler register confilct:" + cmd
                                 + " " + className
-                                + " <> " + HANDLER_REGISTRY_MAP.get(handler.getCommand()));
+                                + " <> " + prev.getClass().getName());
+                    }
+
+                    CATEGORY_HANDLER_MAP.computeIfAbsent(cmd.getCategory(), k -> new java.util.concurrent.ConcurrentHashMap<>()).put(cmd, handler);
+
+                    if (P2PServiceManager.isEnabled(cmd.getCategory())) {
+                        P2PCommandHandler exist = HANDLER_REGISTRY_MAP.putIfAbsent(cmd, handler);
+                        if (exist != null && exist != handler) {
+                            throw new RuntimeException("P2PCommandHandler register confilct:" + cmd
+                                    + " " + className
+                                    + " <> " + exist.getClass().getName());
+                        }
                     }
                 }
 
@@ -295,6 +310,41 @@ public abstract class AbstractQuicMessageProcessor extends ByteToMessageDecoder 
                 //registryMap.put(interfaces.getName(), clazz.newInstance()); 
             } catch (Exception e) {
                 e.printStackTrace();
+            }
+        }
+    }
+
+    public static void unloadCategory(P2PServiceCategory category) {
+        if (category == null) {
+            return;
+        }
+        java.util.concurrent.ConcurrentHashMap<P2PCommand, P2PCommandHandler> handlers = CATEGORY_HANDLER_MAP.get(category);
+        if (handlers == null || handlers.isEmpty()) {
+            return;
+        }
+        for (P2PCommand cmd : handlers.keySet()) {
+            HANDLER_REGISTRY_MAP.remove(cmd);
+        }
+    }
+
+    public static void loadCategory(P2PServiceCategory category) {
+        if (category == null) {
+            return;
+        }
+        java.util.concurrent.ConcurrentHashMap<P2PCommand, P2PCommandHandler> handlers = CATEGORY_HANDLER_MAP.get(category);
+        if (handlers == null || handlers.isEmpty()) {
+            return;
+        }
+        for (P2PCommand cmd : handlers.keySet()) {
+            P2PCommandHandler handler = handlers.get(cmd);
+            if (handler == null) {
+                continue;
+            }
+            P2PCommandHandler exist = HANDLER_REGISTRY_MAP.putIfAbsent(cmd, handler);
+            if (exist != null && exist != handler) {
+                throw new RuntimeException("P2PCommandHandler register confilct:" + cmd
+                        + " " + handler.getClass().getName()
+                        + " <> " + exist.getClass().getName());
             }
         }
     }

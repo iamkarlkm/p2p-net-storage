@@ -21,7 +21,9 @@ import java.util.UUID;
 import net.x52im.mobileimsdk.server.ServerLauncher;
 
 import com.google.gson.Gson;
-
+/**
+ * Protocal。
+ */
 public class Protocal
 {
 	protected boolean bridge = false;

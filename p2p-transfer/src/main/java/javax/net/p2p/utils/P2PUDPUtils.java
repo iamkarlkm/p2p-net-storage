@@ -27,6 +27,10 @@ import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.interfaces.P2PFileService;
 import javax.net.p2p.interfaces.P2PMessageService;
 import javax.net.p2p.model.FileDataModel;
+import javax.net.p2p.model.FileListEntry;
+import javax.net.p2p.model.FileListRequest;
+import javax.net.p2p.model.FileListResponse;
+import javax.net.p2p.model.FileRenameRequest;
 import javax.net.p2p.model.FileSegmentsDataModel;
 import javax.net.p2p.model.FilesCommandModel;
 import javax.net.p2p.model.P2PWrapper;
@@ -864,7 +868,7 @@ public class P2PUDPUtils implements P2PFileService {
     @Override
     public boolean exists(int storeId, String path) throws Exception {
 
-        P2PWrapper p2p = P2PWrapper.build(P2PCommand.FILES_COMMAND, new FilesCommandModel(storeId, "exists", path));
+        P2PWrapper p2p = P2PWrapper.build(P2PCommand.FILE_EXISTS, new FileDataModel(storeId, path, 0, null));
         P2PWrapper response = (P2PWrapper) node.excute(p2p);
         //P2PCommandHandler handler = (P2PCommandHandler) registryMap.get(response.getCommand());
         //System.out.println(handler);
@@ -880,7 +884,7 @@ public class P2PUDPUtils implements P2PFileService {
     @Override
     public boolean mkdirs(int storeId, String path) throws Exception {
 
-        P2PWrapper p2p = P2PWrapper.build(P2PCommand.FILES_COMMAND, new FilesCommandModel(storeId, "mkdirs", path));
+        P2PWrapper p2p = P2PWrapper.build(P2PCommand.FILE_MKDIRS, new FileDataModel(storeId, path, 0, null));
         P2PWrapper response = (P2PWrapper) node.excute(p2p);
         //P2PCommandHandler handler = (P2PCommandHandler) registryMap.get(response.getCommand());
         //System.out.println(handler);
@@ -895,7 +899,7 @@ public class P2PUDPUtils implements P2PFileService {
 
     public boolean rename(int storeId, String src, String dst) throws Exception {
 
-        P2PWrapper p2p = P2PWrapper.build(P2PCommand.FILES_COMMAND, new FilesCommandModel(storeId, "rename", src, dst));
+        P2PWrapper p2p = P2PWrapper.build(P2PCommand.FILE_RENAME, new FileRenameRequest(storeId, src, dst));
         P2PWrapper response = (P2PWrapper) node.excute(p2p);
         //P2PCommandHandler handler = (P2PCommandHandler) registryMap.get(response.getCommand());
         //System.out.println(handler);
@@ -910,12 +914,19 @@ public class P2PUDPUtils implements P2PFileService {
 
     public List<String> ls(int storeId, String path) throws Exception {
 
-        P2PWrapper p2p = P2PWrapper.build(P2PCommand.FILES_COMMAND, new FilesCommandModel(storeId, "ls", path));
+        P2PWrapper p2p = P2PWrapper.build(P2PCommand.FILE_LIST, new FileListRequest(storeId, path, 1, 100));
         P2PWrapper response = (P2PWrapper) node.excute(p2p);
         
         if (response.getCommand().getValue() == P2PCommand.STD_OK.getValue()) {
-            FilesCommandModel<List<String>> payload = (FilesCommandModel) response.getData();
-            return payload.getData();
+            FileListResponse payload = (FileListResponse) response.getData();
+            if (payload == null || payload.items == null) {
+                return null;
+            }
+            List<String> list = new ArrayList<>();
+            for (FileListEntry e : payload.items) {
+                list.add(e.path);
+            }
+            return list;
         } else{
             throw runtimeError(response);
         }

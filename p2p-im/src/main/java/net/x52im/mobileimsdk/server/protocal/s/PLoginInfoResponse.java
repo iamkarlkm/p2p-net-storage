@@ -15,7 +15,9 @@
  * PLoginInfoResponse.java at 2023-9-21 15:24:55, code by Jack Jiang.
  */
 package net.x52im.mobileimsdk.server.protocal.s;
-
+/**
+ * PLoginInfoResponse。
+ */
 public class PLoginInfoResponse
 {
 	protected int code = 0;

@@ -6,6 +6,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
+import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.common.AbstractSendMesageExecutor;
 import javax.net.p2p.common.ExecutorServicePool;
 import javax.net.p2p.common.pool.ClonePooledObjects;
@@ -45,9 +46,9 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
 
     private Integer requestId;
 
-    private Condition awaitCondition;
+    private final ReentrantLock lock = new ReentrantLock();
 
-    private ReentrantLock lock;
+    private final Condition awaitCondition = lock.newCondition();
 
     @Override
     public void run() {
@@ -59,7 +60,6 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
                     log.error("request:{}  -> exception:{}", request, ex.getMessage());
                 }
             } else if (streamRequest != null) {
-                lock = new ReentrantLock();
                 if (executor.isActive()) {
                     lock.lock();
                     try {
@@ -79,7 +79,6 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
                 } else {
                     executor.reconnect();//尝试重新连接
                 }
-                awaitCondition = lock.newCondition();
                 while (continued) {
                     if (executor.isActive()) {
                         lock.lock();
@@ -170,11 +169,22 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
                 return;
             }
 //            log.info("AbstractLongTimedRequestAdapter:{} \n -> request:{}", handler, request);
-            if (request instanceof CancelP2PWrapper) {
+            boolean isCancel = request instanceof CancelP2PWrapper;
+            if (!isCancel) {
+                P2PCommand cmd = request.getCommand();
+                isCancel = cmd == P2PCommand.STD_CANCEL || cmd == P2PCommand.STD_STOP;
+            }
+            if (isCancel) {
                 this.continued = false;
                 Future f = FUTURE_MAP.remove(request.getSeq());
                 if (f != null && !f.isDone()) {
                     f.cancel(true);
+                }
+                lock.lock();
+                try {
+                    awaitCondition.signalAll();
+                } finally {
+                    lock.unlock();
                 }
             }
 
@@ -189,13 +199,15 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
         this.executor = null;
 
         if (request != null) {//单向/有限流处理
-            this.request = null;
             FUTURE_MAP.remove(request.getSeq());
+            this.request = null;
         } else if (requestId != null) {
             FUTURE_MAP.remove(requestId);
             this.requestId = null;
-            awaitCondition = null;
         }
+        this.streamRequest = null;
+        this.streamMessage = null;
+        this.continued = false;
     }
 
     @Override

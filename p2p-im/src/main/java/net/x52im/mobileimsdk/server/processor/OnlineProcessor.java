@@ -28,7 +28,9 @@ import net.x52im.mobileimsdk.server.utils.LocalSendHelper;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+/**
+ * OnlineProcessor。
+ */
 public class OnlineProcessor
 {
 	public static final AttributeKey<String> ATTRIBUTE_KEY_USER_ID = AttributeKey.newInstance("__user_id__");

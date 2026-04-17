@@ -1,0 +1,10 @@
+listen_port: 18092
+ws_path: /p2p
+keyfile_path: ../keyfiles/demo.key
+registered_users_path: ./registered_users.yaml
+ttl_seconds: 5
+magic: 0x1234
+version: 1
+flags_plain: 4
+flags_encrypted: 5
+max_frame_payload: 4194304

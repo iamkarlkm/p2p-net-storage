@@ -118,6 +118,12 @@ public class ServerMessageProcessor extends AbstractTcpMessageProcessor {
             ctx.channel().writeAndFlush(denied);
             return;
         }
+
+        if (!P2PServiceManager.isEnabled(msg.getCommand().getCategory())) {
+            P2PWrapper unavailable = P2PWrapper.build(msg.getSeq(), P2PCommand.STD_ERROR, "service unavailable: " + msg.getCommand().getCategory());
+            ctx.channel().writeAndFlush(unavailable);
+            return;
+        }
         
         // 根据消息命令类型查找对应的处理器
         // HANDLER_REGISTRY_MAP是父类维护的命令处理器注册表

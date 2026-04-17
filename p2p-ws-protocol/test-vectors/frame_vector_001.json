@@ -1,0 +1,12 @@
+{
+  "name": "frame_vector_001",
+  "header": {
+    "length_u32": 8,
+    "magic_u16": 4660,
+    "version_u8": 1,
+    "flags_u8": 5
+  },
+  "cipher_payload_hex": "0a1a2e3e4a5a7666",
+  "ws_binary_payload_hex": "00000008123401050a1a2e3e4a5a7666"
+}
+

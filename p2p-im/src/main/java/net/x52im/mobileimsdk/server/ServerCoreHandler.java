@@ -30,6 +30,9 @@ import net.x52im.mobileimsdk.server.utils.ServerToolKits;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+/**
+ * ServerCoreHandler。
+ */
 
 public class ServerCoreHandler
 {

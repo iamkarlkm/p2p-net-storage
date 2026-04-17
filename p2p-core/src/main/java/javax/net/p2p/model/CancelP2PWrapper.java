@@ -2,7 +2,7 @@ package javax.net.p2p.model;
 
 /**
  * <p>
- * 取消对应seq序列号的长耗时操作
+ * 取消对应seq序列号的长耗时操作-扩展P2PWrapper。
  * </p>
  *
  * @author iamkarl@163.com

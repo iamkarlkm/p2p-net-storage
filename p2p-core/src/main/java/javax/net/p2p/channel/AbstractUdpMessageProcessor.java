@@ -19,18 +19,21 @@ import java.net.JarURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Enumeration;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.jar.JarEntry;
+import java.util.concurrent.ConcurrentHashMap;
 import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.api.P2PServiceCategory;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.interfaces.P2PMessageService;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.common.UdpFrameInbound;
 import javax.net.p2p.server.ServerSendUdpMesageExecutor;
+import javax.net.p2p.server.P2PServiceManager;
 import javax.net.p2p.utils.SerializationUtil;
 import lombok.extern.slf4j.Slf4j;
+import javax.net.p2p.utils.XXHashUtil;
 
 /**
  *  UDP消息处理基本类
@@ -39,7 +42,9 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHandler<DatagramPacket> {
 
-    protected final static HashMap<P2PCommand, P2PCommandHandler> HANDLER_REGISTRY_MAP = new HashMap<>();
+    protected static final ConcurrentHashMap<P2PCommand, P2PCommandHandler> HANDLER_REGISTRY_MAP = new ConcurrentHashMap<>();
+    protected static final ConcurrentHashMap<P2PCommand, P2PCommandHandler> ALL_HANDLER_MAP = new ConcurrentHashMap<>();
+    protected static final ConcurrentHashMap<P2PServiceCategory, ConcurrentHashMap<P2PCommand, P2PCommandHandler>> CATEGORY_HANDLER_MAP = new ConcurrentHashMap<>();
 
     private static final List<String> CLASS_CACHE = new ArrayList<>();
 
@@ -60,23 +65,23 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
     /**
      * udp数据帧接收缓冲类,用于udp流控,粘包,帧同步(重置),超时重发等
      */
-    protected final Map<InetSocketAddress,UdpFrameInbound> udpFrameInboundMap = new HashMap<>();
+    protected final ConcurrentHashMap<InetSocketAddress,UdpFrameInbound> udpFrameInboundMap = new ConcurrentHashMap<>();
     //protected final Map<InetSocketAddress,UdpFrameOutbound> udpFrameOutboundMap = new HashMap<>();
     
     //最近发送消息缓存
-    protected final Map<InetSocketAddress,ByteBuf> lastMessageMap = new HashMap<>();
+    protected final ConcurrentHashMap<InetSocketAddress,ByteBuf> lastMessageMap = new ConcurrentHashMap<>();
     
-    protected final Map<Integer,AbstractLongTimedRequestAdapter> lastLongTimedRequestAdapterMap = new HashMap<>();
+    protected final ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<Integer,AbstractLongTimedRequestAdapter>> lastLongTimedRequestAdapterMap = new ConcurrentHashMap<>();
     
-     protected final Map<Integer,AbstractStreamRequestAdapter> lastStreamRequestAdapterMap = new HashMap<>();
+     protected final ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<Integer,AbstractStreamRequestAdapter>> lastStreamRequestAdapterMap = new ConcurrentHashMap<>();
      
-     protected Map<InetSocketAddress,ServerSendUdpMesageExecutor> asyncSendUdpMesageExecutorMap = new HashMap<>();
+     protected ConcurrentHashMap<InetSocketAddress,ServerSendUdpMesageExecutor> asyncSendUdpMesageExecutorMap = new ConcurrentHashMap<>();
      
-     protected Map<InetSocketAddress,ChannelFuture> lastSendMessageChannelFutureMap = new HashMap<>();
+     protected ConcurrentHashMap<InetSocketAddress,ChannelFuture> lastSendMessageChannelFutureMap = new ConcurrentHashMap<>();
      
-     protected final Map<Integer,ByteBuf> cachePingMap = new HashMap<>();
+     protected final ConcurrentHashMap<Integer,ByteBuf> cachePingMap = new ConcurrentHashMap<>();
      
-     protected final Map<Integer,ByteBuf> cachePongMap = new HashMap<>();
+     protected final ConcurrentHashMap<Integer,ByteBuf> cachePongMap = new ConcurrentHashMap<>();
      
      protected long frameLastTransportSpeed;//上一个成功send数据帧的传输速率,字节/毫秒(mill),用于流控/帧超时重发
      
@@ -223,19 +228,19 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
                 case HEART_PONG:
                     buffer = cachePongMap.get(magic);
                     if(buffer == null){
-                        buffer = SerializationUtil.serializeToByteBuf(response, magic);
+                        buffer = encodeUdpFrame(response, magic);
                         cachePongMap.put(magic, buffer);
                     }   buffer.retain();
                     break;
                 case HEART_PING:
                     buffer = cachePingMap.get(magic);
                     if(buffer == null){
-                        buffer = SerializationUtil.serializeToByteBuf(response, magic);
+                        buffer = encodeUdpFrame(response, magic);
                         cachePingMap.put(magic, buffer);
                     }   buffer.retain();
                     break;
                 default://有序发送(send -> ack/retrieve)消息
-                    buffer = SerializationUtil.serializeToByteBuf(response, magic);
+                    buffer = encodeUdpFrame(response, magic);
                     cacheLastResponse(remoteAddess,buffer);
                     break;
             }
@@ -279,7 +284,6 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
                         }
                     }
                 });
-                cf.sync();
             }
         } catch (Exception ex) {
             log.warn("{}字节长度的消息处理异常:{},关闭channel:{}", buffer.readableBytes(), ex, channel.id());
@@ -289,6 +293,17 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
                 log.error(ex.getMessage());
             }
         }
+    }
+
+    private ByteBuf encodeUdpFrame(P2PWrapper response, int magic) {
+        byte[] data = SerializationUtil.serialize(response);
+        int hash = XXHashUtil.hash32(data);
+        ByteBuf buffer = SerializationUtil.tryGetDirectBuffer(data.length + 12);
+        buffer.writeInt(data.length);
+        buffer.writeInt(magic);
+        buffer.writeInt(hash);
+        buffer.writeBytes(data);
+        return buffer;
     }
     
     
@@ -331,6 +346,7 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
     public static void registerProcessors() {
         try {
             scannerClass("javax.net.p2p.server.handler");
+            P2PServiceManager.initFromConfigOnce();
             doRegister();
             log.info("HANDLER_REGISTRY_MAP ->\n{}", HANDLER_REGISTRY_MAP);
         } catch (Exception ex) {
@@ -401,12 +417,23 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
                 if (P2PCommandHandler.class.isAssignableFrom(clazz)) {
                     //P2PCommandHandler handler = clazz.newInstance();
                     P2PCommandHandler handler = (P2PCommandHandler) clazz.getDeclaredConstructor().newInstance();
-                    if (HANDLER_REGISTRY_MAP.get(handler.getCommand()) == null) {
-                        HANDLER_REGISTRY_MAP.put(handler.getCommand(), handler);
-                    } else {
-                        throw new RuntimeException("P2PCommandHandler register confilct:" + handler.getCommand()
+                    P2PCommand cmd = handler.getCommand();
+                    P2PCommandHandler prev = ALL_HANDLER_MAP.putIfAbsent(cmd, handler);
+                    if (prev != null) {
+                        throw new RuntimeException("P2PCommandHandler register confilct:" + cmd
+                            + " " + className
+                            + " <> " + prev.getClass().getName());
+                    }
+
+                    CATEGORY_HANDLER_MAP.computeIfAbsent(cmd.getCategory(), k -> new ConcurrentHashMap<>()).put(cmd, handler);
+
+                    if (P2PServiceManager.isEnabled(cmd.getCategory())) {
+                        P2PCommandHandler exist = HANDLER_REGISTRY_MAP.putIfAbsent(cmd, handler);
+                        if (exist != null && exist != handler) {
+                            throw new RuntimeException("P2PCommandHandler register confilct:" + cmd
                                 + " " + className
-                                + " <> " + HANDLER_REGISTRY_MAP.get(handler.getCommand()));
+                                + " <> " + exist.getClass().getName());
+                        }
                     }
                 }
 
@@ -414,6 +441,41 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
                 //registryMap.put(interfaces.getName(), clazz.newInstance()); 
             } catch (Exception e) {
                 e.printStackTrace();
+            }
+        }
+    }
+
+    public static void unloadCategory(P2PServiceCategory category) {
+        if (category == null) {
+            return;
+        }
+        ConcurrentHashMap<P2PCommand, P2PCommandHandler> handlers = CATEGORY_HANDLER_MAP.get(category);
+        if (handlers == null || handlers.isEmpty()) {
+            return;
+        }
+        for (P2PCommand cmd : handlers.keySet()) {
+            HANDLER_REGISTRY_MAP.remove(cmd);
+        }
+    }
+
+    public static void loadCategory(P2PServiceCategory category) {
+        if (category == null) {
+            return;
+        }
+        ConcurrentHashMap<P2PCommand, P2PCommandHandler> handlers = CATEGORY_HANDLER_MAP.get(category);
+        if (handlers == null || handlers.isEmpty()) {
+            return;
+        }
+        for (P2PCommand cmd : handlers.keySet()) {
+            P2PCommandHandler handler = handlers.get(cmd);
+            if (handler == null) {
+                continue;
+            }
+            P2PCommandHandler exist = HANDLER_REGISTRY_MAP.putIfAbsent(cmd, handler);
+            if (exist != null && exist != handler) {
+                throw new RuntimeException("P2PCommandHandler register confilct:" + cmd
+                    + " " + handler.getClass().getName()
+                    + " <> " + exist.getClass().getName());
             }
         }
     }

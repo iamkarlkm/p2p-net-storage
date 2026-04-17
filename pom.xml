@@ -17,6 +17,7 @@
         <module>p2p-hdfs</module>
         <module>p2p-im</module>
         <module>p2p-db</module>
+        <module>p2p-cache</module>
     </modules>
 
     <properties>

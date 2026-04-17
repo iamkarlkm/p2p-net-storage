@@ -37,6 +37,9 @@ import io.netty.channel.socket.DatagramPacket;
 import io.netty.channel.socket.ServerSocketChannel;
 import io.netty.channel.socket.ServerSocketChannelConfig;
 import io.netty.util.internal.PlatformDependent;
+/**
+ * MBUDPServerChannel。
+ */
 
 public class MBUDPServerChannel extends AbstractNioMessageChannel implements ServerSocketChannel 
 {

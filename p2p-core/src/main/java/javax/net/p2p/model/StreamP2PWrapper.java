@@ -6,7 +6,7 @@ import javax.net.p2p.common.pool.PooledObjects;
 
 /**
  * <p>
- * 流消息封装
+ * 流消息封装-扩展P2PWrapper。
  * </p>
  *
  * @author iamkarl@163.com

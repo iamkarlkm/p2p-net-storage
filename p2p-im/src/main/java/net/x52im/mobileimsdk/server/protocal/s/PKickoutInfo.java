@@ -15,7 +15,9 @@
  * PKickoutInfo.java at 2023-9-21 15:24:55, code by Jack Jiang.
  */
 package net.x52im.mobileimsdk.server.protocal.s;
-
+/**
+ * PKickoutInfo。
+ */
 public class PKickoutInfo
 {
 	public final static int KICKOUT_FOR_DUPLICATE_LOGIN = 1;

@@ -14,7 +14,9 @@
  * under the License.
  */
 package com.flydean17.protobuf;
-
+/**
+ * StudentOrBuilder。
+ */
 public interface StudentOrBuilder extends
     // @@protoc_insertion_point(interface_extends:com.flydean17.protobuf.Student)
     com.google.protobuf.MessageOrBuilder {

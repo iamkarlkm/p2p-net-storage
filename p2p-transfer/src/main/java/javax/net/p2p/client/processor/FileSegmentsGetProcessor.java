@@ -22,6 +22,11 @@ import javax.net.p2p.utils.P2PUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
 
+/**
+ * 分片下载处理器：从远端节点拉取单个分片并写入本地文件。
+ *
+ * <p>作为 Runnable 在多线程下载时被调度执行。</p>
+ */
 public class FileSegmentsGetProcessor implements Runnable {
 
 	private final P2PFileService node;

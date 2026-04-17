@@ -24,7 +24,9 @@ import net.x52im.mobileimsdk.server.protocal.s.PKickoutInfo;
 import net.x52im.mobileimsdk.server.protocal.s.PLoginInfoResponse;
 
 import com.google.gson.Gson;
-
+/**
+ * ProtocalFactory。
+ */
 public class ProtocalFactory
 {
 	private static String create(Object c)

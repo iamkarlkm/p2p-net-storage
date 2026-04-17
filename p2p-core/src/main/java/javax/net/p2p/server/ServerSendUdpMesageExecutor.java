@@ -71,6 +71,7 @@ public class ServerSendUdpMesageExecutor extends AbstractSendMesageExecutor {
 //    protected final Map<Integer, Map<Integer, ByteBuf>> lastMessageSegmentsMap = new ConcurrentHashMap<>();
     protected ServerSendUdpMesageExecutor(int queueSize) {
         super(queueSize);
+        lock = new ReentrantLock();
         awaitCondition = lock.newCondition();
         awaitSegmentCondition = lock.newCondition();
         nextFrameSeedRandom = new Random(System.currentTimeMillis());
@@ -178,6 +179,22 @@ public class ServerSendUdpMesageExecutor extends AbstractSendMesageExecutor {
         lock.lock();
         try {
             responseQueue.put(message);
+            awaitCondition.signal();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public void sendResponse(P2PWrapper response) throws InterruptedException {
+        sendMessage(response);
+    }
+
+    @Override
+    public void sendResponse(P2PWrapper response, long timeout, java.util.concurrent.TimeUnit unit) throws java.util.concurrent.TimeoutException, InterruptedException {
+        lock.lock();
+        try {
+            responseQueue.offer(response, timeout, unit);
             awaitCondition.signal();
         } finally {
             lock.unlock();
@@ -476,12 +493,17 @@ public class ServerSendUdpMesageExecutor extends AbstractSendMesageExecutor {
 
 
     public final static <T> ServerSendUdpMesageExecutor build(AbstractP2PServer server, int queueSize, InetSocketAddress remote, Channel channel) {
+        Attribute<Integer> attrMagic = channel.attr(ChannelUtils.MAGIC);
+        Integer m = attrMagic.get();
+        return build(server, queueSize, remote, channel, m == null ? 0 : m);
+    }
+
+    public final static <T> ServerSendUdpMesageExecutor build(AbstractP2PServer server, int queueSize, InetSocketAddress remote, Channel channel, int magic) {
         ServerSendUdpMesageExecutor t = ConcurrentObjectPool.get(queueSize).poll();
         t.server = server;
         t.remote = remote;
         t.channel = channel;
-        Attribute<Integer> attrMagic = channel.attr(ChannelUtils.MAGIC);
-        t.magic = attrMagic.get();
+        t.magic = magic;
         //启动异步任务
         t.start(channel);
         return t;

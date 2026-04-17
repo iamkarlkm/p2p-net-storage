@@ -22,7 +22,9 @@ import io.netty.handler.codec.protobuf.ProtobufDecoder;
 import io.netty.handler.codec.protobuf.ProtobufEncoder;
 import io.netty.handler.codec.protobuf.ProtobufVarint32FrameDecoder;
 import io.netty.handler.codec.protobuf.ProtobufVarint32LengthFieldPrepender;
-
+/**
+ * StudentClientInitializer。
+ */
 public class StudentClientInitializer extends ChannelInitializer<SocketChannel> {
 
     @Override

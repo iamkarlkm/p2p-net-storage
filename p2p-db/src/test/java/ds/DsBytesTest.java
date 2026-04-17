@@ -1,6 +1,6 @@
 package ds;
 
-import com.q3lives.ds.util.DsBytes;
+import com.q3lives.ds.core.DsBytes;
 import java.io.File;
 import java.util.Arrays;
 import org.junit.Test;

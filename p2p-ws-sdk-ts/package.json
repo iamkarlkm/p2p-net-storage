@@ -1,0 +1,25 @@
+{
+  "name": "p2p-ws-sdk-ts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "verify-vectors": "tsx scripts/verify_vectors.ts",
+    "verify-handshake": "tsx scripts/verify_handshake.ts",
+    "verify-wrapper": "tsx scripts/verify_wrapper.ts",
+    "demo-echo": "tsx demo/echo_client.ts",
+    "demo-center-join": "tsx demo/center_join.ts",
+    "cli": "tsx src/cli.ts",
+    "swarm": "tsx src/swarm_cli.ts"
+  },
+  "dependencies": {
+    "protobufjs": "^7.4.0",
+    "ws": "^8.20.0",
+    "yaml": "^2.8.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

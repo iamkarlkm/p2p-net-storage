@@ -2,7 +2,7 @@
  * Copyright 2022 learn-netty4 Project
  *
  * The learn-netty4 Project licenses this file to you under the Apache License,
- * version 2.0 (the "License"); you may not use this file except in compliance
+ * version 2.0 (the "License"); you may not use thisfile except in compliance
  * with the License. You may obtain a copy of the License at:
  *
  *   https://www.apache.org/licenses/LICENSE-2.0
@@ -18,7 +18,9 @@ package com.flydean17.protobuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import lombok.extern.slf4j.Slf4j;
-
+/**
+ * StudentClientHandler。
+ */
 @Slf4j
 public class StudentClientHandler extends SimpleChannelInboundHandler<Student> {
 

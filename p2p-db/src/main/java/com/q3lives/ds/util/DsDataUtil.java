@@ -188,8 +188,19 @@ public class DsDataUtil {
      * @param value
      */
     public final static void storeLong(byte[] bytes, int offset, long value) {
-        for (int i = 0; i < LONG_SIZE; i++) {
-            bytes[offset + i] = (byte) (value >> (i * 8));
+       
+        for (int i = 0,j=LONG_SIZE-1; i < LONG_SIZE; i++,j--) {
+            bytes[offset + i] = (byte) (value >> (j * 8));
+        }
+
+    }
+    
+    public static void main(String[] args) {
+         byte[] b = new byte[8];
+        DsDataUtil.storeLong(b, 0, -10000);
+        for(int i= 0;i<8;i++){
+            int x = b[i]&0xff;
+            System.out.println(Integer.toHexString(x));
         }
     }
 
@@ -235,18 +246,7 @@ public class DsDataUtil {
 
     public int index = 0;
 
-    /**
-     * 本类的简单自测入口（演示 indexAdd、位图大小等）。
-     *
-     * <p>仅用于开发调试，不参与系统主流程。</p>
-     */
-    public static void main(String[] args) {
-        DsDataUtil dsDataUtil = new DsDataUtil();
-       indexAdd(dsDataUtil);
-        indexAdd(dsDataUtil);
-        System.out.println( (1<<10)*8);
-        System.out.println( ((1<<4)*2/32)*4);
-    }
+  
 
     /**
      * 自增 dsDataUtil.index（用于 main 演示）。

@@ -52,6 +52,9 @@ public enum P2PCommand {
     
     /** 握手消息，建立连接时的初始问候 */
     HAND(4),
+
+    /** 服务管理命令：启用/禁用/列出服务类别 */
+    SERVICE_CONTROL(60, P2PServiceCategory.CORE),
     
     /** 文本消息，用于传输简单文本数据 */
     ECHO(1001),
@@ -117,40 +120,52 @@ public enum P2PCommand {
     EXISTS(-3),
     
     /** 删除文件命令 */
-    REMOVE_FILE(-4),
+    REMOVE_FILE(-4, P2PServiceCategory.FILE),
     
     // ============== 本地文件操作命令 ==============
     
     /** 获取文件命令，从服务器读取文件 */
-    GET_FILE(7),
+    GET_FILE(7, P2PServiceCategory.FILE),
     
     /** 成功获取文件响应 */
-    R_OK_GET_FILE(8),
+    R_OK_GET_FILE(8, P2PServiceCategory.FILE),
     
     /** 上传文件命令，向服务器写入文件 */
-    PUT_FILE(14),
+    PUT_FILE(14, P2PServiceCategory.FILE),
     
     /** 强制上传文件命令，覆盖已存在的文件 */
-    FORCE_PUT_FILE(15),
+    FORCE_PUT_FILE(15, P2PServiceCategory.FILE),
     
     /** 获取文件分片命令，支持大文件分片传输 */
-    GET_FILE_SEGMENTS(20),
+    GET_FILE_SEGMENTS(20, P2PServiceCategory.FILE),
     
     /** 成功获取文件分片响应 */
-    R_OK_GET_FILE_SEGMENTS(43),
+    R_OK_GET_FILE_SEGMENTS(43, P2PServiceCategory.FILE),
     
     /** 上传文件分片命令 */
-    PUT_FILE_SEGMENTS(21),
+    PUT_FILE_SEGMENTS(21, P2PServiceCategory.FILE),
     
     /** 文件分片上传完成确认 */
-    PUT_FILE_SEGMENTS_COMPLETE(44),
+    PUT_FILE_SEGMENTS_COMPLETE(44, P2PServiceCategory.FILE),
     
     /** 检查文件命令，验证文件是否存在和完整性 */
-    CHECK_FILE(22),
+    CHECK_FILE(22, P2PServiceCategory.FILE),
     
     /** 文件信息查询命令 */
-    INFO_FILE(46),
+    INFO_FILE(46, P2PServiceCategory.FILE),
     
+    /** 文件重命名命令 */
+    FILE_RENAME(50, P2PServiceCategory.FILE),
+
+    /** 文件列表命令（分页） */
+    FILE_LIST(51, P2PServiceCategory.FILE),
+
+    /** 文件/目录是否存在 */
+    FILE_EXISTS(52, P2PServiceCategory.FILE),
+
+    /** 创建目录（递归） */
+    FILE_MKDIRS(53, P2PServiceCategory.FILE),
+
     /** 设置文件获取分块大小 */
     SET_FILE_SEGMENTS_GET_BLOCK_SIZE(49),
     
@@ -160,66 +175,66 @@ public enum P2PCommand {
     // ============== HDFS文件操作命令 ==============
     
     /** 获取HDFS文件命令 */
-    GET_HDFS_FILE(9),
+    GET_HDFS_FILE(9, P2PServiceCategory.HDFS),
     
     /** 成功获取HDFS文件响应 */
-    R_OK_GET_HDFS_FILE(10),
+    R_OK_GET_HDFS_FILE(10, P2PServiceCategory.HDFS),
     
     /** 获取HDFS文件信息命令 */
-    GET_HDFS_FILE_INFO(11),
+    GET_HDFS_FILE_INFO(11, P2PServiceCategory.HDFS),
     
     /** 成功获取HDFS文件信息响应 */
-    R_OK_GET_HDFS_FILE_INFO(12),
+    R_OK_GET_HDFS_FILE_INFO(12, P2PServiceCategory.HDFS),
     
     /** 上传HDFS文件命令 */
-    PUT_HDFS_FILE(13),
+    PUT_HDFS_FILE(13, P2PServiceCategory.HDFS),
     
     /** 成功上传HDFS文件响应 */
-    R_OK_PUT_HDFS_FILE(17),
+    R_OK_PUT_HDFS_FILE(17, P2PServiceCategory.HDFS),
     
     /** HDFS通用命令 */
-    HDFS_COMMAND(16),
+    HDFS_COMMAND(16, P2PServiceCategory.HDFS),
     
     /** 上传HDFS数据块命令 */
-    PUT_HDFS_BLOCK(18),
+    PUT_HDFS_BLOCK(18, P2PServiceCategory.HDFS),
     
     /** 获取HDFS数据块命令 */
-    GET_HDFS_BLOCK(25),
+    GET_HDFS_BLOCK(25, P2PServiceCategory.HDFS),
     
     /** 检查HDFS文件命令 */
-    CHECK_HDFS_FILE(23),
+    CHECK_HDFS_FILE(23, P2PServiceCategory.HDFS),
     
     /** 文件操作通用命令 */
-    FILES_COMMAND(19),
+    FILES_COMMAND(19, P2PServiceCategory.FILE),
     
     // ============== 腾讯云COS操作命令 ==============
     
     /** 获取腾讯云COS文件命令 */
-    GET_COS_FILE(26),
+    GET_COS_FILE(26, P2PServiceCategory.COS),
     
     /** 成功获取腾讯云COS文件响应 */
-    R_OK_GET_COS_FILE(27),
+    R_OK_GET_COS_FILE(27, P2PServiceCategory.COS),
     
     /** 获取腾讯云COS文件分片命令 */
-    GET_COS_FILE_SEGMENTS(47),
+    GET_COS_FILE_SEGMENTS(47, P2PServiceCategory.COS),
     
     /** 上传腾讯云COS文件命令 */
-    PUT_COS_FILE(29),
+    PUT_COS_FILE(29, P2PServiceCategory.COS),
     
     /** 上传腾讯云COS文件分片命令 */
-    PUT_COS_FILE_SEGMENTS(45),
+    PUT_COS_FILE_SEGMENTS(45, P2PServiceCategory.COS),
     
     /** 腾讯云COS文件分片上传完成确认 */
-    PUT_COS_FILE_SEGMENTS_COMPLETE(48),
+    PUT_COS_FILE_SEGMENTS_COMPLETE(48, P2PServiceCategory.COS),
     
     /** 从HDFS上传到腾讯云COS命令 */
-    PUT_COS_FILE_FROM_HDFS(30),
+    PUT_COS_FILE_FROM_HDFS(30, P2PServiceCategory.COS),
     
     /** 检查腾讯云COS文件命令 */
-    CHECK_COS_FILE(24),
+    CHECK_COS_FILE(24, P2PServiceCategory.COS),
     
     /** 腾讯云COS通用命令 */
-    COS_COMMAND(28),
+    COS_COMMAND(28, P2PServiceCategory.COS),
     
     // ============== 流式文件操作命令 ==============
     
@@ -278,101 +293,102 @@ public enum P2PCommand {
     // ========== 用户相关命令 (10000-10099) ==========
 
     /** IM_用户登录 */
-    IM_USER_LOGIN(10000),
+    IM_USER_LOGIN(10000, P2PServiceCategory.IM),
 
     /** IM_用户登出 */
-    IM_USER_LOGOUT(10001),
+    IM_USER_LOGOUT(10001, P2PServiceCategory.IM),
 
     /** IM_获取在线用户列表 */
-    IM_USER_LIST(10002),
+    IM_USER_LIST(10002, P2PServiceCategory.IM),
 
     /** IM_用户心跳 */
-    IM_USER_HEARTBEAT(10003),
+    IM_USER_HEARTBEAT(10003, P2PServiceCategory.IM),
 
     /** IM_用户状态更新 */
-    IM_USER_STATUS_UPDATE(10004),
+    IM_USER_STATUS_UPDATE(10004, P2PServiceCategory.IM),
 
     // ========== 聊天相关命令 (11000-11099) ==========
 
     /** IM_发送聊天消息 */
-    IM_CHAT_SEND(11000),
+    IM_CHAT_SEND(11000, P2PServiceCategory.IM),
 
     /** IM_接收聊天消息 */
-    IM_CHAT_RECEIVE(11001),
+    IM_CHAT_RECEIVE(11001, P2PServiceCategory.IM),
 
     /** IM_消息确认 */
-    IM_CHAT_ACK(11002),
+    IM_CHAT_ACK(11002, P2PServiceCategory.IM),
 
     /** IM_消息状态更新 */
-    IM_CHAT_STATUS_UPDATE(11003),
+    IM_CHAT_STATUS_UPDATE(11003, P2PServiceCategory.IM),
 
     /** IM_历史消息请求 */
-    IM_CHAT_HISTORY_REQUEST(11004),
+    IM_CHAT_HISTORY_REQUEST(11004, P2PServiceCategory.IM),
 
     /** IM_历史消息响应 */
-    IM_CHAT_HISTORY_RESPONSE(11005),
+    IM_CHAT_HISTORY_RESPONSE(11005, P2PServiceCategory.IM),
 
     /** IM_消息撤回 */
-    IM_CHAT_RECALL(11006),
+    IM_CHAT_RECALL(11006, P2PServiceCategory.IM),
 
     /** IM_消息转发 */
-    IM_CHAT_FORWARD(11007),
+    IM_CHAT_FORWARD(11007, P2PServiceCategory.IM),
 
     // ========== 群组相关命令 (12000-12099) ==========
 
     /** IM_创建群组 */
-    IM_GROUP_CREATE(12000),
+    IM_GROUP_CREATE(12000, P2PServiceCategory.IM),
 
     /** IM_解散群组 */
-    IM_GROUP_DISMISS(12001),
+    IM_GROUP_DISMISS(12001, P2PServiceCategory.IM),
 
     /** IM_加入群组 */
-    IM_GROUP_JOIN(12002),
+    IM_GROUP_JOIN(12002, P2PServiceCategory.IM),
 
     /** IM_离开群组 */
-    IM_GROUP_LEAVE(12003),
+    IM_GROUP_LEAVE(12003, P2PServiceCategory.IM),
 
     /** IM_获取群组列表 */
-    IM_GROUP_LIST(12004),
+    IM_GROUP_LIST(12004, P2PServiceCategory.IM),
 
     /** IM_获取群组成员 */
-    IM_GROUP_MEMBERS(12005),
+    IM_GROUP_MEMBERS(12005, P2PServiceCategory.IM),
 
     /** IM_群组消息发送 */
-    IM_GROUP_MESSAGE_SEND(12006),
+    IM_GROUP_MESSAGE_SEND(12006, P2PServiceCategory.IM),
 
     /** IM_群组消息接收 */
-    IM_GROUP_MESSAGE_RECEIVE(12007),
+    IM_GROUP_MESSAGE_RECEIVE(12007, P2PServiceCategory.IM),
 
     /** IM_设置群组管理员 */
-    IM_GROUP_SET_ADMIN(12008),
+    IM_GROUP_SET_ADMIN(12008, P2PServiceCategory.IM),
 
     /** IM_移除群组成员 */
-    IM_GROUP_REMOVE_MEMBER(12009),
+    IM_GROUP_REMOVE_MEMBER(12009, P2PServiceCategory.IM),
 
     /** IM_更新群组信息 */
-    IM_GROUP_UPDATE_INFO(12010),
+    IM_GROUP_UPDATE_INFO(12010, P2PServiceCategory.IM),
 
     // ========== 系统状态命令 (13000-13099) ==========
 
     /** IM_系统状态查询 */
-    IM_SYSTEM_STATUS(13000),
+    IM_SYSTEM_STATUS(13000, P2PServiceCategory.IM),
 
     /** IM_连接测试 */
-    IM_CONNECTION_TEST(13001),
+    IM_CONNECTION_TEST(13001, P2PServiceCategory.IM),
 
     /** IM_错误响应 */
-    IM_ERROR_RESPONSE(13002),
+    IM_ERROR_RESPONSE(13002, P2PServiceCategory.IM),
     
-    CACHE_STRING_COMMAND(22000),
+    CACHE_STRING_COMMAND(22000, P2PServiceCategory.CACHE),
     
-    CACHE_BYTES_COMMAND(22001),
+    CACHE_BYTES_COMMAND(22001, P2PServiceCategory.CACHE),
 
-    CACHE_LOCK_COMMAND(22002),
+    CACHE_LOCK_COMMAND(22002, P2PServiceCategory.CACHE),
     
-    DATA_TRANSFER(21000);
+    DATA_TRANSFER(21000, P2PServiceCategory.DATA_TRANSFER);
     /** 命令的数值编码，用于网络传输和序列化 */
     private final int value;
+    private final P2PServiceCategory category;
 
     /**
      * 构造函数，初始化命令的数值编码
@@ -388,6 +404,12 @@ public enum P2PCommand {
      */
     P2PCommand(int val) {
         this.value = val;
+        this.category = P2PServiceCategory.CORE;
+    }
+
+    P2PCommand(int val, P2PServiceCategory category) {
+        this.value = val;
+        this.category = category == null ? P2PServiceCategory.CORE : category;
     }
 
     /**
@@ -402,6 +424,10 @@ public enum P2PCommand {
      */
     public int getValue() {
         return value;
+    }
+
+    public P2PServiceCategory getCategory() {
+        return category;
     }
 
 }

@@ -84,7 +84,7 @@ public class DsDataIndex extends DsObject{
      * <p>用于分配新 id 时更新全局计数。</p>
      */
     public final void updateHeader(int count)  {
-        headerOpLock.lock();
+        headerOpLockWrite.lock();
         try {
             total += count;
             nextVal += count;
@@ -92,7 +92,7 @@ public class DsDataIndex extends DsObject{
             headerBuffer.putLong(HEADER_OFFSET_NEXT_VAL,nextVal);
             dirty(0l);
         }finally {
-            headerOpLock.unlock();
+            headerOpLockWrite.unlock();
         }
 
     }
@@ -101,13 +101,13 @@ public class DsDataIndex extends DsObject{
      * 仅递减 total 并写回 header（不改变 nextVal）。
      */
     public final void minusTotal(int count)  {
-        headerOpLock.lock();
+        headerOpLockWrite.lock();
         try {
             total -= count;
             headerBuffer.putInt(HEADER_OFFSET_TOTAL,total);
             dirtyBuffers.add(0l);
         }finally {
-            headerOpLock.unlock();
+            headerOpLockWrite.unlock();
         }
 
     }

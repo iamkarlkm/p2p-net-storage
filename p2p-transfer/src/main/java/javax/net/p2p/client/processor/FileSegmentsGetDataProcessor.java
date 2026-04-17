@@ -21,6 +21,11 @@ import javax.net.p2p.utils.P2PUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
 
+/**
+ * 分片下载处理器（内存数据版）：对单个分片数据进行下载并写入结果。
+ *
+ * <p>作为 Runnable 在多线程下载时被调度执行。</p>
+ */
 public class FileSegmentsGetDataProcessor implements Runnable {
 
 	private final P2PUtils node;

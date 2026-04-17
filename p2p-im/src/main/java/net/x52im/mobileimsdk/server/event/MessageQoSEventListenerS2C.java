@@ -19,7 +19,9 @@ package net.x52im.mobileimsdk.server.event;
 import java.util.ArrayList;
 
 import net.x52im.mobileimsdk.server.protocal.Protocal;
-
+/**
+ * MessageQoSEventListenerS2C。
+ */
 public interface MessageQoSEventListenerS2C
 {
 	void messagesLost(ArrayList<Protocal> lostMessages);

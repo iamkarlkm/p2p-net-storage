@@ -1,0 +1,122 @@
+syntax = "proto3";
+
+package p2pws;
+
+message Hand {
+  bytes client_pubkey = 1;
+  repeated bytes key_ids = 2;
+  uint32 max_frame_payload = 3;
+  string client_id = 4;
+}
+
+message HandAckPlain {
+  bytes session_id = 1;
+  bytes selected_key_id = 2;
+  uint32 offset = 3;
+  uint32 max_frame_payload = 4;
+  uint32 header_policy_id = 5;
+}
+
+message CryptUpdate {
+  bytes key_id = 1;
+  uint32 offset = 2;
+  int32 effective_from_seq = 3;
+}
+
+message HeaderUpdate {
+  int32 effective_from_seq = 1;
+  uint32 header_policy_id = 2;
+}
+
+message Endpoint {
+  string transport = 1;
+  string addr = 2;
+}
+
+message NodeCaps {
+  uint32 max_frame_payload = 1;
+  uint32 magic = 2;
+  uint32 version = 3;
+  uint32 flags_plain = 4;
+  uint32 flags_encrypted = 5;
+}
+
+message CenterHelloBody {
+  fixed64 node_id64 = 1;
+  bytes pubkey_spki_der = 2;
+  repeated Endpoint reported_endpoints = 3;
+  NodeCaps caps = 4;
+  uint64 timestamp_ms = 5;
+  string crypto_mode = 6;
+}
+
+message CenterHello {
+  CenterHelloBody body = 1;
+  bytes signature = 2;
+}
+
+message CenterHelloAck {
+  bytes node_key = 1;
+  Endpoint observed_endpoint = 2;
+  uint32 ttl_seconds = 3;
+  uint64 server_time_ms = 4;
+}
+
+message GetNode {
+  fixed64 node_id64 = 1;
+  bytes node_key = 2;
+}
+
+message GetNodeAck {
+  bool found = 1;
+  bytes node_key = 2;
+  fixed64 node_id64 = 3;
+  repeated Endpoint endpoints = 4;
+  NodeCaps caps = 5;
+  uint64 expires_at_ms = 6;
+}
+
+message PeerHelloBody {
+  fixed64 node_id64 = 1;
+  bytes pubkey_spki_der = 2;
+  uint64 timestamp_ms = 3;
+  string crypto_mode = 4;
+}
+
+message PeerHello {
+  PeerHelloBody body = 1;
+  bytes signature = 2;
+}
+
+message PeerHelloAck {
+  bytes node_key = 1;
+  uint64 server_time_ms = 2;
+}
+
+message RelayData {
+  fixed64 target_node_id64 = 1;
+  bytes target_node_key = 2;
+  fixed64 source_node_id64 = 3;
+  bytes source_node_key = 4;
+  bytes payload = 5; // The encrypted P2PWrapper or raw data
+}
+
+message ConnectHint {
+  fixed64 target_node_id64 = 1;
+  bytes target_node_key = 2;
+}
+
+message ConnectHintAck {
+  bool found = 1;
+  fixed64 target_node_id64 = 2;
+  bytes target_node_key = 3;
+  repeated Endpoint target_endpoints = 4;
+  uint64 token = 5;
+}
+
+message IncomingHint {
+  fixed64 source_node_id64 = 1;
+  bytes source_node_key = 2;
+  repeated Endpoint source_endpoints = 3;
+  uint64 token = 4;
+}

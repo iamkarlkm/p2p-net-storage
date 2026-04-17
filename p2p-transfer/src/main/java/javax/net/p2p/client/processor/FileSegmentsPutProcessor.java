@@ -13,6 +13,11 @@ import javax.net.p2p.utils.FileUtil;
 import javax.net.p2p.utils.P2PUtils;
 import javax.net.p2p.utils.SecurityUtils;
 
+/**
+ * 分片上传处理器：负责读取单个分片并上传到远端节点。
+ *
+ * <p>作为 Runnable 在多线程上传时被调度执行。</p>
+ */
 public class FileSegmentsPutProcessor implements Runnable {
 
 	
@@ -84,4 +89,3 @@ public class FileSegmentsPutProcessor implements Runnable {
 	
 
 }
-

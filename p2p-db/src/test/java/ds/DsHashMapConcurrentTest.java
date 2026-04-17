@@ -1,6 +1,6 @@
 package ds;
 
-import com.q3lives.ds.collections.DsHashMap;
+import com.q3lives.ds.collections.DsHashMapI64;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -16,14 +16,14 @@ import static org.junit.Assert.*;
 
 public class DsHashMapConcurrentTest {
 
-    private DsHashMap dsHashMap;
+    private DsHashMapI64 dsHashMap;
     private File dataFile;
 
     @Before
     public void setUp() throws Exception {
         dataFile = new File("test_dshashmap_concurrent.dat");
         deleteWithSidecars(dataFile);
-        dsHashMap = new DsHashMap(dataFile);
+        dsHashMap = new DsHashMapI64(dataFile);
     }
 
     private static void deleteWithSidecars(File f) {

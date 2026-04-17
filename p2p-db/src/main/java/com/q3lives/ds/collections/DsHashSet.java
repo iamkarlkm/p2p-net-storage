@@ -17,7 +17,7 @@ import com.q3lives.ds.util.DsDataUtil;
 
 
 /**
- * 通用 long->long 映射索引（以 64-bit 哈希值作为 key）。
+ * 通用 int->int 映射索引（以 32-bit 哈希值作为 key）。
  *
  * <p>
  * 实现上与 {@link DsHash64MasterIndex} 基本一致，都是 256-ary trie（8 层，每层 1 byte）。</p>
@@ -37,7 +37,7 @@ import com.q3lives.ds.util.DsDataUtil;
  * <li>它更接近“固定结构的哈希 trie 索引”，只负责 hashKey -> longValue 的映射。</li>
  * </ul>
  */
-public class DsHashSet extends DsObject implements Set<Long> {
+public class DsHashSet extends DsObject implements Set<Integer> {
 
     private static final byte[] MAGIC = new byte[]{'.', 'S', 'E', 'T'};
     private static final int HEADER_SIZE = DsFixedBucketStore.HEADER_SIZE;
@@ -52,15 +52,15 @@ public class DsHashSet extends DsObject implements Set<Long> {
     private static final int STATE_NEXT_LEVEL = 3;//存储层升级。
 
     private static final int BITMAP_BYTES = 64;//256*2bit(位图)/8   00->empty,01->value,10->sub layer,11->next hashmap
-    private static final int SLOT_PAYLOAD_BYTES = 8;
+    private static final int SLOT_PAYLOAD_BYTES = 4;
 
 
-    private long nextNodeId;
-    private long size;
+    private int nextNodeId;
+    private int size;
     private final long[] zeroNode;
 
     private final int hashOffset = 0;
-    private final int hashLen = 8;
+    private final int hashLen = 4;
     
     /**
      * 创建一个 key->value 的 trie 映射文件。
@@ -68,7 +68,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
      * @param file
      */
     public DsHashSet(File file) {
-        super(file, 2112);//2字节索引 8位哈希 => 256*2-bit(位图)/8 + 256*8-byte(value) = 64+512+2048 =2112
+        super(file, HEADER_SIZE, 1088);//2字节索引 8位哈希 => 256*2-bit(位图)/8 + 256*4-byte(value) = 64+1024 =1088
         zeroNode = new long[this.dataUnitSize / 8];
         initHeader();
 
@@ -79,16 +79,16 @@ public class DsHashSet extends DsObject implements Set<Long> {
             byte[] m = new byte[4];
             headerBuffer.get(HDR_MAGIC, m, 0, 4);
             if (Arrays.equals(m, MAGIC)) {
-                nextNodeId = headerBuffer.getLong(HDR_NEXT_NODE_ID);
-                size = headerBuffer.getLong(HDR_SIZE);
+                nextNodeId = headerBuffer.getInt(HDR_NEXT_NODE_ID);
+                size = headerBuffer.getInt(HDR_SIZE);
                 return;
             }
             headerBuffer.put(HDR_MAGIC, MAGIC, 0, 4);//4字节
             headerBuffer.putInt(HDR_VALUE_SIZE, SLOT_PAYLOAD_BYTES);//value size
             nextNodeId = 1;
             size = 0;
-            headerBuffer.putLong(HDR_NEXT_NODE_ID, nextNodeId);
-            headerBuffer.putLong(HDR_SIZE, size);
+            headerBuffer.putInt(HDR_NEXT_NODE_ID, nextNodeId);
+            headerBuffer.putInt(HDR_SIZE, size);
             dirty(0L);
             loadBuffer((long) HEADER_SIZE / BLOCK_SIZE);//标准64字节头
         } catch (IOException e) {
@@ -96,10 +96,23 @@ public class DsHashSet extends DsObject implements Set<Long> {
         }
     }
 
-    public boolean add(long key) throws IOException {
+    public boolean add(int key) throws IOException {
         byte[] b = new byte[hashLen];
-        DsDataUtil.storeLong(b, hashOffset, key);
+        storeHashBytes(b, hashOffset, key & 0xFFFFFFFFL);
         return put(b, key);
+    }
+    
+    private byte[] hashBytes(int key) {
+        byte[] b = new byte[hashLen];
+        storeHashBytes(b, hashOffset, key & 0xFFFFFFFFL);
+        return b;
+    }
+
+    private void storeHashBytes(byte[] bytes, int hashOffset, long value) {
+        int n = Math.min(hashLen, bytes.length);
+        for (int i = 0; i < n; i++) {
+            bytes[i] = (byte) (value >> ((hashOffset + i) * 8));
+        }
     }
 
     /**
@@ -113,12 +126,12 @@ public class DsHashSet extends DsObject implements Set<Long> {
      * @return
      * @throws java.io.IOException
      */
-    public boolean put(byte[] hashes, long key) throws IOException {
+    public boolean put(byte[] hashes, int key) throws IOException {
         if (hashes == null || hashes.length != hashLen) {
             throw new IllegalArgumentException("hashes length must be " + hashLen);
         }
 
-        long nodeId = 0;
+        int nodeId = 0;
         long bufIdx = nodeBase(nodeId) / BLOCK_SIZE;
         loadBufferForUpdate(bufIdx);
         try {
@@ -128,7 +141,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
                 if (level < hashLen - 1) {
                     switch (state) {
                         case STATE_CHILD -> {
-                            nodeId = loadLongOffset(valuePos(nodeId, slot));
+                            nodeId = loadIntOffset(valuePos(nodeId, slot));
                             long nextBuf = nodeBase(nodeId) / BLOCK_SIZE;
                             if (nextBuf != bufIdx) {
                                 loadBufferForUpdate(nextBuf);
@@ -141,26 +154,26 @@ public class DsHashSet extends DsObject implements Set<Long> {
                         case STATE_EMPTY -> {
                             //slot 空
                             writeState(nodeId, slot, STATE_VALUE);
-                            storeLongOffset(valuePos(nodeId, slot), key);
-                            headerOpLock.lock();
+                            storeIntOffset(valuePos(nodeId, slot), key);
+                            headerOpLockWrite.lock();
                             try {
                                 size++;
-                                headerBuffer.putLong(HDR_SIZE, size);
+                                headerBuffer.putInt(HDR_SIZE, size);
                                 dirty(0L);
                             } finally {
-                                headerOpLock.unlock();
+                                headerOpLockWrite.unlock();
                             }
                             return true;
                         }
                         case STATE_VALUE -> {
                             //slot有值,深入下一层
-                            long oldKey = loadLongOffset(valuePos(nodeId, slot));
+                            int oldKey = loadIntOffset(valuePos(nodeId, slot));
                             if (oldKey == key) {
                                 return false;
                             }
-                            long child = allocateNodeId();
+                            int child = allocateNodeId();
                             writeState(nodeId, slot, STATE_CHILD);
-                            storeLongOffset(valuePos(nodeId, slot), child);
+                            storeIntOffset(valuePos(nodeId, slot), child);
                             //深入下一层,分别存储两个值。
                             int nextLevel = level + 1;
                             putInner(child, hashBytes(oldKey), oldKey, nextLevel, false);
@@ -178,19 +191,19 @@ public class DsHashSet extends DsObject implements Set<Long> {
                     case STATE_EMPTY -> {
                         writeState(nodeId, slot, STATE_VALUE);
                         storeLongOffset(valuePos(nodeId, slot), key);
-                        headerOpLock.lock();
+                        headerOpLockWrite.lock();
                         try {
                             size++;
-                            headerBuffer.putLong(HDR_SIZE, size);
+                            headerBuffer.putInt(HDR_SIZE, size);
                             dirty(0L);
                         } finally {
-                            headerOpLock.unlock();
+                            headerOpLockWrite.unlock();
                         }
                         return true;
                     }
                     case STATE_VALUE -> {
 
-                        long oldKey = loadLongOffset(valuePos(nodeId, slot));
+                        int oldKey = loadIntOffset(valuePos(nodeId, slot));
                         if (oldKey == key) {
                             return false;
                         }
@@ -219,8 +232,8 @@ public class DsHashSet extends DsObject implements Set<Long> {
      * @param key
      * @throws java.io.IOException
      */
-    private boolean putInner(long startNodeId, byte[] hashes, long key, int currentLevel, boolean countSize) throws IOException {
-        long nodeId = startNodeId;
+    private boolean putInner(int startNodeId, byte[] hashes, int key, int currentLevel, boolean countSize) throws IOException {
+        int nodeId = startNodeId;
         long bufIdx = nodeBase(nodeId) / BLOCK_SIZE;
         loadBufferForUpdate(bufIdx);
         for (int level = currentLevel; level < hashLen; level++) {
@@ -229,7 +242,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
             if (level < hashLen - 1) {
                 switch (state) {
                     case STATE_CHILD -> {
-                        nodeId = loadLongOffset(valuePos(nodeId, slot));
+                        nodeId = loadIntOffset(valuePos(nodeId, slot));
                         long nextBuf = nodeBase(nodeId) / BLOCK_SIZE;
                         if (nextBuf != bufIdx) {
                             loadBufferForUpdate(nextBuf);
@@ -240,29 +253,29 @@ public class DsHashSet extends DsObject implements Set<Long> {
                     }
                     case STATE_EMPTY -> {
                         writeState(nodeId, slot, STATE_VALUE);
-                        storeLongOffset(valuePos(nodeId, slot), key);
+                        storeIntOffset(valuePos(nodeId, slot), key);
                         if (countSize) {
-                            headerOpLock.lock();
+                            headerOpLockWrite.lock();
                             try {
                                 size++;
-                                headerBuffer.putLong(HDR_SIZE, size);
+                                headerBuffer.putInt(HDR_SIZE, size);
                                 dirty(0L);
                             } finally {
-                                headerOpLock.unlock();
+                                headerOpLockWrite.unlock();
                             }
                         }
                         unlockBuffer(bufIdx);
                         return true;
                     }
                     case STATE_VALUE -> {
-                        long oldKey = loadLongOffset(valuePos(nodeId, slot));
+                        int oldKey = loadIntOffset(valuePos(nodeId, slot));
                         if (oldKey == key) {
                             unlockBuffer(bufIdx);
                             return false;
                         }
-                        long child = allocateNodeId();
+                        int child = allocateNodeId();
                         writeState(nodeId, slot, STATE_CHILD);
-                        storeLongOffset(valuePos(nodeId, slot), child);
+                        storeIntOffset(valuePos(nodeId, slot), child);
                         int nextLevel = level + 1;
                         putInner(child, hashBytes(oldKey), oldKey, nextLevel, false);
                         putInner(child, hashes, key, nextLevel, countSize);
@@ -276,22 +289,22 @@ public class DsHashSet extends DsObject implements Set<Long> {
             switch (state) {
                 case STATE_EMPTY -> {
                     writeState(nodeId, slot, STATE_VALUE);
-                    storeLongOffset(valuePos(nodeId, slot), key);
+                    storeIntOffset(valuePos(nodeId, slot), key);
                     if (countSize) {
-                        headerOpLock.lock();
+                        headerOpLockWrite.lock();
                         try {
                             size++;
-                            headerBuffer.putLong(HDR_SIZE, size);
+                            headerBuffer.putInt(HDR_SIZE, size);
                             dirty(0L);
                         } finally {
-                            headerOpLock.unlock();
+                            headerOpLockWrite.unlock();
                         }
                     }
                     unlockBuffer(bufIdx);
                     return true;
                 }
                 case STATE_VALUE -> {
-                    long oldKey = loadLongOffset(valuePos(nodeId, slot));
+                    int oldKey = loadIntOffset(valuePos(nodeId, slot));
                     if (oldKey == key) {
                         unlockBuffer(bufIdx);
                         return false;
@@ -319,9 +332,9 @@ public class DsHashSet extends DsObject implements Set<Long> {
      * @return
      * @throws java.io.IOException
      */
-    public Long get(long key) throws IOException {
+    public Integer get(int key) throws IOException {
         byte[] b = new byte[hashLen];
-        DsDataUtil.storeLong(b, 0, key);
+        storeHashBytes(b, hashOffset, key & 0xFFFFFFFFL);
         return get(b);
     }
 
@@ -332,17 +345,17 @@ public class DsHashSet extends DsObject implements Set<Long> {
      * @return value，不存在返回 null
      * @throws java.io.IOException
      */
-    public Long get(byte[] hash64) throws IOException {
+    public Integer get(byte[] hash64) throws IOException {
         if (hash64 == null || hash64.length != hashLen) {
             return null;
         }
-        long nodeId = 0;
+        int nodeId = 0;
         for (int level = 0; level < hashLen; level++) {
             int slot = hash64[level] & 0xFF;
             int state = readState(nodeId, slot);
             if (level < hashLen - 1) {
                 if (state == STATE_CHILD) {
-                    long child = loadLongOffset(valuePos(nodeId, slot));
+                    int child = loadIntOffset(valuePos(nodeId, slot));
                     if (child <= 0) {
                         return null;
                     }
@@ -351,7 +364,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
                 }
 
                 if (state == STATE_VALUE) {
-                    long v = loadLongOffset(valuePos(nodeId, slot));
+                    int v = loadIntOffset(valuePos(nodeId, slot));
                     return v;
                 }
                 return null;
@@ -359,7 +372,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
 
             switch (state) {
                 case STATE_VALUE -> {
-                    long v = loadLongOffset(valuePos(nodeId, slot));
+                    int v = loadIntOffset(valuePos(nodeId, slot));
                     return v;
                 }
                 case STATE_NEXT_LEVEL -> {
@@ -383,9 +396,9 @@ public class DsHashSet extends DsObject implements Set<Long> {
      * @return
      * @throws java.io.IOException
      */
-    public boolean remove(long key) throws IOException {
+    public boolean remove(int key) throws IOException {
         byte[] b = new byte[hashLen];
-        DsDataUtil.storeLong(b, 0, key);
+        storeHashBytes(b, hashOffset, key & 0xFFFFFFFFL);
         return remove(key, b);
     }
 
@@ -397,11 +410,11 @@ public class DsHashSet extends DsObject implements Set<Long> {
      * @return
      * @throws java.io.IOException
      */
-    public boolean remove(long key, byte[] hash64) throws IOException {
+    public boolean remove(int key, byte[] hash64) throws IOException {
         if (hash64 == null || hash64.length != hashLen) {
             return false;
         }
-        long nodeId = 0;
+        int nodeId = 0;
         long bufIdx = nodeBase(nodeId) / BLOCK_SIZE;
         loadBufferForUpdate(bufIdx);
         try {
@@ -411,7 +424,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
                 if (level < hashLen - 1) {
                     switch (state) {
                         case STATE_CHILD -> {
-                            long child = loadLongOffset(valuePos(nodeId, slot));
+                            int child = loadIntOffset(valuePos(nodeId, slot));
                             if (child <= 0) {
                                 return false;
                             }
@@ -429,14 +442,14 @@ public class DsHashSet extends DsObject implements Set<Long> {
                         }
                         case STATE_VALUE -> {
                             writeState(nodeId, slot, STATE_EMPTY);
-                            storeLongOffset(valuePos(nodeId, slot), 0L);
-                            headerOpLock.lock();
+                            storeIntOffset(valuePos(nodeId, slot), 0);
+                            headerOpLockWrite.lock();
                             try {
                                 size--;
-                                headerBuffer.putLong(HDR_SIZE, size);
+                                headerBuffer.putInt(HDR_SIZE, size);
                                 dirty(0L);
                             } finally {
-                                headerOpLock.unlock();
+                                headerOpLockWrite.unlock();
                             }
                             return true;
                         }
@@ -448,14 +461,14 @@ public class DsHashSet extends DsObject implements Set<Long> {
                 switch (state) {
                     case STATE_VALUE -> {
                         writeState(nodeId, slot, STATE_EMPTY);
-                        storeLongOffset(valuePos(nodeId, slot), 0L);
-                        headerOpLock.lock();
+                        storeIntOffset(valuePos(nodeId, slot), 0);
+                        headerOpLockWrite.lock();
                         try {
                             size--;
-                            headerBuffer.putLong(HDR_SIZE, size);
+                            headerBuffer.putInt(HDR_SIZE, size);
                             dirty(0L);
                         } finally {
-                            headerOpLock.unlock();
+                            headerOpLockWrite.unlock();
                         }
                         return true;
                     }
@@ -489,13 +502,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
         }
     }
 
-    public long total() {
-        try {
-            return size;
-        } finally {
-        }
-    }
-
+  
     /**
      * 同步并关闭索引。
      */
@@ -503,35 +510,35 @@ public class DsHashSet extends DsObject implements Set<Long> {
         sync();
     }
 
-    private long allocateNodeId() throws IOException {
-        headerOpLock.lock();
+    private int allocateNodeId() throws IOException {
+        headerOpLockWrite.lock();
         try {
-            long id = nextNodeId;
+            int id = nextNodeId;
             nextNodeId++;
-            headerBuffer.putLong(HDR_NEXT_NODE_ID, nextNodeId);
+            headerBuffer.putInt(HDR_NEXT_NODE_ID, nextNodeId);
             dirty(0L);
             storeLongOffset(nodeBase(id), zeroNode);
             return id;
         } finally {
-            headerOpLock.unlock();
+            headerOpLockWrite.unlock();
         }
 
     }
 
-    private long nodeBase(long nodeId) {
-        return HEADER_SIZE + nodeId * (long) this.dataUnitSize;
+    private int nodeBase(int nodeId) {
+        return HEADER_SIZE + nodeId *  this.dataUnitSize;
     }
 
-    private long bitmapPos(long nodeId, int slot) {
+    private int bitmapPos(int nodeId, int slot) {
         return nodeBase(nodeId) + (slot / 4);
     }
 
-    private long valuePos(long nodeId, int slot) {
-        return nodeBase(nodeId) + BITMAP_BYTES + (long) slot * SLOT_PAYLOAD_BYTES;
+    private int valuePos(int nodeId, int slot) {
+        return nodeBase(nodeId) + BITMAP_BYTES +  slot * SLOT_PAYLOAD_BYTES;
     }
 
-    private int readState(long nodeId, int slot) throws IOException {
-        long pos = bitmapPos(nodeId, slot);
+    private int readState(int nodeId, int slot) throws IOException {
+        int pos = bitmapPos(nodeId, slot);
 
         int stateByte = loadU8ByOffset(pos);
         int stateValue = getStateValue(stateByte, slot % 4);
@@ -567,8 +574,8 @@ public class DsHashSet extends DsObject implements Set<Long> {
         return data | ((state & 0x3) << shift);
     }
 
-    private void writeState(long nodeId, int slot, int state) throws IOException {
-        long pos = bitmapPos(nodeId, slot);
+    private void writeState(int nodeId, int slot, int state) throws IOException {
+        int pos = bitmapPos(nodeId, slot);
         int stateByte = loadU8ByOffset(pos);
         byte stateValue = (byte) setStateValue(stateByte, slot % 4, state);
         storeByteOffset(pos, stateValue);
@@ -584,25 +591,25 @@ public class DsHashSet extends DsObject implements Set<Long> {
 
     @Override
     public boolean contains(Object o) {
-        if (!(o instanceof Long)) {
+        if (!(o instanceof Integer)) {
             return false;
         }
         try {
-            return get(((Long) o).longValue()) != null;
-        } catch (IOException ex) {
+            return get(((Integer) o).intValue()) != null;
+        } catch (Exception ex) {
             System.getLogger(DsHashSet.class.getName()).log(System.Logger.Level.ERROR, (String) null, ex);
         }
         return false;
     }
 
     @Override
-    public boolean add(Long e) {
+    public boolean add(Integer e) {
         try {
         if (e == null) {
             throw new NullPointerException();
         }
-            return add(e.longValue());
-        } catch (IOException ex) {
+            return add(e.intValue());
+        } catch (Exception ex) {
             throw new RuntimeException(ex);
         }
     }
@@ -610,10 +617,10 @@ public class DsHashSet extends DsObject implements Set<Long> {
     @Override
     public boolean remove(Object o) {
         try {
-        if (!(o instanceof Long)) {
+        if (!(o instanceof Integer)) {
             return false;
         }
-            return remove(((Long) o).longValue());
+            return remove(((Integer) o).intValue());
         } catch (IOException ex) {
             throw new RuntimeException(ex);
         }
@@ -623,17 +630,17 @@ public class DsHashSet extends DsObject implements Set<Long> {
     @Override
     public void clear() {
         try {
-            long nodeId = 0;
+            int nodeId = 0;
             for (int slot = 0; slot < 256; slot++) {
                 int state = readState(nodeId, slot);
                 if (state == STATE_EMPTY) {
                     continue;
                 }
                 writeState(nodeId, slot, STATE_EMPTY);
-                storeLongOffset(valuePos(nodeId, slot), 0L);
+                storeIntOffset(valuePos(nodeId, slot), 0);
             }
             size = 0;
-            headerBuffer.putLong(HDR_SIZE, size);
+            headerBuffer.putInt(HDR_SIZE, size);
             dirty(0L);
         } catch (IOException ex) {
             throw new RuntimeException(ex);
@@ -642,7 +649,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
     }
   
     
-    private int fillValues(long[] array, int index, long nodeId, int currentLevel) throws IOException {
+    private int fillValues(int[] array, int index, int nodeId, int currentLevel) throws IOException {
         int[] slots0 = null;
         if (currentLevel == 0) {
             slots0 = new int[256];
@@ -657,10 +664,10 @@ public class DsHashSet extends DsObject implements Set<Long> {
                 case STATE_EMPTY -> {
                 }
                 case STATE_VALUE -> {
-                    array[index++] = loadLongOffset(valuePos(nodeId, slot));
+                    array[index++] = loadIntOffset(valuePos(nodeId, slot));
                 }
                 case STATE_CHILD -> {
-                    long child = loadLongOffset(valuePos(nodeId, slot));
+                    int child = loadIntOffset(valuePos(nodeId, slot));
                     if (child > 0 && currentLevel + 1 < hashLen) {
                         index = fillValues(array, index, child, currentLevel + 1);
                     }
@@ -673,17 +680,17 @@ public class DsHashSet extends DsObject implements Set<Long> {
 
     @Override
     public Object[] toArray() {
-        long[] vs = toArrayLong();
-        Long[] out = new Long[vs.length];
+        int[] vs = toArrayInt();
+        Integer[] out = new Integer[vs.length];
         for (int i = 0; i < vs.length; i++) {
             out[i] = vs[i];
         }
         return out;
     }
     
-    public long[] toArrayLong() {
+    public int[] toArrayInt() {
         try {
-            long[] array = new long[(int) size];
+            int[] array = new int[(int) size];
             fillValues(array, 0, 0, 0);
             return array;
         } catch (IOException ex) {
@@ -694,20 +701,20 @@ public class DsHashSet extends DsObject implements Set<Long> {
     }
     
     @Override
-    public Iterator<Long> iterator() {
-        return new Iterator<Long>() {
+    public Iterator<Integer> iterator() {
+        return new Iterator<Integer>() {
             private final int[] rootSlots;
-            private final long[] nodeStack;
+            private final int[] nodeStack;
             private final int[] nextSlotIndex;
             private int level;
-            private final HashSet<Long> seen;
+            private final HashSet<Integer> seen;
 
-            private final ArrayDeque<Long> buffer;
+            private final ArrayDeque<Integer> buffer;
             private final byte[] bitmap;
-            private final long[] values;
+            private final int[] values;
             private boolean rescanned;
 
-            private Long lastReturned;
+            private Integer lastReturned;
             private boolean canRemove;
 
             {
@@ -715,7 +722,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
                 int p = 0;
                 for (int i = 128; i < 256; i++) rootSlots[p++] = i;
                 for (int i = 0; i < 128; i++) rootSlots[p++] = i;
-                nodeStack = new long[hashLen];
+                nodeStack = new int[hashLen];
                 nextSlotIndex = new int[hashLen];
                 level = 0;
                 nodeStack[0] = 0;
@@ -723,7 +730,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
                 seen = new HashSet<>();
                 buffer = new ArrayDeque<>(64);
                 bitmap = new byte[BITMAP_BYTES];
-                values = new long[256];
+                values = new int[256];
                 rescanned = false;
             }
 
@@ -735,7 +742,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
                             return false;
                         }
                     }
-                    Long v = buffer.peekFirst();
+                    Integer v = buffer.peekFirst();
                     if (v == null) {
                         buffer.pollFirst();
                         continue;
@@ -748,11 +755,11 @@ public class DsHashSet extends DsObject implements Set<Long> {
             }
 
             @Override
-            public Long next() {
+            public Integer next() {
                 if (!hasNext()) {
                     throw new NoSuchElementException();
                 }
-                Long v = buffer.pollFirst();
+                Integer v = buffer.pollFirst();
                 lastReturned = v;
                 canRemove = true;
                 return v;
@@ -794,7 +801,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
                             continue;
                         }
 
-                        long nodeId = nodeStack[level];
+                        int nodeId = nodeStack[level];
                         loadNode(nodeId);
 
                         for (;;) {
@@ -810,7 +817,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
                                 continue;
                             }
                             if (state == STATE_VALUE) {
-                                long v = values[slot] ;
+                                int v = values[slot] ;
                                 if (seen.add(v)) {
                                     buffer.addLast(v);
                                     if (buffer.size() >= batch) {
@@ -820,7 +827,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
                                 continue;
                             }
                             if (state == STATE_CHILD) {
-                                long child = values[slot];
+                                int child = values[slot];
                                 if (child > 0 && level + 1 < hashLen) {
                                     level++;
                                     nodeStack[level] = child;
@@ -838,10 +845,10 @@ public class DsHashSet extends DsObject implements Set<Long> {
                 }
             }
 
-            private void loadNode(long nodeId) throws IOException {
-                long base = nodeBase(nodeId);
+            private void loadNode(int nodeId) throws IOException {
+                int base = nodeBase(nodeId);
                 loadBytesOffset(base, bitmap);
-                loadLongOffset(base + BITMAP_BYTES, values);
+                loadIntOffset(base + BITMAP_BYTES, values);
             }
 
             private int stateFromBitmap(int slot) {
@@ -860,7 +867,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
 
     @Override
     public <T> T[] toArray(T[] a) {
-        long[] vs = toArrayLong();
+        int[] vs = toArrayInt();
         int n = vs.length;
         Object[] out = a.length >= n ? a : (Object[]) java.lang.reflect.Array.newInstance(a.getClass().getComponentType(), n);
         for (int i = 0; i < n; i++) {
@@ -883,9 +890,9 @@ public class DsHashSet extends DsObject implements Set<Long> {
     }
 
     @Override
-    public boolean addAll(Collection<? extends Long> c) {
+    public boolean addAll(Collection<? extends Integer> c) {
         boolean changed = false;
-        for (Long v : c) {
+        for (Integer v : c) {
             if (add(v)) {
                 changed = true;
             }
@@ -897,10 +904,10 @@ public class DsHashSet extends DsObject implements Set<Long> {
     public boolean retainAll(Collection<?> c) {
         HashSet<Object> keep = new HashSet<>(c);
         boolean changed = false;
-        long[] vs = toArrayLong();
-        for (long v : vs) {
+        int[] vs = toArrayInt();
+        for (int v : vs) {
             if (!keep.contains(v)) {
-                if (remove(Long.valueOf(v))) {
+                if (remove(Integer.valueOf(v))) {
                     changed = true;
                 }
             }
@@ -920,7 +927,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
     }
 
     @Override
-    public Spliterator<Long> spliterator() {
+    public Spliterator<Integer> spliterator() {
         return Set.super.spliterator();
     }
     

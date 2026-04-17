@@ -28,7 +28,9 @@ import net.x52im.mobileimsdk.server.protocal.Protocal;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+/**
+ * QoS4ReciveDaemonRoot。
+ */
 public class QoS4ReciveDaemonRoot
 {
 	private static Logger logger = LoggerFactory.getLogger(QoS4ReciveDaemonRoot.class);  

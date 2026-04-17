@@ -15,7 +15,9 @@
  * PLoginInfo.java at 2023-9-21 15:24:55, code by Jack Jiang.
  */
 package net.x52im.mobileimsdk.server.protocal.c;
-
+/**
+ * PLoginInfo。
+ */
 public class PLoginInfo
 {
 	protected String loginUserId = null;

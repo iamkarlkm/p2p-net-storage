@@ -45,6 +45,7 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
     protected long frameLastTransportSpeed;//上一个成功接受数据帧的传输速率,字节/毫秒(mill),用于流控/帧超时重发
 
     protected Integer frameLastSeed;//udp数据包简单校验(上一个成功接受数据帧->随机数/hash/checksum) 默认随机数以优化性能
+    protected int frameHeaderHash;
 
     protected boolean frameReseted = false;//udp frame reset
 
@@ -151,6 +152,7 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
         frameReaded = 0;
         lastRest = 0;
         frameLastSeed = null;
+        frameHeaderHash = 0;
         frameReseted = false;
         frameResetedTime = 0;
         messageProcessor = null;
@@ -184,8 +186,8 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
             }
             frameLengthInt = inBuffer.readInt();//保存frame字节数
             magic = inBuffer.readInt();
-            int hash = inBuffer.readInt();
-            System.out.printf("lastRest=%d,magic=%s,hash=%s,frameLengthInt=%d\n",lastRest,Integer.toHexString(magic),hash,frameLengthInt);
+            frameHeaderHash = inBuffer.readInt();
+            System.out.printf("lastRest=%d,magic=%s,hash=%s,frameLengthInt=%d\n",lastRest,Integer.toHexString(magic),frameHeaderHash,frameLengthInt);
             lastRest = 0;
         } else if(frameLengthInt == -1) { // new frame
             if (in.readableBytes() < headerSize) {//头长度
@@ -195,8 +197,8 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
             frameStartTime = System.currentTimeMillis();
             frameLengthInt = in.readInt();//保存frame字节数
             magic = in.readInt();
-            int hash = in.readInt();
-            System.out.printf("magic=%s,hash=%s,frameLengthInt=%d\n",Integer.toHexString(magic),hash,frameLengthInt);
+            frameHeaderHash = in.readInt();
+            System.out.printf("magic=%s,hash=%s,frameLengthInt=%d\n",Integer.toHexString(magic),frameHeaderHash,frameLengthInt);
 
             if(inBuffer==null){
                 inBuffer = SerializationUtil.tryGetDirectBuffer(frameLengthInt);
@@ -240,7 +242,9 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
                 byte[] data = new byte[frameLengthInt];
                 inBuffer.readBytes(data);
                 int hashIn = XXHashUtil.hash32(data);
-                System.out.println("hashIn:"+hashIn);
+                if (frameHeaderHash != 0 && frameHeaderHash != hashIn) {
+                    throw new IllegalStateException("udp frame hash mismatch");
+                }
                 P2PWrapper request = SerializationUtil.deserialize(P2PWrapper.class, data);
                 frameLastSeq = request.getSeq();
                 frameLastSeed = hashIn;

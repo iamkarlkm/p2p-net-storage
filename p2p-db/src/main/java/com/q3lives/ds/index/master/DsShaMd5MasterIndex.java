@@ -304,7 +304,7 @@ public class DsShaMd5MasterIndex extends DsObject {
     }
 
     private long allocateNodeId() throws IOException {
-        headerOpLock.lock();
+        headerOpLockWrite.lock();
         try {
             long id = nextNodeId;
             nextNodeId++;
@@ -312,7 +312,7 @@ public class DsShaMd5MasterIndex extends DsObject {
             dirty(0L);
             return id;
         } finally {
-            headerOpLock.unlock();
+            headerOpLockWrite.unlock();
         }
     }
 

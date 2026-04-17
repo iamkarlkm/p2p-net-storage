@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "p2p-ws-sdk-python"
+version = "1.0.0"
+requires-python = ">=3.10"
+dependencies = ["protobuf>=5.26.0"]
+
+[project.optional-dependencies]
+demo = ["PyYAML>=6.0.1", "websockets>=16.0", "cryptography>=46.0.0", "grpcio-tools>=1.60.0"]

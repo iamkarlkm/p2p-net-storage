@@ -18,7 +18,9 @@ package net.x52im.mobileimsdk.server.event;
 
 import io.netty.channel.Channel;
 import net.x52im.mobileimsdk.server.protocal.Protocal;
-
+/**
+ * ServerEventListener。
+ */
 public interface ServerEventListener
 {
 	int onUserLoginVerify(String userId, String token, String extra, Channel session);

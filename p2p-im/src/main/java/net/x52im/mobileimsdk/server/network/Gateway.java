@@ -19,7 +19,9 @@ package net.x52im.mobileimsdk.server.network;
 import io.netty.channel.Channel;
 import io.netty.util.AttributeKey;
 import net.x52im.mobileimsdk.server.ServerCoreHandler;
-
+/**
+ * Gateway。
+ */
 public abstract class Gateway
 {
 	public final static String SOCKET_TYPE_IN_CHANNEL_ATTRIBUTE = "__socket_type__";
