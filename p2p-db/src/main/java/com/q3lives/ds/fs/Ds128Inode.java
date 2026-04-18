@@ -22,11 +22,9 @@ public class Ds128Inode {
     // 8-byte 父级inode
     public long inode_parent;
     // 8-byte 数据acl列表索引id
-    public long i_acl_id;
-    //4-byte 文件所有者ID
-    public int i_uid;
-    //4-byte 文件所有者组ID
-    public int i_gid;
+   
+    public long bucket_id;//8-byte底层bucket存储id
+    
     // 8-byte inode 创建时间
     public long inode_ctime;
     // 8-byte inode 最近更新时间

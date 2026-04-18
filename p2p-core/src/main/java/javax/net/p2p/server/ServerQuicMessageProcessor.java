@@ -75,6 +75,8 @@ public class ServerQuicMessageProcessor extends AbstractQuicMessageProcessor {
                     //新建异步消息执行器
                     longTimed = longTimed.asyncProcess(createExecutor(ctx), longTimed, request);
                     lastLongTimedRequestAdapterMap.put(request.getSeq(), longTimed);
+                    sendResponse(ctx, P2PWrapper.build(request.getSeq(), P2PCommand.STD_ACCEPTED, null));
+                    return;
                 } else {
                     longTimed.asyncProcess(request);
                 }

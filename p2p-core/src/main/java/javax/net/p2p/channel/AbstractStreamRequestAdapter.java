@@ -145,9 +145,6 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
                 StreamP2PWrapper streamMessage0 = (StreamP2PWrapper) request;
 
                 AbstractStreamRequestAdapter handlerNew = TASK_POOL.pollParamsOrClone(handler, request.getSeq(), executor, streamMessage0);
-
-                handlerNew.onMessage(streamMessage0);
-
                 return handlerNew;
             }
 

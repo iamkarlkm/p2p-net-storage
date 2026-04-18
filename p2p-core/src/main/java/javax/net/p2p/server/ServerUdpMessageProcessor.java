@@ -118,6 +118,9 @@ public class ServerUdpMessageProcessor extends AbstractUdpMessageProcessor {
                     }
                     longTimed = longTimed.asyncProcess(executor, longTimed, request);
                     longMap.put(request.getSeq(), longTimed);
+                    response = P2PWrapper.build(request.getSeq(), P2PCommand.STD_ACCEPTED, null);
+                    sendResponse(ctx.channel(), datagramPacket.sender(), response, magic);
+                    return;
                 } else {
                     longTimed.asyncProcess(request);
                 }

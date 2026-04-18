@@ -42,14 +42,22 @@ import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.auth.AuthEnforcer;
+import javax.net.p2p.channel.AbstractLongTimedRequestAdapter;
+import javax.net.p2p.channel.AbstractStreamRequestAdapter;
 import javax.net.p2p.channel.AbstractTcpMessageProcessor;
+import javax.net.p2p.common.AbstractSendMesageExecutor;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.interfaces.P2PChannelAwareCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
+import javax.net.p2p.model.StreamP2PWrapper;
+import java.util.concurrent.ConcurrentHashMap;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 public class ServerMessageProcessor extends AbstractTcpMessageProcessor {
+
+    private final ConcurrentHashMap<Integer, AbstractLongTimedRequestAdapter> lastLongTimedRequestAdapterMap = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, AbstractStreamRequestAdapter> lastStreamRequestAdapterMap = new ConcurrentHashMap<>();
 
     /**
      * 构造函数，初始化消息处理器
@@ -75,6 +83,10 @@ public class ServerMessageProcessor extends AbstractTcpMessageProcessor {
      */
     public ServerMessageProcessor(int magic, int queueSize) {
         super(magic, queueSize);
+    }
+
+    protected AbstractSendMesageExecutor createExecutor(ChannelHandlerContext ctx) {
+        return new ServerTcpDirectExecutor(queueSize, ctx.channel());
     }
 
     /**
@@ -119,6 +131,22 @@ public class ServerMessageProcessor extends AbstractTcpMessageProcessor {
             return;
         }
 
+        if (msg.getCommand() == P2PCommand.STD_CANCEL || msg.getCommand() == P2PCommand.STD_STOP) {
+            AbstractLongTimedRequestAdapter longTimed = lastLongTimedRequestAdapterMap.remove(msg.getSeq());
+            if (longTimed != null) {
+                longTimed.asyncProcess(msg);
+                return;
+            }
+            AbstractStreamRequestAdapter stream = lastStreamRequestAdapterMap.remove(msg.getSeq());
+            if (stream != null) {
+                stream.asyncProcess(stream, StreamP2PWrapper.buildStream(msg.getSeq(), true));
+                ctx.channel().writeAndFlush(P2PWrapper.build(msg.getSeq(), P2PCommand.STD_CANCEL, "canceled"));
+                return;
+            }
+            ctx.channel().writeAndFlush(P2PWrapper.build(msg.getSeq(), P2PCommand.STD_ERROR, "task not found"));
+            return;
+        }
+
         if (!P2PServiceManager.isEnabled(msg.getCommand().getCategory())) {
             P2PWrapper unavailable = P2PWrapper.build(msg.getSeq(), P2PCommand.STD_ERROR, "service unavailable: " + msg.getCommand().getCategory());
             ctx.channel().writeAndFlush(unavailable);
@@ -130,6 +158,34 @@ public class ServerMessageProcessor extends AbstractTcpMessageProcessor {
         P2PCommandHandler handler = (P2PCommandHandler) HANDLER_REGISTRY_MAP.get(msg.getCommand());
         
         if (handler != null) {
+            if (handler instanceof AbstractLongTimedRequestAdapter) {
+                AbstractLongTimedRequestAdapter longTimed = lastLongTimedRequestAdapterMap.get(msg.getSeq());
+                if (longTimed == null) {
+                    longTimed = (AbstractLongTimedRequestAdapter) handler;
+                    AbstractSendMesageExecutor executor = createExecutor(ctx);
+                    longTimed = longTimed.asyncProcess(executor, longTimed, msg);
+                    lastLongTimedRequestAdapterMap.put(msg.getSeq(), longTimed);
+                    ctx.channel().writeAndFlush(P2PWrapper.build(msg.getSeq(), P2PCommand.STD_ACCEPTED, null));
+                    return;
+                } else {
+                    longTimed.asyncProcess(msg);
+                    return;
+                }
+            }
+            if (handler instanceof AbstractStreamRequestAdapter) {
+                AbstractStreamRequestAdapter stream = lastStreamRequestAdapterMap.get(msg.getSeq());
+                if (stream == null) {
+                    stream = (AbstractStreamRequestAdapter) handler;
+                    AbstractSendMesageExecutor executor = createExecutor(ctx);
+                    stream = stream.asyncProcess(executor, stream, (StreamP2PWrapper) msg);
+                    lastStreamRequestAdapterMap.put(msg.getSeq(), stream);
+                    ctx.channel().writeAndFlush(P2PWrapper.build(msg.getSeq(), P2PCommand.STREAM_ACK, null));
+                    return;
+                } else {
+                    stream.asyncProcess(stream, msg);
+                    return;
+                }
+            }
             if (handler instanceof P2PChannelAwareCommandHandler) {
                 p2p = ((P2PChannelAwareCommandHandler) handler).process(ctx, msg);
             } else {

@@ -46,12 +46,14 @@ public abstract class AbstractLongTimedRequestAdapter extends ClonePooledableAda
                 executor.sendResponse(response);
             }
         } catch (InterruptedException ex) {
-            try {
-                canceled = true;
-                if (executor != null && request != null) {
-                    executor.sendResponse(P2PWrapper.build(request.getSeq(), P2PCommand.STD_CANCEL, "canceled"));
+            if (!canceled) {
+                try {
+                    canceled = true;
+                    if (executor != null && request != null) {
+                        executor.sendResponse(P2PWrapper.build(request.getSeq(), P2PCommand.STD_CANCEL, "canceled"));
+                    }
+                } catch (Exception ignored) {
                 }
-            } catch (Exception ignored) {
             }
         }finally{
             release();//回归对象池

@@ -93,6 +93,9 @@ public enum P2PCommand {
     /** 标准错误响应，表示操作失败 */
     STD_ERROR(-1),
     
+    /** 异步任务已受理（服务端已开始执行，后续会推送最终结果） */
+    STD_ACCEPTED(-1100),
+
     /** 操作取消响应 */
     STD_CANCEL(-1101),
 
@@ -385,7 +388,11 @@ public enum P2PCommand {
 
     CACHE_LOCK_COMMAND(22002, P2PServiceCategory.CACHE),
     
-    DATA_TRANSFER(21000, P2PServiceCategory.DATA_TRANSFER);
+    DATA_TRANSFER(21000, P2PServiceCategory.DATA_TRANSFER),
+
+    PUBSUB_STREAM(21001, P2PServiceCategory.DATA_TRANSFER),
+
+    PUBSUB_PUBLISH(21002, P2PServiceCategory.DATA_TRANSFER);
     /** 命令的数值编码，用于网络传输和序列化 */
     private final int value;
     private final P2PServiceCategory category;

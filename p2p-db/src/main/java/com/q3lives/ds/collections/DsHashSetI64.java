@@ -90,7 +90,25 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
     private long lastNodeHash = 0;
     private int lastNodeLevel = 0;
     
+    //nodeid 路径映射,保存每一个nodeID的路径信息,用于路径空洞和意外断链的bug
    private Map<Long,DsHashPath> debugInfoMap = new HashMap();
+   
+    public static void main(String[] args) {
+         DsHashSetI64 dsHashSet = new DsHashSetI64("test_dshashset.bug");
+         dsHashSet.clear();
+        int count = 50000;
+       
+//      
+        for(long i=-count;i<count;i++){
+            dsHashSet.add(i);
+        }
+        
+        System.out.println(dsHashSet.contains(-50000)+" ************** "+dsHashSet.total()+" ************** "+dsHashSet.getStoreUsed());
+        System.out.println(dsHashSet.first()+" -> "+dsHashSet.last()+" range(0, 10): "+dsHashSet.range(0, 10));
+         System.out.println("意外断链的bug,值应该存在  -> value is  -50000: "+dsHashSet.contains(-50000));
+         System.out.println("-50000 slot state: "+dsHashSet.readState(7, 176));
+         System.out.println("-50000 exists,但无法定位了:-> getByNodeId(7, 176): "+dsHashSet.getByNodeId(7, 176));
+    }
 
     /**
      * 哈希掩码（用于快速缓存匹配）

@@ -82,7 +82,7 @@ public class ServerQuicMessageProcessorTest {
 
         int seq = 9;
         p.processMessage(ctx, P2PWrapper.build(seq, P2PCommand.CACHE_LOCK_COMMAND, null));
-        Assertions.assertNull(p.outgoing.poll());
+        Assertions.assertEquals(P2PCommand.STD_ACCEPTED, p.outgoing.poll().getCommand());
 
         p.processMessage(ctx, P2PWrapper.build(seq, P2PCommand.STD_CANCEL, null));
 
