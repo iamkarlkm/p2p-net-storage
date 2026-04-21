@@ -7,6 +7,6 @@ public enum P2PServiceCategory {
     COS,
     IM,
     CACHE,
-    DATA_TRANSFER
+    DATA_TRANSFER,
+    DS_HASHMAP_DFS
 }
-

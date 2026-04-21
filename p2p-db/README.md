@@ -61,3 +61,6 @@
 ## 6. 依赖
 *   JDK 1.8+ (推荐 JDK 11/17，需注意 Unsafe 访问权限)
 *   Netty (用于部分 ByteBuf 操作，虽然核心逻辑主要依赖 JDK NIO)
+
+## 7. 补充文档
+*   `DsHashSetI64 / DsMemorySet` FastPut 前缀快速插入缓存基线、`DsMemorySet` 顺序读取约束以及原样 `sync/load` 持久化说明：`doc/fast-put-benchmark.md`

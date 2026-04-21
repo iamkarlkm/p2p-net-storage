@@ -140,6 +140,7 @@ public class DsMemory {
     protected ByteBuffer headerBuffer;
     
     public final int headerSize;
+    protected final File dataFile;
 
     /**
      * 构造函数
@@ -149,7 +150,7 @@ public class DsMemory {
      * @param dataUnitSize 数据单元大小（字节）
      */
     public DsMemory(File dataFile,int headerSize, int dataUnitSize) {
-
+        this.dataFile = dataFile;
         this.dataUnitSize = dataUnitSize;
         this.headerSize = headerSize;
         zero_block_unit = new byte[dataUnitSize];
@@ -1013,7 +1014,27 @@ public class DsMemory {
      * 确保数据的持久性。
      */
     public void syncStore(){
-        
+        if (dataFile == null) {
+            throw new IllegalStateException("syncStore requires a non-null data file");
+        }
+        if (syncOpLock.tryLock()) {
+            try {
+                long totalBytes = syncByteSize();
+                ensureParentDirectory(dataFile);
+                try (RandomAccessFile raf = new RandomAccessFile(dataFile, "rw")) {
+                    raf.setLength(totalBytes);
+                    for (int i = 0; i < requiredBlockCount(totalBytes); i++) {
+                        byte[] block = i < dataBytes.size() ? dataBytes.get(i) : ZERO_BLOCK_BYTES;
+                        raf.seek((long) i * BLOCK_SIZE);
+                        raf.write(block, 0, BLOCK_SIZE);
+                    }
+                } catch (IOException ex) {
+                    throw new RuntimeException(ex);
+                }
+            } finally {
+                syncOpLock.unlock();
+            }
+        }
     }
     
     /**
@@ -1021,7 +1042,56 @@ public class DsMemory {
      * 确保数据的持久性。
      */
     public void syncLoad(){
-        
+        if (dataFile == null) {
+            throw new IllegalStateException("syncLoad requires a non-null data file");
+        }
+        if (!dataFile.exists()) {
+            return;
+        }
+        if (syncOpLock.tryLock()) {
+            try (RandomAccessFile raf = new RandomAccessFile(dataFile, "r")) {
+                dataBuffers.clear();
+                dataBytes.clear();
+                long fileLength = raf.length();
+                int blockCount = requiredBlockCount(fileLength);
+                for (int i = 0; i < blockCount; i++) {
+                    byte[] block = new byte[BLOCK_SIZE];
+                    int remaining = (int) Math.min(BLOCK_SIZE, fileLength - (long) i * BLOCK_SIZE);
+                    if (remaining > 0) {
+                        raf.seek((long) i * BLOCK_SIZE);
+                        raf.readFully(block, 0, remaining);
+                    }
+                    dataBytes.add(block);
+                    dataBuffers.add(ByteBuffer.wrap(block));
+                }
+            } catch (IOException ex) {
+                throw new RuntimeException(ex);
+            } finally {
+                syncOpLock.unlock();
+            }
+        }
+    }
+
+    public void sync() {
+        syncStore();
+    }
+
+    protected long syncByteSize() {
+        return (long) dataBuffers.size() * BLOCK_SIZE;
+    }
+
+    protected int requiredBlockCount(long totalBytes) {
+        if (totalBytes <= 0) {
+            return 0;
+        }
+        return (int) ((totalBytes + BLOCK_SIZE - 1) / BLOCK_SIZE);
+    }
+
+    protected void ensureParentDirectory(File file) {
+        File parent = file.getParentFile();
+        if (parent != null && !parent.exists()) {
+            parent.mkdirs();
+        }
     }
 
 }

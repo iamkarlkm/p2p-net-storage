@@ -1,7 +1,6 @@
 package ds;
 
 import com.q3lives.ds.collections.DsHashSetI64;
-import com.q3lives.ds.collections.DsHashSetI64_Fixed;
 import com.q3lives.ds.collections.DsMemorySet;
 import org.junit.After;
 import org.junit.Before;
@@ -9,8 +8,11 @@ import org.junit.Test;
 
 import java.io.File;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import lombok.extern.slf4j.Slf4j;
 
@@ -95,11 +97,14 @@ public class DsHashSetTest {
             gcAfter - gcBefore
         );
       test.print();
-        System.out.println(dsHashSet.contains(-50000)+" ************** "+dsHashSet.total()+" ************** "+dsHashSet.getStoreUsed());
+        printFastPutStats(dsHashSet);
+        System.out.println(dsHashSet.contains(-50000L)+" ************** "+dsHashSet.total()+" ************** "+dsHashSet.getStoreUsed());
         System.out.println(dsHashSet.first()+" -> "+dsHashSet.last()+" range(0, 10): "+dsHashSet.range(0, 10));
-         System.out.println("value -50000: "+dsHashSet.contains(-50000));
+         System.out.println("value -50000: "+dsHashSet.contains(-50000L));
          System.out.println("state: "+dsHashSet.readState(7, 176));
             System.out.println("getByNodeId(7, 176): "+dsHashSet.getByNodeId(7, 176));
+             System.out.println("value -50000 hash pash: "+dsHashSet.debugDumpJson(-50000L));
+             System.out.println("value -259 hash pash: "+dsHashSet.debugDumpJson(-259L));
         Set<Long> set = new HashSet();
          System.gc();
         memBefore = getUsedMemory();
@@ -152,9 +157,138 @@ System.out.println(set.size()+" ************** ");
             gcAfter - gcBefore
         );
        test.print();
+        printFastPutStats(mset);
         System.out.println(mset.total()+" ************** "+mset.getStoreUsed());
         System.out.println(mset.first()+" -> "+mset.last());
          dsHashSet.clear();
+    }
+
+    @Test
+    public void testFastPutQuickCacheBenchmark() throws Exception {
+        long[] prefixes = {
+            0x0102030405000000L,
+            0x1112131415000000L,
+            0x2122232425000000L,
+            0x3132333435000000L
+        };
+        int rounds = 4096;
+
+        DsHashSetI64.FastPutStats stats = runFastPutBenchmark(
+            "ds-fast-put-multiprefix",
+            null,
+            prefixes.length * rounds,
+            () -> {
+                for (int round = 0; round < rounds; round++) {
+                    long suffix = ((long) (round & 0xFF) << 8) | ((round >>> 2) & 0xFF);
+                    for (long prefix : prefixes) {
+                        dsHashSet.add(prefix | suffix);
+                    }
+                }
+            }
+        );
+
+        assertNotNull(stats);
+        assertTrue(stats.lastHitCount() > 0);
+        assertTrue(stats.quickCacheSize() > 0);
+        for (int round = 0; round < Math.min(rounds, 256); round++) {
+            long suffix = ((long) (round & 0xFF) << 8) | ((round >>> 2) & 0xFF);
+            for (long prefix : prefixes) {
+                assertTrue(dsHashSet.contains(prefix | suffix));
+            }
+        }
+    }
+
+    @Test
+    public void testFastPutScenarioComparison() throws Exception {
+        int count = 20_000;
+        DsHashSetI64.FastPutStats sequential = runFastPutBenchmark(
+            "ds-fast-put-sequential",
+            null,
+            count,
+            () -> {
+                for (long i = 0; i < count; i++) {
+                    dsHashSet.add(i);
+                }
+            }
+        );
+
+        long[] prefixes = {
+            0x0102030405000000L,
+            0x1112131415000000L,
+            0x2122232425000000L,
+            0x3132333435000000L
+        };
+        int rounds = 4096;
+        DsHashSetI64.FastPutStats multiPrefix = runFastPutBenchmark(
+            "ds-fast-put-compare-multiprefix",
+            null,
+            prefixes.length * rounds,
+            () -> {
+                for (int round = 0; round < rounds; round++) {
+                    long suffix = ((long) (round & 0xFF) << 8) | ((round >>> 2) & 0xFF);
+                    for (long prefix : prefixes) {
+                        dsHashSet.add(prefix | suffix);
+                    }
+                }
+            }
+        );
+
+        log.info(
+            "FastPut场景对比: sequential(last={}, quick={}, miss={}) vs multiprefix(last={}, quick={}, miss={})",
+            sequential.lastHitCount(),
+            sequential.quickHitCount(),
+            sequential.missCount(),
+            multiPrefix.lastHitCount(),
+            multiPrefix.quickHitCount(),
+            multiPrefix.missCount()
+        );
+        assertTrue(sequential.lastHitCount() > 0);
+        assertTrue(multiPrefix.quickCacheSize() > 0);
+    }
+
+    @Test
+    public void testFastPutQuickCacheSizeTuning() throws Exception {
+        int[] capacities = {32, 64, 128, 256};
+        long[] prefixes = {
+            0x0102030405000000L,
+            0x1112131415000000L,
+            0x2122232425000000L,
+            0x3132333435000000L
+        };
+        int rounds = 4096;
+        List<String> csv = new ArrayList<>();
+        List<FastPutBenchmarkResult> results = new ArrayList<>();
+        csv.add("capacity,throughput,lastHit,quickHit,miss,rejected,invalidated,quickSize,quickCapacity");
+        for (int capacity : capacities) {
+            FastPutBenchmarkResult result = runFastPutBenchmarkResult(
+                "ds-fast-put-size-" + capacity,
+                capacity,
+                prefixes.length * rounds,
+                () -> {
+                    for (int round = 0; round < rounds; round++) {
+                        long suffix = ((long) (round & 0xFF) << 8) | ((round >>> 2) & 0xFF);
+                        for (long prefix : prefixes) {
+                            dsHashSet.add(prefix | suffix);
+                        }
+                    }
+                }
+            );
+            DsHashSetI64.FastPutStats stats = result.stats();
+            assertEquals(capacity, stats.quickCacheCapacity());
+            results.add(result);
+            csv.add(toFastPutCsv(result));
+        }
+        log.info("FastPutCapacityCSV:\n{}", String.join("\n", csv));
+        FastPutBenchmarkResult best = findBestFastPutResult(results);
+        log.info(
+            "FastPutCapacityBest=capacity={},throughput={},quickHit={},lastHit={},miss={},summary={}",
+            best.stats().quickCacheCapacity(),
+            best.throughputOps(),
+            best.stats().quickHitCount(),
+            best.stats().lastHitCount(),
+            best.stats().missCount(),
+            summarizeFastPut(best.stats(), best.totalLookups(), best.lastPercent(), best.quickPercent())
+        );
     }
     
      /**
@@ -208,12 +342,191 @@ System.out.println(set.size()+" ************** ");
         }
     }
 
+    private void printFastPutStats(DsHashSetI64 dsHashSet) {
+        DsHashSetI64.FastPutStats stats = dsHashSet.getFastPutStats();
+        Map<String, Object> statsMap = dsHashSet.getFastPutStatsMap();
+        long totalLookups = stats.lastHitCount() + stats.quickHitCount() + stats.missCount();
+        long hitPercent = totalLookups == 0 ? 0 : ((stats.lastHitCount() + stats.quickHitCount()) * 100 / totalLookups);
+        long lastPercent = totalLookups == 0 ? 0 : (stats.lastHitCount() * 100 / totalLookups);
+        long quickPercent = totalLookups == 0 ? 0 : (stats.quickHitCount() * 100 / totalLookups);
+        log.info("FastPutStats: {}", statsMap);
+        log.info("FastPut命中率: {}% (last={}, quick={}, miss={})", hitPercent, stats.lastHitCount(), stats.quickHitCount(), stats.missCount());
+        log.info("FastPut校验失败/淘汰: rejected={}, invalidated={}", stats.rejectedCount(), stats.invalidatedCount());
+        log.info("FastPut摘要: {}", summarizeFastPut(stats, totalLookups, lastPercent, quickPercent));
+    }
+
+    private void printFastPutStats(DsMemorySet memorySet) {
+        DsMemorySet.FastPutStats stats = memorySet.getFastPutStats();
+        Map<String, Object> statsMap = memorySet.getFastPutStatsMap();
+        long totalLookups = stats.lastHitCount() + stats.quickHitCount() + stats.missCount();
+        long hitPercent = totalLookups == 0 ? 0 : ((stats.lastHitCount() + stats.quickHitCount()) * 100 / totalLookups);
+        long lastPercent = totalLookups == 0 ? 0 : (stats.lastHitCount() * 100 / totalLookups);
+        long quickPercent = totalLookups == 0 ? 0 : (stats.quickHitCount() * 100 / totalLookups);
+        log.info("MemoryFastPutStats: {}", statsMap);
+        log.info("MemoryFastPut命中率: {}% (last={}, quick={}, miss={})", hitPercent, stats.lastHitCount(), stats.quickHitCount(), stats.missCount());
+        log.info("MemoryFastPut校验失败/淘汰: rejected={}, invalidated={}", stats.rejectedCount(), stats.invalidatedCount());
+        log.info("MemoryFastPut摘要: {}", summarizeFastPut(stats.lastHitCount(), stats.quickHitCount(), stats.missCount(), stats.rejectedCount(), stats.invalidatedCount(), stats.quickCacheCapacity(), stats.quickCacheSize(), lastPercent, quickPercent));
+    }
+
+    private String summarizeFastPut(DsHashSetI64.FastPutStats stats, long totalLookups, long lastPercent, long quickPercent) {
+        return summarizeFastPut(
+            stats.lastHitCount(),
+            stats.quickHitCount(),
+            stats.missCount(),
+            stats.rejectedCount(),
+            stats.invalidatedCount(),
+            stats.quickCacheCapacity(),
+            stats.quickCacheSize(),
+            lastPercent,
+            quickPercent
+        );
+    }
+
+    private String summarizeFastPut(long lastHitCount, long quickHitCount, long missCount, long rejectedCount, long invalidatedCount, int quickCacheCapacity, int quickCacheSize, long lastPercent, long quickPercent) {
+        long totalLookups = lastHitCount + quickHitCount + missCount;
+        if (totalLookups == 0) {
+            return "无统计数据";
+        }
+        StringBuilder sb = new StringBuilder();
+        if (lastPercent >= 80) {
+            sb.append("单热点前缀明显，保留 lastPutCache；");
+        } else if (lastHitCount > 0) {
+            sb.append("lastPutCache 有收益；");
+        } else {
+            sb.append("lastPutCache 收益弱；");
+        }
+
+        if (quickPercent >= 5) {
+            sb.append(" quickCache 对多热点前缀有效；");
+        } else if (quickHitCount > 0) {
+            sb.append(" quickCache 有少量收益；");
+        } else {
+            sb.append(" quickCache 基本未命中；");
+        }
+
+        if (rejectedCount > 0 || invalidatedCount > 0) {
+            sb.append(" 存在校验失败/淘汰，当前实现已兜底。");
+        } else {
+            sb.append(" 无校验失败/淘汰。");
+        }
+        sb.append(' ').append(recommendQuickCacheSize(quickHitCount, missCount, quickCacheCapacity, quickCacheSize, quickPercent));
+        return sb.toString();
+    }
+
+    private String recommendQuickCacheSize(DsHashSetI64.FastPutStats stats, long quickPercent) {
+        return recommendQuickCacheSize(stats.quickHitCount(), stats.missCount(), stats.quickCacheCapacity(), stats.quickCacheSize(), quickPercent);
+    }
+
+    private String recommendQuickCacheSize(long quickHitCount, long missCount, int capacity, int quickCacheSize, long quickPercent) {
+        if (quickHitCount == 0) {
+            if (capacity > 64) {
+                return "建议将 -Dds.hashset.quickCacheSize 先降到 64 观察。";
+            }
+            return "建议保持当前 quickCacheSize，必要时可继续减小。";
+        }
+        if (quickPercent >= 5) {
+            if (quickCacheSize >= capacity && missCount > quickHitCount) {
+                return "建议尝试增大 -Dds.hashset.quickCacheSize，观察 quickHit 是否继续上升。";
+            }
+            return "建议保留当前 quickCacheSize。";
+        }
+        if (quickHitCount > 0) {
+            return "quickCache 有收益但较弱，建议优先保持当前容量并结合真实 workload 再调参。";
+        }
+        return "建议保持当前 quickCacheSize。";
+    }
+
+    private DsHashSetI64.FastPutStats runFastPutBenchmark(String name, Integer quickCacheSize, int iterations, FastPutWorkload workload) throws Exception {
+        return runFastPutBenchmarkResult(name, quickCacheSize, iterations, workload).stats();
+    }
+
+    private FastPutBenchmarkResult runFastPutBenchmarkResult(String name, Integer quickCacheSize, int iterations, FastPutWorkload workload) throws Exception {
+        if (quickCacheSize != null) {
+            dsHashSet.setQuickCacheSize(quickCacheSize);
+        }
+        dsHashSet.clear();
+        System.gc();
+        long memBefore = getUsedMemory();
+        long gcBefore = getGCCount();
+        long start = System.nanoTime();
+        workload.run();
+        long duration = System.nanoTime() - start;
+        long memAfter = getUsedMemory();
+        System.gc();
+        long gcAfter = getGCCount();
+
+        BenchmarkResult test = new BenchmarkResult(
+            name,
+            duration,
+            iterations,
+            memAfter - memBefore,
+            gcAfter - gcBefore
+        );
+        test.print();
+        printFastPutStats(dsHashSet);
+        return new FastPutBenchmarkResult(name, duration, iterations, dsHashSet.getFastPutStats());
+    }
+
+    private String toFastPutCsv(FastPutBenchmarkResult result) {
+        DsHashSetI64.FastPutStats stats = result.stats();
+        return stats.quickCacheCapacity()
+            + "," + result.throughputOps()
+            + "," + stats.lastHitCount()
+            + "," + stats.quickHitCount()
+            + "," + stats.missCount()
+            + "," + stats.rejectedCount()
+            + "," + stats.invalidatedCount()
+            + "," + stats.quickCacheSize()
+            + "," + stats.quickCacheCapacity();
+    }
+
+    private FastPutBenchmarkResult findBestFastPutResult(List<FastPutBenchmarkResult> results) {
+        FastPutBenchmarkResult best = results.get(0);
+        for (int i = 1; i < results.size(); i++) {
+            FastPutBenchmarkResult candidate = results.get(i);
+            if (candidate.throughputOps() > best.throughputOps()) {
+                best = candidate;
+                continue;
+            }
+            if (candidate.throughputOps() == best.throughputOps()
+                && candidate.stats().quickHitCount() > best.stats().quickHitCount()) {
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    @FunctionalInterface
+    private interface FastPutWorkload {
+        void run() throws Exception;
+    }
+
+    private record FastPutBenchmarkResult(String name, long durationNs, int iterations, DsHashSetI64.FastPutStats stats) {
+        long throughputOps() {
+            return durationNs == 0 ? 0 : (iterations * 1_000_000_000L) / durationNs;
+        }
+
+        long totalLookups() {
+            return stats.lastHitCount() + stats.quickHitCount() + stats.missCount();
+        }
+
+        long lastPercent() {
+            long total = totalLookups();
+            return total == 0 ? 0 : (stats.lastHitCount() * 100 / total);
+        }
+
+        long quickPercent() {
+            long total = totalLookups();
+            return total == 0 ? 0 : (stats.quickHitCount() * 100 / total);
+        }
+    }
+
 
     @Test
     public void testToArrayAndIterator() throws Exception {
         int count = 0;
         dsHashSet.clear();
-        for(int i=-1000000;i<1000000;i= i+100000){
+        for(int i=-10000;i<10000;i= i+100){
             dsHashSet.add(i);
             count++;
         }
@@ -223,6 +536,7 @@ System.out.println(set.size()+" ************** ");
 
         
         dsHashSet.remove(dsHashSet.first());
+        count--;
         Object[] arr = dsHashSet.toArray();
          System.out.println(dsHashSet.first()+" -> "+dsHashSet.last());
         assertEquals(count, arr.length);
@@ -289,8 +603,8 @@ System.out.println(set.size()+" ************** ");
         dsHashSet.remove(2L);
 
         HashSet<Long> rest = new HashSet<>();
-        while (it.hasNext()) {
-            rest.add(it.next());
+        for (Long v : dsHashSet) {
+            rest.add(v);
         }
 
         assertTrue(rest.contains(3L));

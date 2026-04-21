@@ -4,7 +4,6 @@ import cn.hutool.jwt.signers.JWTSignerUtil;
 import java.io.File;
 import java.io.IOException;
 import java.util.Arrays;
-import java.util.ArrayDeque;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -19,6 +18,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.function.LongConsumer;
 
 /**
  * 通用 long->long 映射索引（以 64-bit 哈希值作为 key）。
@@ -58,7 +59,7 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
     private static final int BITMAP_BYTES = 64;//256*2bit(位图)/8   00->empty,01->value,10->sub layer,11->next hashmap
     private static final int SLOT_PAYLOAD_BYTES = 8;
 
-    private static final int QUICK_HASH_CACHE_SIZE = 256;
+    private static final int DEFAULT_QUICK_HASH_CACHE_SIZE = Math.max(8, Integer.getInteger("ds.hashset.quickCacheSize", 256));
     
     /**
      * Trie 深度（8 层，每层 1 字节）
@@ -80,21 +81,30 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
     private final int hashLen = 8;
     private final int hashEnd = 7;
 
-    private long[] quickHashMasks = new long[256];
-    private long[] quickHashNodes = new long[256];
-    private int[] quickHashLevels = new int[256];
+    private int quickHashCacheCapacity = DEFAULT_QUICK_HASH_CACHE_SIZE;
+    private long[] quickHashMasks = new long[DEFAULT_QUICK_HASH_CACHE_SIZE];
+    private long[] quickHashNodes = new long[DEFAULT_QUICK_HASH_CACHE_SIZE];
+    private int[] quickHashLevels = new int[DEFAULT_QUICK_HASH_CACHE_SIZE];
     private int quickHashSize = 0;
     private int quickHashHead = 0;
+    private static final int[] ROOT_ASC_SLOTS = buildRootSlots(true);
+    private static final int[] ROOT_DESC_SLOTS = buildRootSlots(false);
+    private static final int[] ASC_SLOTS = buildLevelSlots(true);
+    private static final int[] DESC_SLOTS = buildLevelSlots(false);
 
-    private long lastNodeId = 0;
-    private long lastNodeHash = 0;
-    private int lastNodeLevel = 0;
+    private FastPutCache lastPutCache;
+    private long fastPutLastHitCount = 0;
+    private long fastPutQuickHitCount = 0;
+    private long fastPutMissCount = 0;
+    private long fastPutRejectedCount = 0;
+    private long fastPutInvalidatedCount = 0;
     
     //nodeid 路径映射,保存每一个nodeID的路径信息,用于路径空洞和意外断链的bug
-   private Map<Long,DsHashPath> debugInfoMap = new HashMap();
+    private Map<Long, DsHashPath> debugInfoMap = new HashMap<>();
+    private final boolean debugPaths = Boolean.getBoolean("ds.hashset.debugPaths");
    
-    public static void main(String[] args) {
-         DsHashSetI64 dsHashSet = new DsHashSetI64("test_dshashset.bug");
+    public static void mainBugDemo(String[] args) throws Exception {
+         DsHashSetI64 dsHashSet = new DsHashSetI64(new File("test_dshashset.bug"));
          dsHashSet.clear();
         int count = 50000;
        
@@ -124,9 +134,51 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
         -1L // level 7: 全部保留
     };
 
-    public static record DsHashPath(long nodeId,int level){};
+    public static record DsHashPath(int level, byte[] path) {
+        public DsHashPath {
+            if (level < 0 || level >= HASH_DEPTH) {
+                throw new IllegalArgumentException("invalid hash level");
+            }
+            if (path == null || path.length != HASH_DEPTH) {
+                throw new IllegalArgumentException("invalid hash path");
+            }
+        }
+    }
+
+    public static record FastPutStats(
+        long lastHitCount,
+        long quickHitCount,
+        long missCount,
+        long rejectedCount,
+        long invalidatedCount,
+        int quickCacheSize,
+        int quickCacheCapacity
+    ) {
+    }
+
+    private static final class FastPutCache {
+        final long nodeId;
+        final DsHashPath path;
+
+        FastPutCache(long nodeId, DsHashPath path) {
+            this.nodeId = nodeId;
+            this.path = path;
+        }
+
+        boolean matches(byte[] hashes) {
+            if (nodeId <= 0 || path == null || hashes == null || hashes.length != HASH_DEPTH) {
+                return false;
+            }
+            for (int i = 0; i < path.level(); i++) {
+                if (path.path()[i] != hashes[i]) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
     
-    public static void main(String[] args) {
+    public static void mainMaskDemo(String[] args) {
 //        for(int i=0;i<8;i++){
 //            System.out.println(Long.toHexString(-1&HASH_MASKS[i]));
 //        }
@@ -140,10 +192,18 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
      * @param file
      */
     public DsHashSetI64(File file) {
+        this(file, DEFAULT_QUICK_HASH_CACHE_SIZE);
+    }
+
+    public DsHashSetI64(File file, int quickCacheSize) {
         super(file, HEADER_SIZE, 2112);//2字节索引 8位哈希 => 256*2-bit(位图)/8 + 256*8-byte(value) = 64+2048 =2112
         zeroNode = new long[this.dataUnitSize / 8];
+        setQuickCacheSizeInternal(quickCacheSize, false);
         initHeader();
+    }
 
+    public void setQuickCacheSize(int quickCacheSize) {
+        setQuickCacheSizeInternal(quickCacheSize, true);
     }
 
     private void initHeader() {
@@ -195,14 +255,10 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
 //        if (hashes == null || hashes.length != hashLen) {
 //            throw new IllegalArgumentException("hashes length must be " + hashLen);
 //        }
-        if (key == -50000) {
-            System.out.println("----");
-        }
-        if (lastNodeLevel > 0) {//缓存命中，快速跳转。
-            long cache = key & HASH_MASKS[lastNodeLevel - 1];
-            if (cache == lastNodeHash) {
-                return putInner(lastNodeId, hashes, key, lastNodeLevel, true);
-            }
+      
+        FastPutCache fastCache = findFastPutCache(hashes);
+        if (fastCache != null) {//缓存命中，快速跳转。
+            return putInner(fastCache.nodeId, hashes, key, fastCache.path.level(), true);
         }
         long nodeId = 0;
         for (int level = 0; level < hashLen; level++) {
@@ -211,7 +267,9 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
             if (level < hashEnd) {
                 switch (state) {
                     case STATE_CHILD -> {
-                        nodeId = loadLongOffset(valuePos(nodeId, slot));
+                        long child = loadLongOffset(valuePos(nodeId, slot));
+                        recordPath(child, level + 1, hashes);
+                        nodeId = child;
                         //继续处理下一个哈希。
                         continue;
                     }
@@ -227,12 +285,8 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
                         }
                         writeState(nodeId, slot, STATE_VALUE);
                         storeLongOffset(valuePos(nodeId, slot), key);
-                        if (level > 2) {
-//                            lastNodeId = nodeId;
-//                            lastNodeLevel = level;
-//                            lastNodeHash = key & HASH_MASKS[lastNodeLevel - 1];
-//                                System.out.println("");
-                        }
+                        updateLastPutCache(nodeId, level, hashes);
+                        validateReachable(key);
                         return true;
                     }
                     case STATE_VALUE -> {
@@ -246,8 +300,11 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
                         storeLongOffset(valuePos(nodeId, slot), child);
                         //深入下一层,分别存储两个值。
                         int nextLevel = level + 1;
-                        putInner(child, hashBytes(oldKey), oldKey, nextLevel, false);
+                        DsHashPath oldPath = fullHashPath(oldKey, nextLevel);
+                        debugInfoMap.put(child, oldPath);
+                        putInner(child, oldPath.path(), oldKey, nextLevel, false);
                         putInner(child, hashes, key, nextLevel, true);
+                        validateReachable(key);
                         return true;
                     }
                 }
@@ -266,6 +323,7 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
                     }
                     writeState(nodeId, slot, STATE_VALUE);
                     storeLongOffset(valuePos(nodeId, slot), key);
+                    validateReachable(key);
                     return true;
                 }
                 case STATE_VALUE -> {
@@ -311,7 +369,9 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
             if (level < hashEnd) {
                 switch (state) {
                     case STATE_CHILD -> {
-                        nodeId = loadLongOffset(valuePos(nodeId, slot));
+                        long child = loadLongOffset(valuePos(nodeId, slot));
+                        recordPath(child, level + 1, hashes);
+                        nodeId = child;
                         continue;
                     }
                     case STATE_EMPTY -> {
@@ -327,6 +387,8 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
                         }
                         writeState(nodeId, slot, STATE_VALUE);
                         storeLongOffset(valuePos(nodeId, slot), key);
+                        updateLastPutCache(nodeId, level, hashes);
+                        validateReachable(key);
                         return true;
                     }
                     case STATE_VALUE -> {
@@ -338,8 +400,11 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
                         writeState(nodeId, slot, STATE_CHILD);
                         storeLongOffset(valuePos(nodeId, slot), child);
                         int nextLevel = level + 1;
-                        putInner(child, hashBytes(oldKey), oldKey, nextLevel, false);
+                        DsHashPath oldPath = fullHashPath(oldKey, nextLevel);
+                        debugInfoMap.put(child, oldPath);
+                        putInner(child, oldPath.path(), oldKey, nextLevel, false);
                         putInner(child, hashes, key, nextLevel, countSize);
+                        validateReachable(key);
                         return true;
                     }
 
@@ -363,6 +428,8 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
                     }
                     writeState(nodeId, slot, STATE_VALUE);
                     storeLongOffset(valuePos(nodeId, slot), key);
+                    updateLastPutCache(nodeId, level, hashes);
+                    validateReachable(key);
                     return true;
                 }
                 case STATE_VALUE -> {
@@ -400,6 +467,346 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
         byte[] b = HASHBYTES2.get();
         DsDataUtil.storeLong(b, hashOffset, key);
         return b;
+    }
+
+    private DsHashPath fullHashPath(long key, int level) {
+        byte[] b = new byte[HASH_DEPTH];
+        DsDataUtil.storeLong(b, hashOffset, key);
+        return new DsHashPath(level, b);
+    }
+
+    private void updateLastPutCache(long nodeId, int level, byte[] hashes) {
+        if (nodeId <= 0 || level <= 0 || hashes == null || hashes.length != HASH_DEPTH) {
+            lastPutCache = null;
+            return;
+        }
+        byte[] copy = Arrays.copyOf(hashes, HASH_DEPTH);
+        lastPutCache = new FastPutCache(nodeId, new DsHashPath(level, copy));
+        updateQuickHashCache(nodeId, level, copy);
+    }
+
+    private FastPutCache findFastPutCache(byte[] hashes) {
+        if (lastPutCache != null && lastPutCache.matches(hashes)) {
+            if (isFastPutNodeReachable(lastPutCache.nodeId, lastPutCache.path.level(), hashes)) {
+                fastPutLastHitCount++;
+                return lastPutCache;
+            }
+            fastPutRejectedCount++;
+            lastPutCache = null;
+        }
+        if (quickHashSize <= 0 || hashes == null || hashes.length != HASH_DEPTH) {
+            fastPutMissCount++;
+            return null;
+        }
+        long hash64 = DsDataUtil.loadLong(hashes, hashOffset);
+        int bestLevel = -1;
+        FastPutCache best = null;
+        for (int i = 0; i < quickHashSize; i++) {
+            int idx = (quickHashHead - 1 - i + quickHashCacheCapacity) % quickHashCacheCapacity;
+            int level = quickHashLevels[idx];
+            if (level <= 0 || level <= bestLevel) {
+                continue;
+            }
+            long mask = prefixMaskForLevel(level);
+            if ((hash64 & mask) == quickHashMasks[idx]) {
+                long nodeId = quickHashNodes[idx];
+                if (nodeId > 0 && isFastPutNodeReachable(nodeId, level, hashes)) {
+                    bestLevel = level;
+                    best = new FastPutCache(nodeId, new DsHashPath(level, Arrays.copyOf(hashes, HASH_DEPTH)));
+                    if (level >= hashEnd) {
+                        break;
+                    }
+                } else {
+                    fastPutRejectedCount++;
+                    invalidateQuickHashEntry(idx);
+                }
+            }
+        }
+        if (best == null) {
+            fastPutMissCount++;
+            return null;
+        }
+        fastPutQuickHitCount++;
+        lastPutCache = best;
+        return lastPutCache;
+    }
+
+    private void updateQuickHashCache(long nodeId, int level, byte[] hashes) {
+        if (nodeId <= 0 || level <= 0 || hashes == null || hashes.length != HASH_DEPTH) {
+            return;
+        }
+        long hash64 = DsDataUtil.loadLong(hashes, hashOffset);
+        long prefix = hash64 & prefixMaskForLevel(level);
+        for (int i = 0; i < quickHashSize; i++) {
+            if (quickHashLevels[i] == level && quickHashMasks[i] == prefix) {
+                quickHashNodes[i] = nodeId;
+                return;
+            }
+        }
+        quickHashMasks[quickHashHead] = prefix;
+        quickHashNodes[quickHashHead] = nodeId;
+        quickHashLevels[quickHashHead] = level;
+        quickHashHead = (quickHashHead + 1) % quickHashCacheCapacity;
+        if (quickHashSize < quickHashCacheCapacity) {
+            quickHashSize++;
+        }
+    }
+
+    private void invalidateQuickHashEntry(int idx) {
+        if (idx < 0 || idx >= quickHashCacheCapacity || quickHashLevels[idx] <= 0) {
+            return;
+        }
+        fastPutInvalidatedCount++;
+        quickHashMasks[idx] = 0L;
+        quickHashNodes[idx] = 0L;
+        quickHashLevels[idx] = 0;
+        while (quickHashSize > 0) {
+            int tail = (quickHashHead - 1 + quickHashCacheCapacity) % quickHashCacheCapacity;
+            if (quickHashLevels[tail] > 0) {
+                break;
+            }
+            quickHashHead = tail;
+            quickHashSize--;
+        }
+    }
+
+    private long prefixMaskForLevel(int level) {
+        if (level <= 0) {
+            return 0L;
+        }
+        if (level >= HASH_DEPTH) {
+            return -1L;
+        }
+        return HASH_MASKS[HASH_DEPTH - 1 - level];
+    }
+
+    public FastPutStats getFastPutStats() {
+        return new FastPutStats(
+            fastPutLastHitCount,
+            fastPutQuickHitCount,
+            fastPutMissCount,
+            fastPutRejectedCount,
+            fastPutInvalidatedCount,
+            quickHashSize,
+            quickHashCacheCapacity
+        );
+    }
+
+    public Map<String, Object> getFastPutStatsMap() {
+        FastPutStats stats = getFastPutStats();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("lastHitCount", stats.lastHitCount());
+        out.put("quickHitCount", stats.quickHitCount());
+        out.put("missCount", stats.missCount());
+        out.put("rejectedCount", stats.rejectedCount());
+        out.put("invalidatedCount", stats.invalidatedCount());
+        out.put("quickCacheSize", stats.quickCacheSize());
+        out.put("quickCacheCapacity", stats.quickCacheCapacity());
+        return out;
+    }
+
+    private void setQuickCacheSizeInternal(int quickCacheSize, boolean resetStats) {
+        int capacity = Math.max(8, quickCacheSize);
+        quickHashCacheCapacity = capacity;
+        quickHashMasks = new long[capacity];
+        quickHashNodes = new long[capacity];
+        quickHashLevels = new int[capacity];
+        resetQuickHashCache(resetStats);
+    }
+
+    private void resetQuickHashCache(boolean resetStats) {
+        lastPutCache = null;
+        quickHashSize = 0;
+        quickHashHead = 0;
+        if (resetStats) {
+            fastPutLastHitCount = 0;
+            fastPutQuickHitCount = 0;
+            fastPutMissCount = 0;
+            fastPutRejectedCount = 0;
+            fastPutInvalidatedCount = 0;
+        }
+    }
+
+    private boolean isFastPutNodeReachable(long nodeId, int level, byte[] hashes) {
+        if (nodeId <= 0 || level <= 0 || level >= hashLen || hashes == null || hashes.length != HASH_DEPTH) {
+            return false;
+        }
+        long current = 0;
+        for (int i = 0; i < level; i++) {
+            int slot = hashes[i] & 0xFF;
+            if (readState(current, slot) != STATE_CHILD) {
+                return false;
+            }
+            current = loadLongOffset(valuePos(current, slot));
+                if (current <= 0) {
+                    return false;
+                }
+        }
+        return current == nodeId;
+    }
+
+    private void recordPath(long nodeId, int level, byte[] hashes) {
+        if (!debugPaths || nodeId <= 0 || hashes == null || hashes.length != HASH_DEPTH) {
+            return;
+        }
+        debugInfoMap.putIfAbsent(nodeId, new DsHashPath(level, Arrays.copyOf(hashes, HASH_DEPTH)));
+    }
+
+    private void validateReachable(long key) throws IOException {
+        if (!debugPaths) {
+            return;
+        }
+        Long v = get(key);
+        if (v == null || v.longValue() != key) {
+            throw new IllegalStateException(debugDump(key));
+        }
+    }
+
+    public String debugDump(long key) throws IOException {
+        byte[] hash64 = fullHashPath(key, 0).path();
+        StringBuilder sb = new StringBuilder();
+        long nodeId = 0;
+        sb.append("key=").append(key).append('\n');
+        for (int level = 0; level < hashLen; level++) {
+            int slot = hash64[level] & 0xFF;
+            int state = readState(nodeId, slot);
+            sb.append("level=").append(level).append(" node=").append(nodeId).append(" slot=").append(slot).append(" state=").append(state).append('\n');
+            if (level < hashEnd && state == STATE_CHILD) {
+                long child = loadLongOffset(valuePos(nodeId, slot));
+                DsHashPath p = debugInfoMap.get(child);
+                if (p != null) {
+                    sb.append("child=").append(child).append(" pathLevel=").append(p.level()).append(" pathSlots=");
+                    for (int i = 0; i < HASH_DEPTH; i++) {
+                        if (i > 0) sb.append(",");
+                        sb.append(p.path()[i] & 0xFF);
+                    }
+                    sb.append('\n');
+                }
+                nodeId = child;
+                continue;
+            }
+            if (state == STATE_VALUE) {
+                sb.append("value=").append(loadLongOffset(valuePos(nodeId, slot))).append('\n');
+            }
+            break;
+        }
+        return sb.toString();
+    }
+
+    public Map<String, Object> debugDumpMap(long key) throws IOException {
+        byte[] hash64 = fullHashPath(key, 0).path();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("key", key);
+        List<Map<String, Object>> levels = new ArrayList<>();
+        long nodeId = 0;
+        for (int level = 0; level < hashLen; level++) {
+            int slot = hash64[level] & 0xFF;
+            int state = readState(nodeId, slot);
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("level", level);
+            row.put("node", nodeId);
+            row.put("slot", slot);
+            row.put("state", state);
+            if (level < hashEnd && state == STATE_CHILD) {
+                long child = loadLongOffset(valuePos(nodeId, slot));
+                row.put("child", child);
+                DsHashPath p = debugInfoMap.get(child);
+                if (p != null) {
+                    row.put("pathLevel", p.level());
+                    int[] slots = new int[HASH_DEPTH];
+                    for (int i = 0; i < HASH_DEPTH; i++) {
+                        slots[i] = p.path()[i] & 0xFF;
+                    }
+                    //row.put("pathSlots", slots);
+                }
+                levels.add(row);
+                nodeId = child;
+                continue;
+            }
+            if (state == STATE_VALUE) {
+                row.put("value", loadLongOffset(valuePos(nodeId, slot)));
+            }
+            levels.add(row);
+            break;
+        }
+        out.put("levels", levels);
+        return out;
+    }
+
+    public String debugDumpJson(long key) throws IOException {
+        return toJson(debugDumpMap(key));
+    }
+
+    private static String toJson(Object v) {
+        if (v == null) {
+            return "null";
+        }
+        if (v instanceof String s) {
+            return "\"" + escapeJson(s) + "\"";
+        }
+        if (v instanceof Number || v instanceof Boolean) {
+            return v.toString();
+        }
+        if (v instanceof int[] a) {
+            StringBuilder sb = new StringBuilder();
+            sb.append('[');
+            for (int i = 0; i < a.length; i++) {
+                if (i > 0) sb.append(',');
+                sb.append(a[i]);
+            }
+            sb.append(']');
+            return sb.toString();
+        }
+        if (v instanceof Map<?, ?> m) {
+            StringBuilder sb = new StringBuilder();
+            sb.append('{');
+            boolean first = true;
+            for (Map.Entry<?, ?> e : m.entrySet()) {
+                if (!(e.getKey() instanceof String)) {
+                    continue;
+                }
+                if (!first) sb.append(',');
+                first = false;
+                sb.append(toJson(e.getKey()));
+                sb.append(':');
+                sb.append(toJson(e.getValue()));
+            }
+            sb.append('}');
+            return sb.toString();
+        }
+        if (v instanceof List<?> list) {
+            StringBuilder sb = new StringBuilder();
+            sb.append('[');
+            for (int i = 0; i < list.size(); i++) {
+                if (i > 0) sb.append(',');
+                sb.append(toJson(list.get(i)));
+            }
+            sb.append(']');
+            return sb.toString();
+        }
+        return "\"" + escapeJson(v.toString()) + "\"";
+    }
+
+    private static String escapeJson(String s) {
+        StringBuilder sb = new StringBuilder(s.length() + 8);
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            switch (ch) {
+                case '\\' -> sb.append("\\\\");
+                case '"' -> sb.append("\\\"");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> {
+                    if (ch < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) ch));
+                    } else {
+                        sb.append(ch);
+                    }
+                }
+            }
+        }
+        return sb.toString();
     }
     
     public String hsahToString(byte[] hashes) {
@@ -669,11 +1076,11 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
 
     @Override
     public boolean contains(Object o) {
-        if (!(o instanceof Long)) {
+        if (!(o instanceof Number)) {
             return false;
         }
         try {
-            return get(((Long) o).longValue()) != null;
+            return get(((Number) o).longValue()) != null;
         } catch (IOException ex) {
             throw new RuntimeException(ex);
         }
@@ -694,10 +1101,10 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
     @Override
     public boolean remove(Object o) {
         try {
-            if (!(o instanceof Long)) {
+            if (!(o instanceof Number)) {
                 return false;
             }
-            return remove(((Long) o).longValue());
+            return remove(((Number) o).longValue());
         } catch (IOException ex) {
             throw new RuntimeException(ex);
         }
@@ -710,56 +1117,35 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
      * @return
      */
     public Long first() {
-        long nodeId = 0;
         try {
-            for (int level = 0; level < hashLen; level++) {
-                for (int slot = 128; slot < 256; slot++) {
-                    int state = readState(nodeId, slot);
-                    switch (state) {
-
-                        case STATE_VALUE -> {
-                            return loadLongOffset(valuePos(nodeId, slot));
-                        }
-                        case STATE_CHILD -> {
-                            nodeId = loadLongOffset(valuePos(nodeId, slot));
-                            break;//使用下一个哈希 level++ -> slot。
-                        }
-//                        case STATE_NEXT_LEVEL -> {
-//                            return nexth
-//                        }
-
-                    }
-
-                }
-            }
-
-            for (int level = 0; level < hashLen; level++) {
-                for (int slot = 0; slot < 128; slot++) {
-                    int state = readState(nodeId, slot);
-                    switch (state) {
-
-                        case STATE_VALUE -> {
-                            return loadLongOffset(valuePos(nodeId, slot));
-                        }
-                        case STATE_CHILD -> {
-                            nodeId = loadLongOffset(valuePos(nodeId, slot));
-                            break;//使用下一个哈希 level++ -> slot。
-                        }
-//                        case STATE_NEXT_LEVEL -> {
-//                            return nexth
-//                        }
-
-                    }
-
-                }
-            }
-
+            final long[] out = new long[1];
+            boolean found = traverseOrdered(0, 0, true, value -> {
+                out[0] = value;
+                return true;
+            });
+            return found ? out[0] : null;
         } catch (Exception ex) {
             throw new RuntimeException(ex);
         }
-        return null;
     }
-
+    
+       /**
+     * 写入 hash64(8B) -> value 映射。
+     *
+     * <p>
+     * 实现为 8 层 256-ary trie；该版本在某些中间层遇到 STATE_VALUE_CHILD 时会抛异常（不完全支持）。</p>
+     *
+     * @param key
+     * @throws java.io.IOException
+     */
+    private Long scanInner(long startNodeId, int currentLevel) throws IOException {
+        final long[] out = new long[1];
+        boolean found = traverseOrdered(startNodeId, currentLevel, true, value -> {
+            out[0] = value;
+            return true;
+        });
+        return found ? out[0] : null;
+    }
     /**
      * 获取Key哈希值自然排序的第1个元素。
      *
@@ -767,59 +1153,13 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
      * @return
      */
     public long indexOf(long value) {
-        long nodeId = 0;
-        long index = 0;
         try {
-            for (int level = 0; level < hashLen; level++) {
-                for (int slot = 128; slot < 256; slot++) {
-                    int state = readState(nodeId, slot);
-                    switch (state) {
-
-                        case STATE_VALUE -> {
-                            long v = loadLongOffset(valuePos(nodeId, slot));
-                            if(v == value) return index;
-                            index++;
-                        }
-                        case STATE_CHILD -> {
-                            nodeId = loadLongOffset(valuePos(nodeId, slot));
-                            break;//使用下一个哈希 level++ -> slot。
-                        }
-//                        case STATE_NEXT_LEVEL -> {
-//                            return nexth
-//                        }
-
-                    }
-
-                }
-            }
-
-            for (int level = 0; level < hashLen; level++) {
-                for (int slot = 0; slot < 128; slot++) {
-                    int state = readState(nodeId, slot);
-                    switch (state) {
-
-                        case STATE_VALUE -> {
-                            long v = loadLongOffset(valuePos(nodeId, slot));
-                            if(v == value) return index;
-                            index++;
-                        }
-                        case STATE_CHILD -> {
-                            nodeId = loadLongOffset(valuePos(nodeId, slot));
-                            break;//使用下一个哈希 level++ -> slot。
-                        }
-//                        case STATE_NEXT_LEVEL -> {
-//                            return nexth
-//                        }
-
-                    }
-
-                }
-            }
-
+            byte[] hashes = fullHashPath(value, 0).path();
+            TraversalContext ctx = new TraversalContext();
+            return indexOfOrdered(0, 0, value, hashes, ctx, 0L);
         } catch (Exception ex) {
             throw new RuntimeException(ex);
         }
-        return -1;
     }
     
     /**
@@ -829,58 +1169,7 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
      * @return
      */
     public long lastIndexOf(long value) {
-        long nodeId = 0;
-        long index = 0;
-        try {
-            for (int level = 0; level < hashLen; level++) {
-                for (int slot = 127; slot >=0; slot--) {
-                    int state = readState(nodeId, slot);
-                    switch (state) {
-                        case STATE_VALUE -> {
-                            long v = loadLongOffset(valuePos(nodeId, slot));
-                            if(v == value) return index;
-                            index++;
-                        }
-                        case STATE_CHILD -> {
-                            nodeId = loadLongOffset(valuePos(nodeId, slot));
-                            break;//使用下一个哈希 level++ -> slot。
-                        }
-//                        case STATE_NEXT_LEVEL -> {
-//                            return nexth
-//                        }
-
-                    }
-
-                }
-            }
-            for (int level = 0; level < hashLen; level++) {
-                for (int slot = 255; slot >127; slot--) {
-                    int state = readState(nodeId, slot);
-                    switch (state) {
-
-                        case STATE_VALUE -> {
-                            long v = loadLongOffset(valuePos(nodeId, slot));
-                            if(v == value) return index;
-                            index++;
-                        }
-                        case STATE_CHILD -> {
-                            nodeId = loadLongOffset(valuePos(nodeId, slot));
-                            break;//使用下一个哈希 level++ -> slot。
-                        }
-//                        case STATE_NEXT_LEVEL -> {
-//                            return nexth
-//                        }
-
-                    }
-
-                }
-            }
-
-
-        } catch (Exception ex) {
-            throw new RuntimeException(ex);
-        }
-        return -1;
+        return indexOf(value);
     }
     
     /**
@@ -890,58 +1179,16 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
      * @return
      */
     public Long getByIndex(long index) {
-        long nodeId = 0;
-        long i = 0;
         try {
-            for (int level = 0; level < hashLen; level++) {
-                for (int slot = 128; slot < 256; slot++) {
-                    int state = readState(nodeId, slot);
-                    switch (state) {
-                        case STATE_VALUE -> {
-                            long v = loadLongOffset(valuePos(nodeId, slot));
-                            if(i == index) return v;
-                            i++;
-                        }
-                        case STATE_CHILD -> {
-                            nodeId = loadLongOffset(valuePos(nodeId, slot));
-                            break;//使用下一个哈希 level++ -> slot。
-                        }
-//                        case STATE_NEXT_LEVEL -> {
-//                            return nexth
-//                        }
-
-                    }
-
-                }
+            if (index < 0) {
+                return null;
             }
-            for (int level = 0; level < hashLen; level++) {
-                for (int slot = 0; slot < 128; slot++) {
-                    int state = readState(nodeId, slot);
-                    switch (state) {
-
-                        case STATE_VALUE -> {
-                            long v = loadLongOffset(valuePos(nodeId, slot));
-                           if(i == index) return v;
-                            i++;
-                        }
-                        case STATE_CHILD -> {
-                            nodeId = loadLongOffset(valuePos(nodeId, slot));
-                            break;//使用下一个哈希 level++ -> slot。
-                        }
-//                        case STATE_NEXT_LEVEL -> {
-//                            return nexth
-//                        }
-
-                    }
-
-                }
-            }
-
-
+            TraversalContext ctx = new TraversalContext();
+            long[] remaining = new long[]{index};
+            return getByIndexOrdered(0, 0, remaining, ctx);
         } catch (Exception ex) {
             throw new RuntimeException(ex);
         }
-        return null;
     }
     
     /**
@@ -952,67 +1199,30 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
      * @return
      */
     public List<Long> range(long start,int count) {
-        long nodeId = 0;
-        long i = 0;
-       List<Long> out = new ArrayList();
+        List<Long> out = new ArrayList<>(Math.max(0, count));
+        forEachRange(start, count, out::add);
+        return out;
+    }
+
+    public int forEachRange(long start, int count, LongConsumer consumer) {
+        if (consumer == null) {
+            throw new NullPointerException("consumer");
+        }
+        if (count <= 0 || start < 0) {
+            return 0;
+        }
         try {
-            for (int level = 0; level < hashLen; level++) {
-                for (int slot = 128; slot < 256; slot++) {
-                    int state = readState(nodeId, slot);
-                    switch (state) {
-                        case STATE_VALUE -> {
-                            long v = loadLongOffset(valuePos(nodeId, slot));
-                            if(i >= start) {
-                                out.add(v);
-                                count--;
-                                if(count<=0) return out;
-                            }
-                            i++;
-                        }
-                        case STATE_CHILD -> {
-                            nodeId = loadLongOffset(valuePos(nodeId, slot));
-                            break;//使用下一个哈希 level++ -> slot。
-                        }
-//                        case STATE_NEXT_LEVEL -> {
-//                            return nexth
-//                        }
-
-                    }
-
-                }
-            }
-            for (int level = 0; level < hashLen; level++) {
-                for (int slot = 0; slot < 128; slot++) {
-                    int state = readState(nodeId, slot);
-                    switch (state) {
-
-                        case STATE_VALUE -> {
-                            long v = loadLongOffset(valuePos(nodeId, slot));
-                            if(i >= start) {
-                                out.add(v);
-                                count++;
-                                if(count>=count) return out;
-                            }
-                            i++;
-                        }
-                        case STATE_CHILD -> {
-                            nodeId = loadLongOffset(valuePos(nodeId, slot));
-                            break;//使用下一个哈希 level++ -> slot。
-                        }
-//                        case STATE_NEXT_LEVEL -> {
-//                            return nexth
-//                        }
-
-                    }
-
-                }
-            }
-
-
+            TraversalContext ctx = new TraversalContext();
+            long[] skip = new long[]{start};
+            int[] emitted = new int[1];
+            collectRangeOrdered(0, 0, skip, count, value -> {
+                consumer.accept(value);
+                return false;
+            }, emitted, ctx);
+            return emitted[0];
         } catch (Exception ex) {
             throw new RuntimeException(ex);
         }
-        return out;
     }
 
     /**
@@ -1021,55 +1231,16 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
      * @return
      */
     public Long last() {
-        long nodeId = 0;
         try {
-            for (int level = 0; level < hashLen; level++) {
-                for (int slot = 127; slot >= 0; slot--) {
-
-                    int state = readState(nodeId, slot);
-                    switch (state) {
-
-                        case STATE_VALUE -> {
-                            return loadLongOffset(valuePos(nodeId, slot));
-                        }
-                        case STATE_CHILD -> {
-                            nodeId = loadLongOffset(valuePos(nodeId, slot));
-                            break;//使用下一个哈希 level++ -> slot。
-                        }
-//                        case STATE_NEXT_LEVEL -> {
-//                            return nexth
-//                        }
-
-                    }
-
-                }
-            }
-
-            for (int level = 0; level < hashLen; level++) {
-                for (int slot = 128; slot < 256; slot++) {
-                    int state = readState(nodeId, slot);
-                    switch (state) {
-
-                        case STATE_VALUE -> {
-                            return loadLongOffset(valuePos(nodeId, slot));
-                        }
-                        case STATE_CHILD -> {
-                            nodeId = loadLongOffset(valuePos(nodeId, slot));
-                            break;//使用下一个哈希 level++ -> slot。
-                        }
-//                        case STATE_NEXT_LEVEL -> {
-//                            return nexth
-//                        }
-
-                    }
-
-                }
-            }
-
+            final long[] out = new long[1];
+            boolean found = traverseOrdered(0, 0, false, value -> {
+                out[0] = value;
+                return true;
+            });
+            return found ? out[0] : null;
         } catch (Exception ex) {
             throw new RuntimeException(ex);
         }
-        return null;
     }
 
     @Override
@@ -1088,9 +1259,16 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
         headerBuffer.putLong(HDR_NEXT_NODE_ID, nextNodeId);
         headerBuffer.putLong(HDR_SIZE, size);
         dirty(0L);
+        debugInfoMap.clear();
+        resetQuickHashCache(true);
 
     }
 
+    /**
+     * @deprecated Full snapshot output is memory-expensive for large datasets.
+     * Prefer `range(start, count)` for paged reads.
+     */
+    @Deprecated
     @Override
     public Object[] toArray() {
         if (size > Integer.MAX_VALUE) {
@@ -1105,18 +1283,13 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
         if (size > vs.length) {
             throw new RuntimeException("total elements = " + size + ",over var[0].length -> " + vs.length);
         }
-        int index = 0;
         headerOpLockRead.lock();
         try {
-            Iterator<Long> it = this.iterator();
-            while (it.hasNext()) {
-                Long v = it.next();
-                //if(index<size){
-                vs[index] = v;
-                //}
-                index++;
-            }
-
+            final int[] index = new int[1];
+            traverseOrdered(0, 0, true, value -> {
+                vs[index[0]++] = value;
+                return false;
+            });
         } catch (Exception ex) {
             throw new RuntimeException(ex);
         } finally {
@@ -1125,23 +1298,23 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
 
     }
 
+    /**
+     * @deprecated Full snapshot output is memory-expensive for large datasets.
+     * Prefer `range(start, count)` for paged reads.
+     */
+    @Deprecated
     public long[] toArrayLong() {
         if (size > Integer.MAX_VALUE) {
             throw new RuntimeException("total elements = " + size + ",over Integer.MAX_VALUE!");
         }
         long[] out = new long[(int) size];
-        int index = 0;
         headerOpLockRead.lock();
         try {
-            Iterator<Long> it = this.iterator();
-            while (it.hasNext()) {
-                Long v = it.next();
-                //if(index<size){
-                out[index] = v;
-                //}
-                index++;
-            }
-
+            final int[] index = new int[1];
+            traverseOrdered(0, 0, true, value -> {
+                out[index[0]++] = value;
+                return false;
+            });
         } catch (Exception ex) {
             throw new RuntimeException(ex);
         } finally {
@@ -1156,76 +1329,63 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
     @Override
     public Iterator<Long> iterator() {
         return new Iterator<Long>() {
-            private final int[] rootSlots;
-            private final long[] nodeStack;
-            private final int[] nextSlotIndex;
-            private int level;
-            private final ArrayDeque<Long> buffer;
-            private final byte[] bitmap;
-            private final long[] values;
-
+            private static final int BATCH_SIZE = 64;
+            private final long[] nodeStack = new long[hashLen];
+            private final int[] nextSlotIndex = new int[hashLen];
+            private final long[] batchBuffer = new long[BATCH_SIZE];
+            private final byte[] bitmap = new byte[BITMAP_BYTES];
+            private final long[] values = new long[256];
+            private int level = 0;
+            private int batchReadIndex = 0;
+            private int batchWriteIndex = 0;
+            private Long current;
             private Long next;
 
             {
-                rootSlots = new int[256];
-                int p = 0;
-                for (int i = 255; i > 127; i--) {
-                    rootSlots[p++] = i;
-                }
-                for (int i = 0; i < 128; i++) {
-                    rootSlots[p++] = i;
-                }
-                nodeStack = new long[hashLen];
-                nextSlotIndex = new int[hashLen];
-                level = 0;
                 nodeStack[0] = 0;
                 nextSlotIndex[0] = 0;
-                buffer = new ArrayDeque<>(256);
-                bitmap = new byte[BITMAP_BYTES];
-                values = new long[256];
             }
 
             @Override
             public boolean hasNext() {
-                for (;;) {
-                    while (buffer.isEmpty()) {
-                        if (!refill()) {
-                            return false;
-                        }
-                    }
-                    next = buffer.pollFirst();
-                    return next != null;
-//                    if (next == null) {
-//                        continue;
-//                    }
-//                    if (contains(next)) {//防止其他线程已删除。
-//                        return true;
-//                    }
+                if (next != null) {
+                    return true;
                 }
+                while (batchReadIndex >= batchWriteIndex) {
+                    if (!refill()) {
+                        return false;
+                    }
+                }
+                next = batchBuffer[batchReadIndex++];
+                return next != null;
             }
 
             @Override
             public Long next() {
-                if (next == null) {
+                if (!hasNext()) {
                     throw new NoSuchElementException();
                 }
-                return next;
+                current = next;
+                next = null;
+                return current;
             }
 
             @Override
             public void remove() {
-                if (next == null) {
+                if (current == null) {
                     throw new IllegalStateException();
                 }
-                DsHashSetI64.this.remove(next);
+                DsHashSetI64.this.remove(current);
+                current = null;
             }
 
             private boolean refill() {
                 try {
-                    int batch = 64;
-                    while (buffer.size() < batch) {
+                    batchReadIndex = 0;
+                    batchWriteIndex = 0;
+                    while (batchWriteIndex < BATCH_SIZE) {
                         if (level < 0) {
-                            return !buffer.isEmpty();
+                            return batchWriteIndex > 0;
                         }
                         if (nextSlotIndex[level] >= 256) {
                             if (level == 0) {
@@ -1238,24 +1398,24 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
                         }
 
                         long nodeId = nodeStack[level];
-                        loadNode(nodeId);
+                        DsHashSetI64.this.loadNode(nodeId, bitmap, values);
+                        int[] slots = slotOrder(level, true);
 
                         for (;;) {
                             int i = nextSlotIndex[level];
                             if (i >= 256) {
                                 break;
                             }
-                            int slot = level == 0 ? rootSlots[i] : i;
+                            int slot = slots[i];
                             nextSlotIndex[level] = i + 1;
 
-                            int state = stateFromBitmap(slot);
+                            int state = DsHashSetI64.this.stateFromBitmap(bitmap, slot);
                             if (state == STATE_EMPTY) {
                                 continue;
                             }
                             if (state == STATE_VALUE) {
-                                long v = values[slot];
-                                buffer.addLast(v);
-                                if (buffer.size() >= batch) {
+                                batchBuffer[batchWriteIndex++] = values[slot];
+                                if (batchWriteIndex >= BATCH_SIZE) {
                                     break;
                                 }
                                 continue;
@@ -1272,36 +1432,343 @@ public class DsHashSetI64 extends DsObject implements Set<Long> {
                             throw new IOException("invalid state: " + state);
                         }
                     }
-                    return !buffer.isEmpty();
+                    return batchWriteIndex > 0;
                 } catch (IOException ex) {
                     throw new RuntimeException(ex);
-                } finally {
                 }
-            }
-
-            private void loadNode(long nodeId) throws IOException {
-                long base = nodeBase(nodeId);
-                loadBytesOffset(base, bitmap);
-                loadLongOffset(base + BITMAP_BYTES, values);
-            }
-
-            private int stateFromBitmap(int slot) {
-                int b = bitmap[slot >>> 2] & 0xFF;
-                int index = slot & 3;
-                int shift = 0;
-                switch (index) {
-                    case 0 ->
-                        shift = 6;
-                    case 1 ->
-                        shift = 4;
-                    case 2 ->
-                        shift = 2;
-                }
-                return (b >>> shift) & 0x3;
             }
         };
     }
 
+    private interface LongVisitor {
+        boolean visit(long value) throws IOException;
+    }
+
+    /**
+     * 有序访问会重复统计同一子树，使用原生 long 缓存避免装箱和 HashMap 节点开销。
+     */
+    private static final class LongCountCache {
+        private static final long EMPTY_KEY = 0L;
+        private static final long MISSING_VALUE = -1L;
+        private long[] keys = new long[64];
+        private long[] values = new long[64];
+        private int size = 0;
+        private int resizeThreshold = 32;
+
+        long get(long key) {
+            int mask = keys.length - 1;
+            int index = mix(key) & mask;
+            while (true) {
+                long storedKey = keys[index];
+                if (storedKey == EMPTY_KEY) {
+                    return MISSING_VALUE;
+                }
+                if (storedKey == key) {
+                    return values[index];
+                }
+                index = (index + 1) & mask;
+            }
+        }
+
+        void put(long key, long value) {
+            if (key <= 0) {
+                throw new IllegalArgumentException("cache key must be positive");
+            }
+            if (size >= resizeThreshold) {
+                resize();
+            }
+            insert(key, value, keys, values);
+        }
+
+        private void resize() {
+            long[] oldKeys = keys;
+            long[] oldValues = values;
+            keys = new long[oldKeys.length << 1];
+            values = new long[oldValues.length << 1];
+            resizeThreshold = keys.length >>> 1;
+            size = 0;
+            for (int i = 0; i < oldKeys.length; i++) {
+                long key = oldKeys[i];
+                if (key != EMPTY_KEY) {
+                    insert(key, oldValues[i], keys, values);
+                }
+            }
+        }
+
+        private void insert(long key, long value, long[] keyTable, long[] valueTable) {
+            int mask = keyTable.length - 1;
+            int index = mix(key) & mask;
+            while (true) {
+                long storedKey = keyTable[index];
+                if (storedKey == EMPTY_KEY) {
+                    keyTable[index] = key;
+                    valueTable[index] = value;
+                    size++;
+                    return;
+                }
+                if (storedKey == key) {
+                    valueTable[index] = value;
+                    return;
+                }
+                index = (index + 1) & mask;
+            }
+        }
+
+        private int mix(long value) {
+            long mixed = value ^ (value >>> 33) ^ (value >>> 17);
+            return (int) mixed;
+        }
+    }
+
+    private final class TraversalContext {
+        final LongCountCache countCache = new LongCountCache();
+        final byte[][] bitmaps = new byte[hashLen][BITMAP_BYTES];
+        final long[][] valuesStack = new long[hashLen][256];
+
+        byte[] bitmap(int level) {
+            return bitmaps[level];
+        }
+
+        long[] values(int level) {
+            return valuesStack[level];
+        }
+    }
+
+    private boolean traverseOrdered(long nodeId, int level, boolean ascending, LongVisitor visitor) throws IOException {
+        return traverseOrdered(nodeId, level, ascending, visitor, new TraversalContext());
+    }
+
+    private boolean traverseOrdered(long nodeId, int level, boolean ascending, LongVisitor visitor, TraversalContext ctx) throws IOException {
+        byte[] bitmap = ctx.bitmap(level);
+        long[] values = ctx.values(level);
+        loadNode(nodeId, bitmap, values);
+        int[] slots = slotOrder(level, ascending);
+        for (int slot : slots) {
+            int state = stateFromBitmap(bitmap, slot);
+            if (state == STATE_EMPTY) {
+                continue;
+            }
+            if (state == STATE_VALUE) {
+                if (visitor.visit(values[slot])) {
+                    return true;
+                }
+                continue;
+            }
+            if (state == STATE_CHILD && level < hashEnd) {
+                long child = values[slot];
+                if (child > 0 && traverseOrdered(child, level + 1, ascending, visitor, ctx)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private Long getByIndexOrdered(long nodeId, int level, long[] remaining, TraversalContext ctx) throws IOException {
+        byte[] bitmap = ctx.bitmap(level);
+        long[] values = ctx.values(level);
+        loadNode(nodeId, bitmap, values);
+        int[] slots = slotOrder(level, true);
+        for (int slot : slots) {
+            int state = stateFromBitmap(bitmap, slot);
+            if (state == STATE_EMPTY) {
+                continue;
+            }
+            if (state == STATE_VALUE) {
+                if (remaining[0] == 0) {
+                    return values[slot];
+                }
+                remaining[0]--;
+                continue;
+            }
+            if (state == STATE_CHILD && level < hashEnd) {
+                long child = values[slot];
+                if (child <= 0) {
+                    continue;
+                }
+                long subtreeCount = countSubtree(child, level + 1, ctx);
+                if (remaining[0] >= subtreeCount) {
+                    remaining[0] -= subtreeCount;
+                    continue;
+                }
+                return getByIndexOrdered(child, level + 1, remaining, ctx);
+            }
+        }
+        return null;
+    }
+
+    private long indexOfOrdered(long nodeId, int level, long target, byte[] hashes, TraversalContext ctx, long baseIndex) throws IOException {
+        byte[] bitmap = ctx.bitmap(level);
+        long[] values = ctx.values(level);
+        loadNode(nodeId, bitmap, values);
+        int[] slots = slotOrder(level, true);
+        int targetSlot = hashes[level] & 0xFF;
+        long index = baseIndex;
+        for (int slot : slots) {
+            int state = stateFromBitmap(bitmap, slot);
+            if (state == STATE_EMPTY) {
+                if (slot == targetSlot) {
+                    return -1;
+                }
+                continue;
+            }
+            if (slot == targetSlot) {
+                if (state == STATE_VALUE) {
+                    return values[slot] == target ? index : -1;
+                }
+                if (state == STATE_CHILD && level < hashEnd) {
+                    long child = values[slot];
+                    if (child <= 0) {
+                        return -1;
+                    }
+                    return indexOfOrdered(child, level + 1, target, hashes, ctx, index);
+                }
+                return -1;
+            }
+            if (state == STATE_VALUE) {
+                index++;
+                continue;
+            }
+            if (state == STATE_CHILD && level < hashEnd) {
+                long child = values[slot];
+                if (child > 0) {
+                    index += countSubtree(child, level + 1, ctx);
+                }
+            }
+        }
+        return -1;
+    }
+
+    private boolean collectRangeOrdered(long nodeId, int level, long[] skip, int limit, LongVisitor visitor, int[] emitted, TraversalContext ctx) throws IOException {
+        byte[] bitmap = ctx.bitmap(level);
+        long[] values = ctx.values(level);
+        loadNode(nodeId, bitmap, values);
+        int[] slots = slotOrder(level, true);
+        for (int slot : slots) {
+            if (emitted[0] >= limit) {
+                return true;
+            }
+            int state = stateFromBitmap(bitmap, slot);
+            if (state == STATE_EMPTY) {
+                continue;
+            }
+            if (state == STATE_VALUE) {
+                if (skip[0] > 0) {
+                    skip[0]--;
+                } else {
+                    emitted[0]++;
+                    if (visitor.visit(values[slot]) || emitted[0] >= limit) {
+                        return true;
+                    }
+                }
+                continue;
+            }
+            if (state == STATE_CHILD && level < hashEnd) {
+                long child = values[slot];
+                if (child <= 0) {
+                    continue;
+                }
+                long subtreeCount = countSubtree(child, level + 1, ctx);
+                if (skip[0] >= subtreeCount) {
+                    skip[0] -= subtreeCount;
+                    continue;
+                }
+                if (collectRangeOrdered(child, level + 1, skip, limit, visitor, emitted, ctx)) {
+                    return true;
+                }
+            }
+        }
+        return emitted[0] >= limit;
+    }
+
+    private long countSubtree(long nodeId, int level, TraversalContext ctx) throws IOException {
+        long cached = ctx.countCache.get(nodeId);
+        if (cached >= 0) {
+            return cached;
+        }
+        byte[] bitmap = ctx.bitmap(level);
+        long[] values = ctx.values(level);
+        loadNode(nodeId, bitmap, values);
+        long count = 0;
+        for (int slot = 0; slot < 256; slot++) {
+            int state = stateFromBitmap(bitmap, slot);
+            if (state == STATE_VALUE) {
+                count++;
+            } else if (state == STATE_CHILD && level < hashEnd) {
+                long child = values[slot];
+                if (child > 0) {
+                    count += countSubtree(child, level + 1, ctx);
+                }
+            }
+        }
+        ctx.countCache.put(nodeId, count);
+        return count;
+    }
+
+    private void loadNode(long nodeId, byte[] bitmap, long[] values) throws IOException {
+        long base = nodeBase(nodeId);
+        loadBytesOffset(base, bitmap);
+        loadLongOffset(base + BITMAP_BYTES, values);
+    }
+
+    private int stateFromBitmap(byte[] bitmap, int slot) {
+        int b = bitmap[slot >>> 2] & 0xFF;
+        int shift = switch (slot & 3) {
+            case 0 -> 6;
+            case 1 -> 4;
+            case 2 -> 2;
+            default -> 0;
+        };
+        return (b >>> shift) & 0x3;
+    }
+
+    private static int[] slotOrder(int level, boolean ascending) {
+        if (level == 0) {
+            return ascending ? ROOT_ASC_SLOTS : ROOT_DESC_SLOTS;
+        }
+        return ascending ? ASC_SLOTS : DESC_SLOTS;
+    }
+
+    private static int[] buildRootSlots(boolean ascending) {
+        int[] out = new int[256];
+        int p = 0;
+        if (ascending) {
+            for (int i = 128; i < 256; i++) {
+                out[p++] = i;
+            }
+            for (int i = 0; i < 128; i++) {
+                out[p++] = i;
+            }
+        } else {
+            for (int i = 127; i >= 0; i--) {
+                out[p++] = i;
+            }
+            for (int i = 255; i >= 128; i--) {
+                out[p++] = i;
+            }
+        }
+        return out;
+    }
+
+    private static int[] buildLevelSlots(boolean ascending) {
+        int[] out = new int[256];
+        if (ascending) {
+            for (int i = 0; i < 256; i++) {
+                out[i] = i;
+            }
+        } else {
+            for (int i = 0; i < 256; i++) {
+                out[i] = 255 - i;
+            }
+        }
+        return out;
+    }
+
+    /**
+     * @deprecated Full snapshot output is memory-expensive for large datasets.
+     * Prefer `range(start, count)` for paged reads.
+     */
+    @Deprecated
     @Override
     public <T> T[] toArray(T[] out) {
         fillArray((Long[]) out);
