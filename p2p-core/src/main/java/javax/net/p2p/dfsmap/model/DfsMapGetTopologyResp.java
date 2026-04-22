@@ -1,14 +1,13 @@
 package javax.net.p2p.dfsmap.model;
 
-public class DfsMapPingResp {
+public class DfsMapGetTopologyResp {
     private int status;
     private long epoch;
     private int serverId;
     private boolean tablesEnabled;
-    private long totalSize;
-    private long[] tableSizes;
+    private int[] serverIds;
 
-    public DfsMapPingResp() {
+    public DfsMapGetTopologyResp() {
     }
 
     public int getStatus() {
@@ -43,19 +42,12 @@ public class DfsMapPingResp {
         this.tablesEnabled = tablesEnabled;
     }
 
-    public long getTotalSize() {
-        return totalSize;
+    public int[] getServerIds() {
+        return serverIds;
     }
 
-    public void setTotalSize(long totalSize) {
-        this.totalSize = totalSize;
-    }
-
-    public long[] getTableSizes() {
-        return tableSizes;
-    }
-
-    public void setTableSizes(long[] tableSizes) {
-        this.tableSizes = tableSizes;
+    public void setServerIds(int[] serverIds) {
+        this.serverIds = serverIds;
     }
 }
+

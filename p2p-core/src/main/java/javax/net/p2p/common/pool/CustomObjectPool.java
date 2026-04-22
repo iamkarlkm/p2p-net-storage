@@ -203,7 +203,7 @@ public class CustomObjectPool<T extends Recyclable> {
     }
 
     /**
-     *
+     *  
      * 获取对象池统计信息
      *
      * @return 统计信息对象
@@ -413,22 +413,51 @@ public class CustomObjectPool<T extends Recyclable> {
 
     public static class PoolStats {
 
-        public short borrowCount;
-        public short returnCount;
+        public int usedCount;
+        public int borrowCount;
+        public int returnCount;
         public int createCount;
         public int totalCount;
         public int idleCount;
         public int acquireFailCount;
 
-        public PoolStats(int get, int get1, int par, int get2, int get3, int get4, int get5) {
+        public PoolStats(int totalCount, int idleCount, int usedCount,int borrowCount, int returnCount, int createCount,  int acquireFailCount) {
+             this.usedCount = usedCount;
+            this.borrowCount = borrowCount;
+            this.returnCount = returnCount;
+            this.createCount = createCount;
+            this.totalCount = totalCount;
+            this.idleCount = idleCount;
+            this.acquireFailCount = acquireFailCount;
         }
 
+       
+
         public double getHitRate() {
-            throw new UnsupportedOperationException("Not supported yet."); // Generated from nbfs://nbhost/SystemFileSystem/Templates/Classes/Code/GeneratedMethodBody
+            return returnCount/totalCount;
+        }
+        
+        public double getUtilization() {
+            return usedCount/totalCount;
+        }
+        
+        public double getFailRate() {
+            return acquireFailCount/totalCount;
         }
 
         public Object toDetailedString() {
-            throw new UnsupportedOperationException("Not supported yet."); // Generated from nbfs://nbhost/SystemFileSystem/Templates/Classes/Code/GeneratedMethodBody
+            StringBuilder sb = new StringBuilder();
+            sb.append("=== 对象池统计 === ");
+            sb.append(String.format("总对象数: %d ", totalCount));
+            sb.append(String.format("空闲对象: %d ", idleCount));
+            sb.append(String.format("获取次数: %d ", borrowCount));
+            sb.append(String.format("归还次数: %d ", returnCount));
+            sb.append(String.format("创建次数: %d ", createCount));
+            sb.append(String.format("失败次数: %d ", acquireFailCount));
+            sb.append(String.format("命中率: %.2f%% ", getHitRate()));
+            sb.append(String.format("利用率: %.2f%% ", getUtilization()));
+            sb.append(String.format("失败率: %.2f%% ", getFailRate()));
+            return sb.toString();
         }
     }
 } 

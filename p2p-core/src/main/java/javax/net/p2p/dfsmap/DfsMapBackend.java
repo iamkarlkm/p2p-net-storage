@@ -1,9 +1,12 @@
 package javax.net.p2p.dfsmap;
 
+import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.dfsmap.model.DfsMapExecKvReq;
 import javax.net.p2p.dfsmap.model.DfsMapExecKvResp;
 import javax.net.p2p.dfsmap.model.DfsMapGetReq;
 import javax.net.p2p.dfsmap.model.DfsMapGetResp;
+import javax.net.p2p.dfsmap.model.DfsMapGetTopologyReq;
+import javax.net.p2p.dfsmap.model.DfsMapGetTopologyResp;
 import javax.net.p2p.dfsmap.model.DfsMapPutReq;
 import javax.net.p2p.dfsmap.model.DfsMapPutResp;
 import javax.net.p2p.dfsmap.model.DfsMapPingReq;
@@ -14,6 +17,8 @@ import javax.net.p2p.dfsmap.model.DfsMapRangeReq;
 import javax.net.p2p.dfsmap.model.DfsMapRangeResp;
 import javax.net.p2p.dfsmap.model.DfsMapRemoveReq;
 import javax.net.p2p.dfsmap.model.DfsMapRemoveResp;
+import javax.net.p2p.dfsmap.model.DfsMapTablesEnableReq;
+import javax.net.p2p.dfsmap.model.DfsMapTablesEnableResp;
 
 public interface DfsMapBackend {
     DfsMapGetResp handleGet(DfsMapGetReq req);
@@ -29,4 +34,8 @@ public interface DfsMapBackend {
     DfsMapRangeLocalResp handleRangeLocal(DfsMapRangeLocalReq req);
 
     DfsMapPingResp handlePing(DfsMapPingReq req);
+
+    DfsMapGetTopologyResp handleGetTopology(DfsMapGetTopologyReq req);
+
+    DfsMapTablesEnableResp handleTablesEnable(P2PCommand command, DfsMapTablesEnableReq req);
 }
