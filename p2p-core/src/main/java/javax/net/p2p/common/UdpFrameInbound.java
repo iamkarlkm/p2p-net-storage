@@ -18,7 +18,9 @@ import javax.net.p2p.common.ExecutorServicePool;
 import javax.net.p2p.common.pool.PooledObjectFactory;
 import javax.net.p2p.common.pool.PooledObjects;
 import javax.net.p2p.common.pool.PooledableAdapter;
+import javax.net.p2p.client.ClientUdpMessageProcessor;
 import javax.net.p2p.model.P2PWrapper;
+import javax.net.p2p.udp.UdpReliabilityHandler;
 import javax.net.p2p.utils.SerializationUtil;
 import javax.net.p2p.utils.XXHashUtil;
 import lombok.extern.slf4j.Slf4j;
@@ -173,7 +175,7 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
             in.skipBytes(in.readableBytes());
             return;
         }
-        //System.out.println("readableBytes:"+in.readableBytes());
+        System.out.println("readableBytes:"+in.readableBytes());
         if (lastRest >0 ){
              if (lastRest < 8 && in.readableBytes()>headerSize) {//头长度
                 inBuffer.writeBytes(in, headerSize);
@@ -232,7 +234,10 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
 
         Attribute<Integer> attrMagic = ctx.channel().attr(ChannelUtils.MAGIC);
         if (magic == attrMagic.get()) {
-            frameLastTransportSpeed = frameLengthInt/(System.currentTimeMillis()-frameStartTime);
+            long times = System.currentTimeMillis()-frameStartTime;
+            if(times>0){
+                frameLastTransportSpeed = frameLengthInt/times;
+            }
 //            System.out.println("frameLengthInt:"+frameLengthInt);
 //            System.out.println("data rix:"+inBuffer.readerIndex());
 //            System.out.println("readableBytes:"+inBuffer.readableBytes());
@@ -252,7 +257,19 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
 //                System.out.println("Object result = "+request.getData().toString().length());
 //                System.out.println(Arrays.toString(request.getData().toString().getBytes()));
 //                System.out.println("Server echo -> test udp-0".length());
-                messageProcessor.processMessage(ctx, datagramPacket, request);
+                if (request.getCommand() == P2PCommand.UDP_FRAME_ACK) {
+                    messageProcessor.completeLastResponse(datagramPacket.sender());
+                } else if (messageProcessor instanceof ClientUdpMessageProcessor) {
+                    sendFrameAck(ctx.channel(), datagramPacket.sender(), request.getSeq());
+                }
+                UdpReliabilityHandler reliabilityHandler = ctx.channel().attr(ChannelUtils.UDP_RELIABILITY_HANDLER).get();
+                boolean forward = request.getCommand() != P2PCommand.UDP_FRAME_ACK;
+                if (reliabilityHandler != null) {
+                    forward = reliabilityHandler.handleDecodedMessage(ctx.channel(), datagramPacket.sender(), request);
+                }
+                if (forward) {
+                    messageProcessor.processMessage(ctx, datagramPacket, request);
+                }
             } catch (Exception ex) {
                 log.error("skip {} bytes -> {} \n {} resolve error:{}, \n resetUdpFrame:{}",in.readableBytes(), inBuffer, ex, datagramPacket);
                 resetUdpFrame(ctx, datagramPacket);
@@ -291,6 +308,26 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
     
     public void start()  {
        this.future =  ExecutorServicePool.P2P_REFERENCED_SERVER_ASYNC_POOLS.submit(this);
+    }
+
+    private void sendFrameAck(Channel channel, InetSocketAddress remote, int seq) {
+        if (remote == null) {
+            return;
+        }
+        P2PWrapper<Void> ack = P2PWrapper.build(seq, P2PCommand.UDP_FRAME_ACK);
+        byte[] data = SerializationUtil.serialize(ack);
+        int hash = XXHashUtil.hash32(data);
+        int magicLocal = 0;
+        Integer channelMagic = channel.attr(ChannelUtils.MAGIC).get();
+        if (channelMagic != null) {
+            magicLocal = channelMagic;
+        }
+        ByteBuf out = SerializationUtil.tryGetDirectBuffer(data.length + 12);
+        out.writeInt(data.length);
+        out.writeInt(magicLocal);
+        out.writeInt(hash);
+        out.writeBytes(data);
+        channel.writeAndFlush(new DatagramPacket(out, remote));
     }
     
     /**

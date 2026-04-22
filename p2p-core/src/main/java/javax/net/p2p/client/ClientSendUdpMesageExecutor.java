@@ -17,12 +17,14 @@ import java.util.Map;
 import java.util.Objects;
 import javax.net.p2p.channel.ChannelUtils;
 import javax.net.p2p.channel.PipelineInitializer;
+import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.common.ExecutorServicePool;
 import javax.net.p2p.common.pool.PooledObjectFactory;
 import javax.net.p2p.common.pool.PooledObjects;
 import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.interfaces.P2PMessageService;
 import javax.net.p2p.model.P2PWrapper;
+import javax.net.p2p.udp.UdpReliabilityHandler;
 import javax.net.p2p.utils.SerializationUtil;
 import javax.net.p2p.utils.XXHashUtil;
 import lombok.extern.slf4j.Slf4j;
@@ -138,6 +140,16 @@ public class ClientSendUdpMesageExecutor extends ClientSendMesageExecutor {
 
     @Override
     public ChannelFuture writeAndFlush(Channel channel, P2PWrapper request) throws InterruptedException {
+        InetSocketAddress remoteAddress = (InetSocketAddress) channel.remoteAddress();
+        UdpReliabilityHandler reliabilityHandler = channel.attr(ChannelUtils.UDP_RELIABILITY_HANDLER).get();
+        if (remoteAddress != null && reliabilityHandler != null && reliabilityHandler.isEnabled()
+            && request.getCommand() != P2PCommand.UDP_RELIABILITY_ACK) {
+            int seq = reliabilityHandler.sendReliableMessage(channel, remoteAddress, request);
+            if (seq >= 0) {
+                return channel.newSucceededFuture();
+            }
+        }
+
         Attribute<Integer> attrMagic = channel.attr(ChannelUtils.MAGIC);
         Integer magicChannel = attrMagic.get();
         byte[] data = SerializationUtil.serialize(request);
@@ -168,37 +180,19 @@ public class ClientSendUdpMesageExecutor extends ClientSendMesageExecutor {
             int count = length / udpLimit;
             
             int start = buffer.readerIndex();
-            List<ByteBuf> slices = new ArrayList<>();
-            
             try {
-                // 先创建所有分片
                 for (int i = 0; i < count; i++) {
-                    ByteBuf slice = buffer.slice(start + i * udpLimit, udpLimit);
-                    slice.retain(); // 保留引用
-                    slices.add(slice);
+                    ByteBuf slice = buffer.retainedSlice(start + i * udpLimit, udpLimit);
+                    cf = channel.writeAndFlush(new DatagramPacket(slice, remoteAddress));
+                    cf.sync();
                 }
                 if (rest > 0) {
-                    ByteBuf slice = buffer.slice(start + count * udpLimit, rest);
-                    slice.retain(); // 保留引用
-                    slices.add(slice);
-                }
-                
-                // 发送所有分片
-                for (ByteBuf slice : slices) {
-                    try {
-                        cf = channel.writeAndFlush(new DatagramPacket(slice, (InetSocketAddress) channel.remoteAddress()));
-                        cf.sync();
-                    } finally {
-                        slice.release(); // 确保释放
-                    }
+                    ByteBuf slice = buffer.retainedSlice(start + count * udpLimit, rest);
+                    cf = channel.writeAndFlush(new DatagramPacket(slice, remoteAddress));
+                    cf.sync();
                 }
             } finally {
-                // 确保所有分片都被释放
-                for (ByteBuf slice : slices) {
-                    if (slice.refCnt() > 0) {
-                        slice.release();
-                    }
-                }
+                buffer.release();
             }
         } catch (Exception e) {
             e.printStackTrace();

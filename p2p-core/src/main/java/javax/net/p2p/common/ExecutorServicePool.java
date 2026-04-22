@@ -49,6 +49,9 @@ public class ExecutorServicePool {
      * 初始化客户端消息等待任务池,客户端异步执行任务池
      */
     public synchronized static void createClientPools() {
+        if (P2P_REFERENCED_CHANNEL_AWAIT_POOLS != null && P2P_REFERENCED_CLIENT_ASYNC_POOLS != null){
+            return;
+        }
         log.info("###ExecutorService Client Using THREAD_POOLS Creating###");
         try {
             if (P2P_REFERENCED_CHANNEL_AWAIT_POOLS == null) {
@@ -98,6 +101,9 @@ public class ExecutorServicePool {
      * 初始化服务器消息等待任务池,服务器异步执行任务池
      */
     public synchronized static void createServerPools() {
+        if (P2P_REFERENCED_SERVER_AWAIT_POOLS != null && P2P_REFERENCED_SERVER_ASYNC_POOLS != null){
+            return;
+        }
         log.info("###ExecutorService Server Using THREAD_POOLS Creating###");
         try {
             if (P2P_REFERENCED_SERVER_AWAIT_POOLS == null) {

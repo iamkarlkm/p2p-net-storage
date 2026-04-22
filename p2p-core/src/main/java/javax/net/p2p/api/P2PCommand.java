@@ -267,6 +267,8 @@ public enum P2PCommand {
     /** UDP帧确认 */
     UDP_FRAME_ACK(200),
     
+    UDP_RELIABILITY_ACK(202),
+    
     /** UDP帧重置 */
     UDP_FRAME_RESET(201),
     

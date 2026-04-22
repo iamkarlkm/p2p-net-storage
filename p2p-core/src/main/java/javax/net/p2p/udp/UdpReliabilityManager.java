@@ -1,10 +1,13 @@
 package javax.net.p2p.udp;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.util.Attribute;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.socket.DatagramPacket;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.NavigableMap;
 import java.util.TreeMap;
@@ -18,9 +21,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.channel.ChannelUtils;
 import javax.net.p2p.client.P2PClientUdp;
+import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.utils.SerializationUtil;
+import javax.net.p2p.utils.XXHashUtil;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -52,15 +58,79 @@ import lombok.extern.slf4j.Slf4j;
 public class UdpReliabilityManager {
 
     void sendAck(Channel channel, InetSocketAddress sender, int seq) {
-        throw new UnsupportedOperationException("Not supported yet."); // Generated from nbfs://nbhost/SystemFileSystem/Templates/Classes/Code/GeneratedMethodBody
+        if (channel == null) {
+            throw new NullPointerException("channel");
+        }
+        if (sender == null) {
+            throw new NullPointerException("sender");
+        }
+        P2PWrapper<Void> ack = P2PWrapper.build(seq, P2PCommand.UDP_RELIABILITY_ACK);
+        try {
+            sendUnreliableMessage(channel, sender, ack);
+        } finally {
+            ack.recycle();
+        }
     }
 
     int sendReliableMessage(Channel channel, InetSocketAddress remoteAddress, P2PWrapper<?> message) {
-        throw new UnsupportedOperationException("Not supported yet."); // Generated from nbfs://nbhost/SystemFileSystem/Templates/Classes/Code/GeneratedMethodBody
+        if (channel == null) {
+            throw new NullPointerException("channel");
+        }
+        if (remoteAddress == null) {
+            throw new NullPointerException("remoteAddress");
+        }
+        if (message == null) {
+            throw new NullPointerException("message");
+        }
+        windowLock.lock();
+        try {
+            CongestionControl cc = getCongestionControl(remoteAddress);
+            int seq = message.getSeq();
+            if (seq <= 0) {
+                int effectiveWindow = Math.min(windowSize, cc.getSendWindow());
+                if (nextSeqNum >= sendBase + effectiveWindow) {
+                    return -1;
+                }
+                seq = nextSeqNum++;
+                message.setSeq(seq);
+            } else {
+                int effectiveWindow = Math.min(windowSize, cc.getSendWindow());
+                if (sendBase == 0 && nextSeqNum == 0) {
+                    sendBase = seq;
+                    nextSeqNum = seq + 1;
+                } else if (seq >= nextSeqNum) {
+                    nextSeqNum = seq + 1;
+                }
+                if (seq >= sendBase + effectiveWindow) {
+                    return -1;
+                }
+            }
+
+            MessageRecord record = new MessageRecord(seq, message, remoteAddress);
+            pendingMessages.put(seq, record);
+
+            sendMessageInternal(channel, remoteAddress, message);
+            totalSent.incrementAndGet();
+            cc.totalPacketsSent++;
+
+            scheduleTimeoutCheck(channel, record);
+            return seq;
+        } finally {
+            windowLock.unlock();
+        }
     }
 
     void sendUnreliableMessage(Channel channel, InetSocketAddress remoteAddress, P2PWrapper<?> message) {
-        throw new UnsupportedOperationException("Not supported yet."); // Generated from nbfs://nbhost/SystemFileSystem/Templates/Classes/Code/GeneratedMethodBody
+        if (channel == null) {
+            throw new NullPointerException("channel");
+        }
+        if (remoteAddress == null) {
+            throw new NullPointerException("remoteAddress");
+        }
+        if (message == null) {
+            throw new NullPointerException("message");
+        }
+        sendMessageInternal(channel, remoteAddress, message);
     }
     
     // 消息状态枚举
@@ -77,6 +147,7 @@ public class UdpReliabilityManager {
         //final ByteBuf message;
         
         P2PWrapper<?> message;
+        ByteBuf payload;
         final int seq;
         final InetSocketAddress remoteAddress;
         MessageStatus status;
@@ -93,16 +164,18 @@ public class UdpReliabilityManager {
         }
         
         void release() {
-            if (message != null ) {
-                message.recycle();
+            if (payload != null) {
+                payload.release();
+                payload = null;
             }
+            message = null;
         }
     }
     
     // 接收端消息缓存
     private class ReceiveBuffer {
         private final NavigableMap<Integer, ByteBuf> buffer = new TreeMap<>();
-        private int expectedSeq = 0; // 期望接收的下一个序列号
+        private int expectedSeq = 1; // 期望接收的下一个序列号
         
         /**
          * 添加接收到的消息
@@ -110,15 +183,25 @@ public class UdpReliabilityManager {
          * @param data 消息数据
          * @return 是否可以交付连续的消息给上层
          */
-        boolean addMessage(int seq, ByteBuf data) {
+        synchronized boolean addMessage(int seq, ByteBuf data) {
             if (seq < expectedSeq) {
-                // 重复的旧消息，直接丢弃
+                totalDuplicated.incrementAndGet();
+                data.release();
+                return false;
+            }
+
+            if (buffer.containsKey(seq)) {
+                totalDuplicated.incrementAndGet();
                 data.release();
                 return false;
             }
             
-            // 缓存消息
-            buffer.put(seq, data.retain());
+            if (seq > expectedSeq) {
+                totalOutOfOrder.incrementAndGet();
+            }
+
+            // 缓存消息（接管引用计数，由交付/清理时释放）
+            buffer.put(seq, data);
             
             // 检查是否可以交付连续的消息
             return checkAndDeliver();
@@ -157,7 +240,7 @@ public class UdpReliabilityManager {
         /**
          * 清理缓存
          */
-        void clear() {
+        synchronized void clear() {
             for (ByteBuf data : buffer.values()) {
                 data.release();
             }
@@ -167,7 +250,7 @@ public class UdpReliabilityManager {
         /**
          * 获取缓存大小
          */
-        int size() {
+        synchronized int size() {
             return buffer.size();
         }
     }
@@ -290,13 +373,19 @@ public class UdpReliabilityManager {
     private final AtomicInteger nextSeq = new AtomicInteger(0);
     private final Map<Integer, MessageRecord> pendingMessages = new ConcurrentSkipListMap<>();
     private final Map<InetSocketAddress, ReceiveBuffer> receiveBuffers = new ConcurrentHashMap<>();
+    private final Map<InetSocketAddress, Integer> latestReceivedSeq = new ConcurrentHashMap<>();
     private final Map<InetSocketAddress, CongestionControl> congestionControls = new ConcurrentHashMap<>();
+    private final NavigableMap<Integer, MessageRecord> ackedButNotDelivered = new TreeMap<>();
+    private int nextDeliverSeq = 0;
+    private volatile int bandwidthLimitBps = Integer.MAX_VALUE;
+    private long nextDeliverNano;
     private final Map<Integer, Long> ackTimestamps = new ConcurrentHashMap<>();
     private final ScheduledExecutorService scheduler;
     private final ReentrantLock windowLock = new ReentrantLock();
     
     // 滑动窗口控制
     private int windowSize = DEFAULT_WINDOW_SIZE;
+    private boolean windowSizeConfigured;
     private int sendBase = 0;           // 发送窗口基序号
     private int nextSeqNum = 0;         // 下一个要发送的序号
     
@@ -330,46 +419,34 @@ public class UdpReliabilityManager {
      * 发送消息（可靠模式）
 //     * @param channel 发送通道
 //     * @param remoteAddress 远程地址
+     * @param client
      * @param message 消息包装器
      * @return 消息序列号，-1表示窗口已满
      */
     public int sendReliableMessage(P2PClientUdp client, P2PWrapper<?> message) {
         windowLock.lock();
         try {
-            // 获取当前连接对应的拥塞控制状态
-            CongestionControl cc = getCongestionControl(client.getRemote());
-            
-            // 检查发送窗口是否已满（考虑拥塞窗口）
-            int effectiveWindow = Math.min(windowSize, cc.getSendWindow());
-            if (nextSeqNum >= sendBase + effectiveWindow) {
-                log.debug("Send window full: sendBase={}, nextSeqNum={}, effectiveWindow={}", 
-                         sendBase, nextSeqNum, effectiveWindow);
-                return -1; // 窗口已满
+            if (windowSizeConfigured && nextSeqNum >= sendBase + windowSize) {
+                return -1;
             }
-            
-            // 分配序列号
-            int seq = nextSeqNum++;
+
+            int seq = nextSeqNum;
+            nextSeqNum++;
             message.setSeq(seq);
-            
             
             // 记录消息
             MessageRecord record = new MessageRecord(seq, message, client.getRemote());
+            record.payload = serializeMessage(message);
             pendingMessages.put(seq, record);
             
-            // 发送消息
-            sendMessageInternal(client, message);
             totalSent.incrementAndGet();
             //totalBytesSent.addAndGet(message.readableBytes());
             
-            // 更新拥塞控制统计
-            cc.totalPacketsSent++;
-            //cc.updateBandwidthEstimate(buffer.readableBytes());
-            
+            sendMessageInternal(client, message);
+
             // 设置超时定时器
             scheduleTimeoutCheck(client,record);
             
-            log.debug("Sent reliable message seq={}, command={}, cwnd={}", 
-                     seq, message.getCommand(), cc.cwnd);
             return seq;
             
         } finally {
@@ -379,8 +456,7 @@ public class UdpReliabilityManager {
     
     /**
      * 发送消息（不可靠模式）
-     * @param channel 发送通道
-     * @param remoteAddress 远程地址
+     * @param client
      * @param message 消息包装器
      */
     public void sendUnreliableMessage(P2PClientUdp client, P2PWrapper<?> message) {
@@ -393,10 +469,11 @@ public class UdpReliabilityManager {
      * @param remoteAddress 远程地址
      */
     public void processAck(int ackSeq, InetSocketAddress remoteAddress) {
+        List<MessageRecord> toDeliver = null;
         windowLock.lock();
         try {
             MessageRecord record = pendingMessages.get(ackSeq);
-            if (record != null && record.status == MessageStatus.SENT) {
+            if (record != null && (record.status == MessageStatus.SENT || record.status == MessageStatus.RETRANSMITTING)) {
                 // 取消超时定时器
                 if (record.timeoutFuture != null) {
                     record.timeoutFuture.cancel(false);
@@ -404,7 +481,6 @@ public class UdpReliabilityManager {
                 
                 // 更新状态
                 record.status = MessageStatus.ACKED;
-                record.release();
                 pendingMessages.remove(ackSeq);
                 totalAcked.incrementAndGet();
                 
@@ -413,17 +489,19 @@ public class UdpReliabilityManager {
                 updateRTTEstimate(rtt);
                 
                 // 更新拥塞控制状态
-                CongestionControl cc = getCongestionControl(remoteAddress);
+                CongestionControl cc = getCongestionControl(record.remoteAddress);
                 cc.updateRTTEstimate(rtt);
                 
                 // 拥塞避免算法
                 cc.congestionAvoidance();
                 
                 // 移动发送窗口
-                moveSendWindow();
-                
-                log.debug("ACK received for seq={}, RTT={}ms, cwnd={}", 
-                         ackSeq, rtt, cc.cwnd);
+                while (sendBase < nextSeqNum && !pendingMessages.containsKey(sendBase)) {
+                    sendBase++;
+                }
+
+                ackedButNotDelivered.put(ackSeq, record);
+                toDeliver = drainDeliveriesLocked();
             } else if (record != null) {
                 log.debug("ACK for seq={} with status={}", ackSeq, record.status);
             } else {
@@ -432,6 +510,11 @@ public class UdpReliabilityManager {
             
         } finally {
             windowLock.unlock();
+        }
+        if (toDeliver != null) {
+            for (MessageRecord r : toDeliver) {
+                deliverWithThrottle(r);
+            }
         }
     }
     
@@ -443,34 +526,13 @@ public class UdpReliabilityManager {
      * @return 是否期望接收此消息（用于发送ACK）
      */
     public boolean processDataMessage(int seq, ByteBuf data, InetSocketAddress remoteAddress) {
-        // 记录接收时间戳（用于计算RTT）
+        if (data == null) {
+            return false;
+        }
+
         ackTimestamps.put(seq, System.currentTimeMillis());
-        
-        // 获取或创建接收缓冲区
-        ReceiveBuffer buffer = receiveBuffers.computeIfAbsent(remoteAddress, 
-            k -> new ReceiveBuffer());
-        
-        // 检查接收缓冲区是否过大
-        if (buffer.size() > MAX_BUFFER_SIZE) {
-            log.warn("Receive buffer overflow for {}, size={}, clearing buffer", 
-                    remoteAddress, buffer.size());
-            buffer.clear();
-        }
-        
-        // 添加到接收缓冲区
-        boolean delivered = buffer.addMessage(seq, data);
-        
-        if (!delivered) {
-            // 乱序到达的消息
-            totalOutOfOrder.incrementAndGet();
-            log.debug("Out-of-order message seq={} from {}, buffer size={}", 
-                     seq, remoteAddress, buffer.size());
-        }
-        
-        // 根据拥塞控制策略决定是否发送ACK
-        // 这里简化处理：总是返回true表示需要ACK
-        // 实际可以根据接收策略选择性地发送ACK
-        
+        ReceiveBuffer buffer = receiveBuffers.computeIfAbsent(remoteAddress, k -> new ReceiveBuffer());
+        buffer.addMessage(seq, data);
         return true;
     }
     
@@ -481,7 +543,7 @@ public class UdpReliabilityManager {
      * @param seq 确认的序列号
      */
     public void sendAck(P2PClientUdp client, int seq) {
-        P2PWrapper<Void> ackMessage = P2PWrapper.build(seq, P2PCommand.UDP_FRAME_ACK, null);
+        P2PWrapper<Void> ackMessage = P2PWrapper.build(seq, P2PCommand.UDP_RELIABILITY_ACK, null);
         sendUnreliableMessage(client, ackMessage);
         log.debug("Sent ACK for seq={} to {}", seq, client.getRemote());
     }
@@ -500,6 +562,65 @@ public class UdpReliabilityManager {
                 sendAck(client, expectedSeq - 1);
                 log.debug("Sent cumulative ACK up to seq={} to {}", expectedSeq - 1, client.getRemote());
             }
+        }
+    }
+
+    public void setBandwidthLimitBps(int limitBps) {
+        if (limitBps <= 0) {
+            bandwidthLimitBps = Integer.MAX_VALUE;
+            return;
+        }
+        bandwidthLimitBps = limitBps;
+    }
+
+    private List<MessageRecord> drainDeliveriesLocked() {
+        List<MessageRecord> list = null;
+        while (true) {
+            MessageRecord record = ackedButNotDelivered.get(nextDeliverSeq);
+            if (record == null) {
+                break;
+            }
+            ackedButNotDelivered.remove(nextDeliverSeq);
+            nextDeliverSeq++;
+            if (list == null) {
+                list = new ArrayList<>();
+            }
+            list.add(record);
+        }
+        return list;
+    }
+
+    private void deliverWithThrottle(MessageRecord record) {
+        if (record.payload != null) {
+            throttleBytes(record.payload.readableBytes());
+            deliverToApplication(record.seq, record.payload.retain());
+        }
+        record.release();
+    }
+
+    private void throttleBytes(int bytes) {
+        int limit = bandwidthLimitBps;
+        if (limit == Integer.MAX_VALUE || bytes <= 0) {
+            return;
+        }
+        long now = System.nanoTime();
+        long nanos = (bytes * 1_000_000_000L) / Math.max(1, limit);
+        long target;
+        synchronized (this) {
+            if (nextDeliverNano < now) {
+                nextDeliverNano = now;
+            }
+            nextDeliverNano += nanos;
+            target = nextDeliverNano;
+        }
+        long sleepNanos = target - now;
+        if (sleepNanos <= 0) {
+            return;
+        }
+        try {
+            TimeUnit.NANOSECONDS.sleep(sleepNanos);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
     
@@ -580,29 +701,42 @@ public class UdpReliabilityManager {
     public String getStatistics() {
         long avgRTT = estimatedRTT / 1000000L;
         long totalKB = totalBytesSent.get() / 1024;
+        int retransmitted = totalRetransmitted.get();
+        int timeouts = totalTimeouts.get();
+        boolean trafficControl = bandwidthLimitBps != Integer.MAX_VALUE;
         
-        return String.format(
+        String stats = String.format(
             "UdpReliabilityManager Stats:\n" +
             "  Transmission: Sent=%d, ACKed=%d, Retransmitted=%d, Timeouts=%d\n" +
             "  Sequencing: OutOfOrder=%d, Duplicated=%d, Pending=%d\n" +
             "  Window Control: WindowSize=%d, SendBase=%d, NextSeq=%d\n" +
             "  Performance: TotalBytes=%dKB, AvgRTT=%dms\n" +
             "  Active Connections: Buffers=%d, CC=%d",
-            totalSent.get(), totalAcked.get(), totalRetransmitted.get(), totalTimeouts.get(),
+            totalSent.get(), totalAcked.get(), retransmitted, timeouts,
             totalOutOfOrder.get(), totalDuplicated.get(), pendingMessages.size(),
             windowSize, sendBase, nextSeqNum,
             totalKB, avgRTT,
             receiveBuffers.size(), congestionControls.size()
         );
+
+        StringBuilder sb = new StringBuilder(stats);
+        if (retransmitted > 0) {
+            sb.append("\n").append("Retransmissions=").append(retransmitted);
+        }
+        if (timeouts > 0) {
+            sb.append("\n").append("TimeoutFailures=").append(timeouts);
+        }
+        if (trafficControl) {
+            sb.append("\n").append("TrafficControl=").append(bandwidthLimitBps);
+        }
+        return sb.toString();
     }
     
     // ============== 私有方法 ==============
     
     private ByteBuf serializeMessage(P2PWrapper<?> message) {
         try {
-            // TODO: 使用项目现有的序列化工具
-            // 这里需要调用现有的SerializationUtil
-            // 暂时返回null，实际实现需要集成现有序列化
+            
             return SerializationUtil.serializeToByteBuf(message);
         } catch (Exception e) {
             log.error("Failed to serialize message: {}", e.getMessage(), e);
@@ -611,24 +745,56 @@ public class UdpReliabilityManager {
     }
     
     private void sendMessageInternal(P2PClientUdp client,P2PWrapper<?> message) {
-        try {
-            client.excute(message);
-//            ChannelFuture future = channel.writeAndFlush(new DatagramPacket(buffer.retain(), client.getRemote()));
-//            future.addListener(f -> {
-//                if (!f.isSuccess()) {
-//                    log.error("Failed to send message to {}: {}", client.getRemote(), f.cause().getMessage());
-//                    // 更新拥塞控制：记录丢包
-//                    CongestionControl cc = congestionControls.get(remoteAddress);
-//                    if (cc != null) {
-//                        cc.totalPacketsLost++;
-//                    }
-//                }
-//            });
-        } catch (Exception e) {
-            log.error("Exception while sending message: {}", e.getMessage(), e);
-        }
     }
     
+    private void sendMessageInternal(Channel channel, InetSocketAddress remoteAddress, P2PWrapper<?> message) {
+        byte[] data = SerializationUtil.serialize(message);
+        Attribute<Integer> attrMagic = channel.attr(ChannelUtils.MAGIC);
+        Integer magicChannel = attrMagic.get();
+        int magic = magicChannel == null ? 0 : magicChannel;
+        int hash = XXHashUtil.hash32(data);
+        ByteBuf buffer = SerializationUtil.tryGetDirectBuffer(data.length + 12);
+        buffer.writeInt(data.length);
+        buffer.writeInt(magic);
+        buffer.writeInt(hash);
+        buffer.writeBytes(data);
+
+        try {
+            int length = buffer.readableBytes();
+            int maxUdpPayloadSize = 1472;
+            int udpLimit = Math.min(P2PConfig.UDP_TRANSPORT_LIMIT_SIZE, maxUdpPayloadSize);
+            int rest = length % udpLimit;
+            int count = length / udpLimit;
+            int start = buffer.readerIndex();
+            for (int i = 0; i < count; i++) {
+                ByteBuf slice = buffer.retainedSlice(start + i * udpLimit, udpLimit);
+                ChannelFuture future = channel.writeAndFlush(new DatagramPacket(slice, remoteAddress));
+                future.addListener(f -> {
+                    if (!f.isSuccess()) {
+                        CongestionControl cc = congestionControls.get(remoteAddress);
+                        if (cc != null) {
+                            cc.totalPacketsLost++;
+                        }
+                    }
+                });
+            }
+            if (rest > 0) {
+                ByteBuf slice = buffer.retainedSlice(start + count * udpLimit, rest);
+                ChannelFuture future = channel.writeAndFlush(new DatagramPacket(slice, remoteAddress));
+                future.addListener(f -> {
+                    if (!f.isSuccess()) {
+                        CongestionControl cc = congestionControls.get(remoteAddress);
+                        if (cc != null) {
+                            cc.totalPacketsLost++;
+                        }
+                    }
+                });
+            }
+        } finally {
+            buffer.release();
+        }
+    }
+
     private void scheduleTimeoutCheck(P2PClientUdp client,MessageRecord record) {
         long timeout = Math.max(timeoutInterval, 1000L); // 至少1秒
         
@@ -643,57 +809,101 @@ public class UdpReliabilityManager {
         }, timeout, TimeUnit.MILLISECONDS);
     }
     
+    private void scheduleTimeoutCheck(Channel channel, MessageRecord record) {
+        long timeout = Math.max(timeoutInterval, 1000L);
+        CongestionControl cc = congestionControls.get(record.remoteAddress);
+        if (cc != null && cc.rto > 0) {
+            timeout = Math.max(timeout, cc.rto);
+        }
+        record.timeoutFuture = scheduler.schedule(() -> {
+            handleTimeout(channel, record);
+        }, timeout, TimeUnit.MILLISECONDS);
+    }
+
     private void handleTimeout(P2PClientUdp client,MessageRecord record) {
+        InetSocketAddress remote = record.remoteAddress;
+        int seq = record.seq;
+        int retryCount;
+        boolean timedOut = false;
+
+        windowLock.lock();
+        try {
+            if (record.status == MessageStatus.ACKED || record.status == MessageStatus.TIMED_OUT) {
+                return;
+            }
+
+            record.retryCount++;
+            retryCount = record.retryCount;
+
+            if (record.retryCount > DEFAULT_MAX_RETRIES) {
+                record.status = MessageStatus.TIMED_OUT;
+                pendingMessages.remove(record.seq);
+                totalTimeouts.incrementAndGet();
+                timedOut = true;
+            } else {
+                record.status = MessageStatus.RETRANSMITTING;
+                totalRetransmitted.incrementAndGet();
+                sendMessageInternal(client, record.message);
+                long backoffTimeout = (long) (timeoutInterval * Math.pow(2, record.retryCount));
+                record.timeoutFuture = scheduler.schedule(() -> {
+                    handleTimeout(client, record);
+                }, backoffTimeout, TimeUnit.MILLISECONDS);
+            }
+        } finally {
+            windowLock.unlock();
+        }
+
+        if (timedOut) {
+            try {
+                onClientTimedOut(client, seq, remote, retryCount);
+            } finally {
+                record.release();
+            }
+            return;
+        }
+
+        onClientRetransmit(client, seq, remote, retryCount);
+    }
+    
+    private void handleTimeout(Channel channel, MessageRecord record) {
         windowLock.lock();
         try {
             if (record.status != MessageStatus.SENT) {
-                return; // 消息已经处理过了
+                return;
             }
-            
+
             record.retryCount++;
             if (record.retryCount > DEFAULT_MAX_RETRIES) {
-                // 超过最大重试次数
                 record.status = MessageStatus.TIMED_OUT;
                 record.release();
                 pendingMessages.remove(record.seq);
                 totalTimeouts.incrementAndGet();
-                
-                // 更新拥塞控制：严重超时
                 CongestionControl cc = congestionControls.get(record.remoteAddress);
                 if (cc != null) {
                     cc.ssthresh = Math.max(cc.cwnd / 2, 2);
                     cc.cwnd = 1;
                 }
-                
-                log.warn("Message seq={} timed out after {} retries to {}", 
-                        record.seq, record.retryCount, record.remoteAddress);
-            } else {
-                // 重传消息
-                record.status = MessageStatus.RETRANSMITTING;
-                sendMessageInternal(client, record.message); // TODO: 需要channel
-                totalRetransmitted.incrementAndGet();
-                
-                // 更新拥塞控制：丢包
-                CongestionControl cc = congestionControls.get(record.remoteAddress);
-                if (cc != null) {
-                    cc.totalPacketsLost++;
-                }
-                
-                // 重新设置超时定时器（使用指数退避）
-                long backoffTimeout = (long) (timeoutInterval * Math.pow(2, record.retryCount));
-                record.timeoutFuture = scheduler.schedule(() -> {
-                    handleTimeout(client,record);
-                }, backoffTimeout, TimeUnit.MILLISECONDS);
-                
-                log.debug("Retransmitting message seq={} to {}, retryCount={}", 
-                         record.seq, record.remoteAddress, record.retryCount);
+                return;
             }
-            
+
+            record.status = MessageStatus.RETRANSMITTING;
+            sendMessageInternal(channel, record.remoteAddress, record.message);
+            totalRetransmitted.incrementAndGet();
+
+            CongestionControl cc = congestionControls.get(record.remoteAddress);
+            if (cc != null) {
+                cc.totalPacketsLost++;
+            }
+
+            long backoffTimeout = (long) (timeoutInterval * Math.pow(2, record.retryCount));
+            record.timeoutFuture = scheduler.schedule(() -> {
+                handleTimeout(channel, record);
+            }, backoffTimeout, TimeUnit.MILLISECONDS);
         } finally {
             windowLock.unlock();
         }
     }
-    
+
     private void updateRTTEstimate(long sampleRTT) {
         if (sampleRTT <= 0) {
             return;
@@ -735,6 +945,12 @@ public class UdpReliabilityManager {
             }
         }
     }
+
+    protected void onClientRetransmit(P2PClientUdp client, int seq, InetSocketAddress remoteAddress, int retryCount) {
+    }
+
+    protected void onClientTimedOut(P2PClientUdp client, int seq, InetSocketAddress remoteAddress, int retryCount) {
+    }
     
     // ============== 虚方法，需要子类或集成时实现 ==============
     
@@ -752,6 +968,7 @@ public class UdpReliabilityManager {
     
     public void setWindowSize(int windowSize) {
         this.windowSize = Math.max(1, Math.min(windowSize, 256)); // 限制在1-256之间
+        this.windowSizeConfigured = true;
     }
     
     public int getWindowSize() {

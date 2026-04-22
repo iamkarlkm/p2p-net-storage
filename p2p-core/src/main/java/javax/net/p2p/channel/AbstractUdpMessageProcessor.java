@@ -172,9 +172,17 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
      * @param remoteAddess
      */
     public void completeLastResponse(InetSocketAddress remoteAddess){
-        frameLastTransportSpeed = frameLengthInt/(System.currentTimeMillis()-frameStartTime);
+        long dt = System.currentTimeMillis() - frameStartTime;
+        if (dt <= 0) {
+            dt = 1;
+        }
+        if (frameLengthInt > 0) {
+            frameLastTransportSpeed = frameLengthInt / dt;
+        }
         ByteBuf buffer = lastMessageMap.remove(remoteAddess);
-        buffer.release();
+        if (buffer != null) {
+            buffer.release();
+        }
         //ReferenceCountUtil.safeRelease(buffer);
         
     }

@@ -1,14 +1,13 @@
 package javax.net.p2p.udp;
 
-import io.netty.buffer.ByteBuf;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.socket.DatagramPacket;
-import io.netty.util.ReferenceCountUtil;
+import java.net.PortUnreachableException;
 import java.net.InetSocketAddress;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.model.P2PWrapper;
-import javax.net.p2p.utils.SerializationUtil;
 import lombok.extern.slf4j.Slf4j;
 
 /**
@@ -59,70 +58,8 @@ public class UdpReliabilityHandler extends SimpleChannelInboundHandler<DatagramP
     
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, DatagramPacket packet) throws Exception {
-        InetSocketAddress sender = packet.sender();
-        ByteBuf content = packet.content();
-        
-        try {
-            // 解析消息
-            P2PWrapper<?> message = parseMessage(content);
-            if (message == null) {
-                log.warn("Failed to parse UDP message from {}", sender);
-                return;
-            }
-            
-            // 处理ACK消息
-            if (message.getCommand() == P2PCommand.UDP_FRAME_ACK) {
-                handleAckMessage(message, sender);
-                return;
-            }
-            
-            // 处理普通数据消息
-            handleDataMessage(ctx, message, sender, content);
-            
-        } finally {
-            // 注意：这里不能释放content，因为后续的handler可能还需要使用
-            // packet会由Netty自动管理引用计数
-        }
-    }
-    
-    /**
-     * 处理ACK消息
-     */
-    private void handleAckMessage(P2PWrapper<?> ackMessage, InetSocketAddress sender) {
-        if (!enableReliability || reliabilityManager == null) {
-            return;
-        }
-        
-        int ackSeq = ackMessage.getSeq();
-        reliabilityManager.processAck(ackSeq, sender);
-        
-        log.debug("Processed ACK seq={} from {}", ackSeq, sender);
-    }
-    
-    /**
-     * 处理数据消息
-     */
-    private void handleDataMessage(ChannelHandlerContext ctx, P2PWrapper<?> message, 
-                                   InetSocketAddress sender, ByteBuf content) {
-        if (!enableReliability || reliabilityManager == null) {
-            // 可靠性未启用，直接传递给下一个handler
-            forwardToNextHandler(ctx, message, sender, content);
-            return;
-        }
-        
-        int seq = message.getSeq();
-        
-        // 处理数据消息，检查是否需要ACK
-        boolean needAck = reliabilityManager.processDataMessage(seq, content.retain(), sender);
-        
-        if (needAck) {
-            // 发送ACK
-            reliabilityManager.sendAck(ctx.channel(), sender, seq);
-            log.debug("Sent ACK for seq={} to {}", seq, sender);
-        }
-        
-        // 将消息传递给下一个handler
-        forwardToNextHandler(ctx, message, sender, content);
+        // 可靠性处理下沉到 UdpFrameInbound（完整帧重组后）执行，这里只透传原始Datagram。
+        ctx.fireChannelRead(packet.retain());
     }
     
     /**
@@ -134,13 +71,17 @@ public class UdpReliabilityHandler extends SimpleChannelInboundHandler<DatagramP
      */
     public int sendReliableMessage(ChannelHandlerContext ctx, InetSocketAddress remoteAddress, 
                                    P2PWrapper<?> message) {
+        return sendReliableMessage(ctx.channel(), remoteAddress, message);
+    }
+
+    public int sendReliableMessage(Channel channel, InetSocketAddress remoteAddress,
+                                   P2PWrapper<?> message) {
         if (!enableReliability || reliabilityManager == null) {
             // 可靠性未启用，直接发送
-            sendUnreliableMessage(ctx, remoteAddress, message);
+            sendUnreliableMessage(channel, remoteAddress, message);
             return message.getSeq();
         }
-        
-        return reliabilityManager.sendReliableMessage(ctx.channel(), remoteAddress, message);
+        return reliabilityManager.sendReliableMessage(channel, remoteAddress, message);
     }
     
     /**
@@ -151,63 +92,47 @@ public class UdpReliabilityHandler extends SimpleChannelInboundHandler<DatagramP
      */
     public void sendUnreliableMessage(ChannelHandlerContext ctx, InetSocketAddress remoteAddress, 
                                       P2PWrapper<?> message) {
+        sendUnreliableMessage(ctx.channel(), remoteAddress, message);
+    }
+
+    public void sendUnreliableMessage(Channel channel, InetSocketAddress remoteAddress,
+                                      P2PWrapper<?> message) {
         if (reliabilityManager != null) {
-            reliabilityManager.sendUnreliableMessage(ctx.channel(), remoteAddress, message);
+            reliabilityManager.sendUnreliableMessage(channel, remoteAddress, message);
         } else {
-            // 直接发送
-            ByteBuf buffer = serializeMessage(message);
-            if (buffer != null) {
-                try {
-                    ctx.writeAndFlush(new DatagramPacket(buffer, remoteAddress));
-                } finally {
-                    buffer.release();
-                }
-            }
+            throw new IllegalStateException("reliabilityManager is null");
         }
     }
-    
+
     /**
-     * 转发消息给下一个handler
+     * 由 UdpFrameInbound 在“完整帧解码后”调用。
+     * @return true=继续交给业务层处理；false=被可靠性层消费（如 ACK）。
      */
-    private void forwardToNextHandler(ChannelHandlerContext ctx, P2PWrapper<?> message, 
-                                      InetSocketAddress sender, ByteBuf content) {
-        // 创建新的DatagramPacket，保持原始内容
-        DatagramPacket newPacket = new DatagramPacket(content.retain(), sender, (InetSocketAddress) ctx.channel().localAddress());
-        
-        // 将消息传递给下一个handler
-        ctx.fireChannelRead(newPacket);
-    }
-    
-    /**
-     * 解析消息
-     */
-    private P2PWrapper<?> parseMessage(ByteBuf buffer) {
-        try {
-            // 使用项目现有的反序列化工具
-            // 这里需要适配现有的序列化格式
-            // 假设使用SerializationUtil进行反序列化
-            return SerializationUtil.deserializeWrapper(P2PWrapper.class,buffer);
-        } catch (Exception e) {
-            log.error("Failed to parse UDP message: {}", e.getMessage(), e);
-            return null;
+    public boolean handleDecodedMessage(Channel channel, InetSocketAddress sender, P2PWrapper<?> message) {
+        if (!enableReliability || reliabilityManager == null || message == null) {
+            return true;
         }
-    }
-    
-    /**
-     * 序列化消息
-     */
-    private ByteBuf serializeMessage(P2PWrapper<?> message) {
-        try {
-            // 使用项目现有的序列化工具
-            return SerializationUtil.serializeToByteBuf(message, 0); // 0表示默认magic
-        } catch (Exception e) {
-            log.error("Failed to serialize message: {}", e.getMessage(), e);
-            return null;
+        if (message.getCommand() == P2PCommand.UDP_FRAME_ACK || message.getCommand() == P2PCommand.UDP_FRAME_RESET) {
+            return true;
         }
+        if (message.getCommand() == P2PCommand.UDP_RELIABILITY_ACK) {
+            reliabilityManager.processAck(message.getSeq(), sender);
+            return false;
+        }
+        boolean needAck = reliabilityManager.processDataMessage(message.getSeq(), null, sender);
+        if (needAck) {
+            reliabilityManager.sendAck(channel, sender, message.getSeq());
+        }
+        return true;
     }
     
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+        if (cause instanceof PortUnreachableException) {
+            // UDP 端口不可达属于常见网络异常，不应立即关闭通道，等待超时机制处理
+            log.warn("UDP端口不可达: {}", cause.getMessage());
+            return;
+        }
         log.error("UDP reliability handler exception: {}", cause.getMessage(), cause);
         ctx.close();
     }
@@ -235,6 +160,10 @@ public class UdpReliabilityHandler extends SimpleChannelInboundHandler<DatagramP
      */
     public UdpReliabilityManager getReliabilityManager() {
         return reliabilityManager;
+    }
+
+    public boolean isEnabled() {
+        return enableReliability && reliabilityManager != null;
     }
     
     /**

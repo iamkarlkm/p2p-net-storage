@@ -255,6 +255,7 @@ public class UdpPerformanceMonitor {
             
             if (elapsedSeconds > 0) {
                 long sentRate = (globalStats.messagesSent.get() - globalStats.lastMessagesSent) / elapsedSeconds;
+                long ackRate = (globalStats.acksReceived.get() - globalStats.lastMessagesReceived) / elapsedSeconds;
                 long receivedRate = (globalStats.messagesReceived.get() - globalStats.lastMessagesReceived) / elapsedSeconds;
                 
                 globalStats.lastMessagesSent = globalStats.messagesSent.get();
@@ -263,6 +264,7 @@ public class UdpPerformanceMonitor {
                 
                 // 记录当前速率
                 globalStats.messageSendRate = sentRate;
+                globalStats.messageAckRate = ackRate;
                 globalStats.messageReceiveRate = receivedRate;
                 
                 // 记录到历史数据
@@ -302,6 +304,8 @@ public class UdpPerformanceMonitor {
             log.info("全局统计:");
             log.info("  发送消息: {} ({} msg/s)", 
                 globalStats.messagesSent.get(), globalStats.messageSendRate);
+            log.info("  发送Ack: {} ({} msg/s)", 
+                globalStats.acksReceived.get(), globalStats.messageSendRate);
             log.info("  接收消息: {} ({} msg/s)", 
                 globalStats.messagesReceived.get(), globalStats.messageReceiveRate);
             log.info("  发送字节: {}", formatBytes(globalStats.bytesSent.get()));
@@ -323,9 +327,10 @@ public class UdpPerformanceMonitor {
                     .limit(5)
                     .forEach(entry -> {
                         UdpSessionStatistics stats = entry.getValue();
-                        log.info("    {}: 发送={}, 接收={}, 丢包率={}%, RTT={}ms", 
+                        log.info("    {}: 发送={}, 发送Ack={}, 接收={}, 丢包率={}%, RTT={}ms", 
                             entry.getKey(),
                             stats.messagesSent.get(),
+                            stats.acksReceived.get(),
                             stats.messagesReceived.get(),
                             calculateLossRate(stats.messagesSent.get(), stats.packetsLost.get()),
                             stats.getAverageRtt());
@@ -421,12 +426,14 @@ public class UdpPerformanceMonitor {
             DateTimeFormatter dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
             
             report.append("UDP性能监控报告\n");
-            report.append("生成时间: ").append(dtf.format(LocalDateTime.now())).append("\n");
+            report.append("生成时间: ").append(dtf.format(LocalDateTime.now())).append("\n");//acksReceived messageAckRate
             report.append("=========================================\n");
             report.append("全局性能指标:\n");
             report.append(String.format("  发送消息总数: %d\n", globalStats.messagesSent.get()));
+            report.append(String.format("  发送ACK总数: %d\n", globalStats.acksReceived.get()));
             report.append(String.format("  接收消息总数: %d\n", globalStats.messagesReceived.get()));
             report.append(String.format("  当前发送速率: %d msg/s\n", globalStats.messageSendRate));
+            report.append(String.format("  当前ACK速率: %d msg/s\n", globalStats.messageAckRate));
             report.append(String.format("  当前接收速率: %d msg/s\n", globalStats.messageReceiveRate));
             report.append(String.format("  总发送字节数: %s\n", formatBytes(globalStats.bytesSent.get())));
             report.append(String.format("  总接收字节数: %s\n", formatBytes(globalStats.bytesReceived.get())));
@@ -479,6 +486,7 @@ public class UdpPerformanceMonitor {
         
         // 速率统计
         volatile long messageSendRate = 0;
+        volatile long messageAckRate = 0;
         volatile long messageReceiveRate = 0;
         
         // RTT统计
@@ -493,6 +501,7 @@ public class UdpPerformanceMonitor {
         volatile long lastSummaryTime = System.currentTimeMillis();
         volatile long lastMessagesSent = 0;
         volatile long lastMessagesReceived = 0;
+        
         
         long getAverageRtt() {
             int count = rttCount.get();

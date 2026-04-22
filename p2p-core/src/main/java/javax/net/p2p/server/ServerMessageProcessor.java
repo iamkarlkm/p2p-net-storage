@@ -118,7 +118,7 @@ public class ServerMessageProcessor extends AbstractTcpMessageProcessor {
     public void channelRead0(ChannelHandlerContext ctx, P2PWrapper msg) throws Exception {
         // 提取消息序列号，用于请求响应匹配和日志追踪
         int seq = msg.getSeq();
-        
+        System.out.println("记录接收到的消息详情，便于调试和问题排查 -> "+msg);
         // 记录接收到的消息详情，便于调试和问题排查
         log.debug("channel {} read msg ->\n{}", ctx.channel().id(), msg);
         

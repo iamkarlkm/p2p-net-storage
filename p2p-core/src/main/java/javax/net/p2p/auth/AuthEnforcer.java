@@ -11,6 +11,7 @@ import javax.net.p2p.model.P2PWrapper;
 public final class AuthEnforcer {
 
     private static volatile AuthConfig CONFIG;
+    private static volatile String CONFIG_SOURCE;
 
     private AuthEnforcer() {
     }
@@ -69,19 +70,32 @@ public final class AuthEnforcer {
     }
 
     private static AuthConfig loadConfig() {
+        String currentSource = normalizeSource(System.getProperty("p2p.auth.yaml"));
         AuthConfig local = CONFIG;
-        if (local != null) {
+        String cachedSource = CONFIG_SOURCE;
+        if (local != null && cachedSource != null && cachedSource.equals(currentSource)) {
             return local;
         }
         synchronized (AuthEnforcer.class) {
+            currentSource = normalizeSource(System.getProperty("p2p.auth.yaml"));
             local = CONFIG;
-            if (local != null) {
+            cachedSource = CONFIG_SOURCE;
+            if (local != null && cachedSource != null && cachedSource.equals(currentSource)) {
                 return local;
             }
             local = AuthConfig.load();
             CONFIG = local;
+            CONFIG_SOURCE = currentSource;
             return local;
         }
+    }
+
+    private static String normalizeSource(String src) {
+        if (src == null) {
+            return "";
+        }
+        String s = src.trim();
+        return s.isEmpty() ? "" : s;
     }
 }
 

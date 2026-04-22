@@ -1,10 +1,12 @@
 package javax.net.p2p.server;
 
 import io.netty.bootstrap.Bootstrap;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioDatagramChannel;
+import java.net.InetSocketAddress;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.PrintStream;
@@ -16,6 +18,8 @@ import javax.net.p2p.common.ExecutorServicePool;
  * @author karl
  */
 public class P2PServerUdp extends AbstractP2PServer {
+    
+    private volatile Channel channel;
     
     
         
@@ -72,18 +76,16 @@ public class P2PServerUdp extends AbstractP2PServer {
             // 绑定端口，开始接收进来的连接
 //           InetSocketAddress address = new InetSocketAddress(InetAddress.getLocalHost(), port);
             ChannelFuture future = server.bind(port).sync();
+            channel = future.channel();
+            if (channel.localAddress() instanceof InetSocketAddress a) {
+                port = a.getPort();
+            }
             System.out.println("Udp P2P server start listen at " + port);
-            System.out.println("future.channel().remoteAddress()="+future.channel().remoteAddress());
-            //future.channel().closeFuture().sync();
-            //ServerUdpMessageProcessor serverUdpMessageProcessor = ChannelUtils.getServerUdpMessageProcessor(future.channel());
-//           让线程进入wait状态，也就是main线程暂时不会执行到finally里面，nettyserver也持续运行，如果监听到关闭事件，可以优雅的关闭通道和nettyserver
-            future.channel().closeFuture().await();
-            System.out.println("after future.channel().closeFuture().await() future.channel().remoteAddress()="+future.channel().remoteAddress());
+           
         } catch (Exception e) {
             e.printStackTrace();
-        } finally {
-            System.out.println("released");
             released();
+            throw new RuntimeException(e);
         }
         super.singletonCreated(this);
     }
@@ -93,6 +95,14 @@ public class P2PServerUdp extends AbstractP2PServer {
      */
     @Override
     public void singletonFinalized() {
+        if (channel != null) {
+            try {
+                channel.close().syncUninterruptibly();
+            } catch (Exception e) {
+            } finally {
+                channel = null;
+            }
+        }
         if (acceptBossGroup != null) {
             acceptBossGroup.shutdownGracefully();
             acceptBossGroup = null;
@@ -102,6 +112,10 @@ public class P2PServerUdp extends AbstractP2PServer {
             System.out.println("Udp P2P server already closed: " + port);
         }
         super.singletonFinalized();
+    }
+    
+    public int getPort() {
+        return port;
     }
     
   

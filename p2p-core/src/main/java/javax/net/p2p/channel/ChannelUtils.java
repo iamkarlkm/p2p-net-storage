@@ -14,7 +14,6 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.net.p2p.client.ClientMessageProcessor;
 import javax.net.p2p.client.ClientUdpMessageProcessor;
-import javax.net.p2p.client.pooled.MyClientPoolMessagerProcessor;
 import javax.net.p2p.server.ServerUdpMessageProcessor;
 import javax.net.p2p.udp.UdpReliabilityHandler;
 
@@ -64,17 +63,7 @@ public class ChannelUtils {
         return channel.attr(MESSAGE_SEQUENCE).get().getAndIncrement();
     }
 
-   
-    /**
-     * 从channel属性map中获取业务逻辑处理器
-     * @param channel 
-     * @return  
-     */
-    public static MyClientPoolMessagerProcessor getMyClientPoolMessagerProcessor(Channel channel){
-         Attribute<SimpleChannelInboundHandler> attribute =  channel.attr(ChannelUtils.BUSINESS_PROCESSOR);
-            MyClientPoolMessagerProcessor businessHandler = (MyClientPoolMessagerProcessor) attribute.get();
-        return businessHandler;
-    }
+  
     
     /**
      * 从channel属性map中获取业务逻辑处理器

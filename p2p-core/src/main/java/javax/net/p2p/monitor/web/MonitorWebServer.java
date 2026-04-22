@@ -9,6 +9,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import javax.net.p2p.monitor.UdpMonitorDecorator;
 import javax.net.p2p.monitor.UdpPerformanceMonitor;
@@ -46,6 +47,7 @@ public class MonitorWebServer {
     
     private final int port;
     private HttpServer server;
+    private ExecutorService executor;
     private final Gson gson;
     private final UdpPerformanceMonitor monitor;
     
@@ -76,7 +78,8 @@ public class MonitorWebServer {
         server.createContext(CONTEXT_PATH + "/", new StaticFileHandler());
         
         // 设置线程池
-        server.setExecutor(Executors.newFixedThreadPool(10));
+        executor = Executors.newFixedThreadPool(10);
+        server.setExecutor(executor);
         
         // 启动服务器
         server.start();
@@ -98,7 +101,12 @@ public class MonitorWebServer {
     public void stop() {
         if (server != null) {
             server.stop(0);
+            server = null;
             log.info("UDP监控Web服务器已停止");
+        }
+        if (executor != null) {
+            executor.shutdownNow();
+            executor = null;
         }
     }
     
