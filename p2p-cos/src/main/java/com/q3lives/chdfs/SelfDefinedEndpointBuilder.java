@@ -1,5 +1,5 @@
 
-package com.giyo.chdfs;
+package com.q3lives.chdfs;
 
 import com.qcloud.cos.endpoint.EndpointBuilder;
 import com.qcloud.cos.region.Region;

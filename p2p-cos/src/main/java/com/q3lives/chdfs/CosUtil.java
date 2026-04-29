@@ -1,5 +1,5 @@
 
-package com.giyo.chdfs;
+package com.q3lives.chdfs;
 
 import com.qcloud.cos.COSClient;
 import com.qcloud.cos.ClientConfig;

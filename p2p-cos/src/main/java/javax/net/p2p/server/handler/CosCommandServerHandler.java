@@ -1,9 +1,9 @@
 package javax.net.p2p.server.handler;
 
-import com.giyo.chdfs.CosUtil;
+import com.q3lives.chdfs.CosUtil;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.interfaces.P2PCommandHandler;
-import javax.net.p2p.model.HdfsCommandModel;
+import javax.net.p2p.model.CloudFilesCommandModel;
 import javax.net.p2p.model.P2PWrapper;
 
 /**
@@ -22,7 +22,7 @@ public class CosCommandServerHandler implements P2PCommandHandler {
         try {
             if (request.getCommand().getValue() == P2PCommand.COS_COMMAND.getValue()) {
                 //P2PWrapper r = null;
-                HdfsCommandModel payload = (HdfsCommandModel) request.getData();
+                CloudFilesCommandModel payload = (CloudFilesCommandModel) request.getData();
                 if (null == payload.getCommand()) {
                     return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "command不能为空！");
                 } else {

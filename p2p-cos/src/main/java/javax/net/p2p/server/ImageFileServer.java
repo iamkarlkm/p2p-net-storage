@@ -28,7 +28,7 @@
  */
 package javax.net.p2p.server;
 
-import com.giyo.chdfs.CosUtil;
+import com.q3lives.chdfs.CosUtil;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import javax.net.p2p.health.HealthHttpServer;

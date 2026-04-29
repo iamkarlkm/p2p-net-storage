@@ -27,8 +27,8 @@ import javax.net.p2p.client.processor.CosFileSegmentsPutProcessor;
 import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.model.FileDataModel;
 import javax.net.p2p.model.FileSegmentsDataModel;
-import javax.net.p2p.model.HdfsCommandModel;
-import javax.net.p2p.model.HdfsFileDataModel;
+import javax.net.p2p.model.CloudFilesCommandModel;
+import javax.net.p2p.model.CloudFileDataModel;
 import javax.net.p2p.model.P2PWrapper;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.tuple.Triple;
@@ -89,12 +89,12 @@ public class P2PCosUtils {
 
     public static byte[] getFileData(String path) throws Exception {
 
-        P2PWrapper p2p = P2PWrapper.build(P2PCommand.GET_COS_FILE, new HdfsFileDataModel(path));
+        P2PWrapper p2p = P2PWrapper.build(P2PCommand.GET_COS_FILE, new CloudFileDataModel(path));
         log.info("CosFileGet : {} -> {}", path, p2p.getCommand());
         P2PWrapper response = (P2PWrapper) getInstance().excute(p2p, 90, TimeUnit.SECONDS);
         log.info("CosFileGet success: {} -> {}", path, response.getCommand());
         if (response.getCommand().getValue() == P2PCommand.R_OK_GET_COS_FILE.getValue()) {
-            HdfsFileDataModel payload = (HdfsFileDataModel) response.getData();
+            CloudFileDataModel payload = (CloudFileDataModel) response.getData();
             if (payload.length != payload.data.length) {
                 throw new RuntimeException("文件长度记录不一致:expected length=" + payload.data.length + ",actual length=" + payload.length);
             }
@@ -221,7 +221,7 @@ public class P2PCosUtils {
         }
 
         if (data.length <= P2PConfig.DATA_BLOCK_SIZE) {
-            P2PWrapper p2p = P2PWrapper.build(P2PCommand.PUT_COS_FILE, new HdfsFileDataModel(path, data));
+            P2PWrapper p2p = P2PWrapper.build(P2PCommand.PUT_COS_FILE, new CloudFileDataModel(path, data));
             log.info("CosFilePut : {} -> {}", path, p2p.getCommand());
             P2PWrapper response = (P2PWrapper) getInstance().excute(p2p, 90,
                  TimeUnit.SECONDS);
@@ -369,7 +369,7 @@ public class P2PCosUtils {
             throw new RuntimeException("path is null!");
         }
 
-        P2PWrapper p2p = P2PWrapper.build(P2PCommand.PUT_COS_FILE_FROM_HDFS, new HdfsFileDataModel(path));
+        P2PWrapper p2p = P2PWrapper.build(P2PCommand.PUT_COS_FILE_FROM_HDFS, new CloudFileDataModel(path));
         P2PWrapper response = (P2PWrapper) getInstance().excute(p2p, 30, TimeUnit.SECONDS);
         //P2PCommandHandler handler = (P2PCommandHandler) registryMap.get(response.getCommand());
         //System.out.println(handler);
@@ -389,7 +389,7 @@ public class P2PCosUtils {
 
     public static boolean remove(String path) throws Exception {
 
-        P2PWrapper p2p = P2PWrapper.build(P2PCommand.COS_COMMAND, new HdfsCommandModel("rm", path));
+        P2PWrapper p2p = P2PWrapper.build(P2PCommand.COS_COMMAND, new CloudFilesCommandModel("rm", path));
         P2PWrapper response = (P2PWrapper) getInstance().excute(p2p, 30, TimeUnit.SECONDS);
         //P2PCommandHandler handler = (P2PCommandHandler) registryMap.get(response.getCommand());
         //System.out.println(handler);
@@ -437,7 +437,7 @@ public class P2PCosUtils {
 
     public static boolean exists(String path) throws Exception {
 
-        P2PWrapper p2p = P2PWrapper.build(P2PCommand.COS_COMMAND, new HdfsCommandModel("exists", path));
+        P2PWrapper p2p = P2PWrapper.build(P2PCommand.COS_COMMAND, new CloudFilesCommandModel("exists", path));
 
         log.info("Cos exists : {} -> {}", path, p2p.getCommand());
         P2PWrapper response = (P2PWrapper) getInstance().excute(p2p, 30, TimeUnit.SECONDS);
@@ -457,7 +457,7 @@ public class P2PCosUtils {
 
     public static boolean mkdirs(String path) throws Exception {
 
-        P2PWrapper p2p = P2PWrapper.build(P2PCommand.COS_COMMAND, new HdfsCommandModel("mkdirs", path));
+        P2PWrapper p2p = P2PWrapper.build(P2PCommand.COS_COMMAND, new CloudFilesCommandModel("mkdirs", path));
         P2PWrapper response = (P2PWrapper) getInstance().excute(p2p, 30, TimeUnit.SECONDS);
         //P2PCommandHandler handler = (P2PCommandHandler) registryMap.get(response.getCommand());
         //System.out.println(handler);
@@ -474,7 +474,7 @@ public class P2PCosUtils {
 
     public static boolean rename(String src, String dst) throws Exception {
 
-        P2PWrapper p2p = P2PWrapper.build(P2PCommand.COS_COMMAND, new HdfsCommandModel("rename", src, dst));
+        P2PWrapper p2p = P2PWrapper.build(P2PCommand.COS_COMMAND, new CloudFilesCommandModel("rename", src, dst));
         P2PWrapper response = (P2PWrapper) getInstance().excute(p2p, 30, TimeUnit.SECONDS);
         //P2PCommandHandler handler = (P2PCommandHandler) registryMap.get(response.getCommand());
         //System.out.println(handler);
@@ -491,13 +491,13 @@ public class P2PCosUtils {
 
     public static List<String> ls(String path) throws Exception {
 
-        P2PWrapper p2p = P2PWrapper.build(P2PCommand.COS_COMMAND, new HdfsCommandModel("ls", path));
+        P2PWrapper p2p = P2PWrapper.build(P2PCommand.COS_COMMAND, new CloudFilesCommandModel("ls", path));
         P2PWrapper response = (P2PWrapper) getInstance().excute(p2p, 30, TimeUnit.SECONDS);
         //P2PCommandHandler handler = (P2PCommandHandler) registryMap.get(response.getCommand());
         //System.out.println(handler);
         //if(handler!=null){
         if (response.getCommand().getValue() == P2PCommand.STD_OK.getValue()) {
-            HdfsCommandModel<List<String>> payload = (HdfsCommandModel) response.getData();
+            CloudFilesCommandModel<List<String>> payload = (CloudFilesCommandModel) response.getData();
             return payload.getData();
         } else if (response.getCommand().getValue() == P2PCommand.STD_ERROR.getValue()) {
             return null;

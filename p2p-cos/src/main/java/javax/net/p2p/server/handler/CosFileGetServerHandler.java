@@ -56,13 +56,13 @@
  */
 package javax.net.p2p.server.handler;
 
-import com.giyo.chdfs.CosUtil;
+import com.q3lives.chdfs.CosUtil;
 import com.qcloud.cos.model.ObjectMetadata;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.FileSegmentsDataModel;
-import javax.net.p2p.model.HdfsFileDataModel;
+import javax.net.p2p.model.CloudFileDataModel;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.utils.SecurityUtils;
 import lombok.extern.slf4j.Slf4j;
@@ -102,7 +102,7 @@ public class CosFileGetServerHandler implements P2PCommandHandler{
 	public P2PWrapper process(P2PWrapper request) {
 		try {
 			if (request.getCommand().getValue() == P2PCommand.GET_COS_FILE.getValue()) {
-				HdfsFileDataModel payload = (HdfsFileDataModel) request.getData();
+				CloudFileDataModel payload = (CloudFileDataModel) request.getData();
 				log.info("CosFileGet: {} -> {}",payload.path,request.getCommand());
 				ObjectMetadata info = CosUtil.getObjectInfo(payload.path);
 				if(info.getContentLength()<=P2PConfig.DATA_GET_BLOCK_SIZE){//云出数据可能限制了长度

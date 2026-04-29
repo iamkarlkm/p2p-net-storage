@@ -1,10 +1,10 @@
 
 package javax.net.p2p.server.handler;
 
-import com.giyo.chdfs.CosUtil;
+import com.q3lives.chdfs.CosUtil;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.interfaces.P2PCommandHandler;
-import javax.net.p2p.model.HdfsFileDataModel;
+import javax.net.p2p.model.CloudFileDataModel;
 import javax.net.p2p.model.P2PWrapper;
 import lombok.extern.slf4j.Slf4j;
 
@@ -27,7 +27,7 @@ public class CosFilePutServerHandler implements P2PCommandHandler {
 			//System.out.println(request.getSeq() + "-执行开始...");
 			//stopWatch.start();
 			if (request.getCommand().getValue() == P2PCommand.PUT_COS_FILE.getValue()) {
-				HdfsFileDataModel payload = (HdfsFileDataModel) request.getData();
+				CloudFileDataModel payload = (CloudFileDataModel) request.getData();
 				log.info("CosFilePut: {} -> {}",payload.path,request.getCommand());
 				boolean success = CosUtil.write(payload.path, payload.data);
 				//stopWatch.stop();

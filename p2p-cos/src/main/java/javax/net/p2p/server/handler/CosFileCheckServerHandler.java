@@ -1,7 +1,7 @@
 
 package javax.net.p2p.server.handler;
 
-import com.giyo.chdfs.CosUtil;
+import com.q3lives.chdfs.CosUtil;
 import com.qcloud.cos.model.ObjectMetadata;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.interfaces.P2PCommandHandler;
