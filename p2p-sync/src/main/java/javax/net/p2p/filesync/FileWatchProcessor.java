@@ -28,7 +28,7 @@ public class FileWatchProcessor implements Runnable {
 			
 					File file = new File(path.toAbsolutePath().toString());
 					//System.out.println(file.isDirectory() + ":" + file.isFile());
-					if (!file.isDirectory()) {//处理文件数据变更，当间隔一定时间无事件发生，视为已安成
+					if (!file.isDirectory()) {//处理文件数据变更，当间隔一定时间无事件发生，视为已完成
 						//System.out.println(kind.name() + ": file -> " + path);
 						try (FileInputStream fis = new FileInputStream(file);
 								FileChannel fileChannel = fis.getChannel()) {
