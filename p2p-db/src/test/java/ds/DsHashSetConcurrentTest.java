@@ -1,6 +1,6 @@
 package ds;
 
-import com.q3lives.ds.collections.DsHashSetI64;
+import com.q3lives.ds.collections.DsHashSet;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -17,21 +17,39 @@ import static org.junit.Assert.*;
 
 public class DsHashSetConcurrentTest {
 
-    private DsHashSetI64 dsHashSet;
+    private DsHashSet dsHashSet;
     private File dataFile;
+
+    private static void deleteWithSidecars(File file) {
+        if (file == null) {
+            return;
+        }
+        String base = file.getAbsolutePath();
+        new File(base).delete();
+        new File(base + ".m32").delete();
+        new File(base + ".m64").delete();
+        new File(base + ".e16").delete();
+        new File(base + ".e32").delete();
+        new File(base + ".e64").delete();
+        new File(base + ".e16.free").delete();
+        new File(base + ".e32.free").delete();
+        new File(base + ".e64.free").delete();
+        new File(base + ".s32").delete();
+        new File(base + ".s64").delete();
+    }
 
     @Before
     public void setUp() throws Exception {
         dataFile = new File("test_dshashset_concurrent.dat");
-        if (dataFile.exists()) {
-            dataFile.delete();
-        }
-        dsHashSet = new DsHashSetI64(dataFile);
+        deleteWithSidecars(dataFile);
+        dsHashSet = new DsHashSet(dataFile);
+        dsHashSet.clear();
     }
 
     @After
     public void tearDown() throws Exception {
         dsHashSet.close();
+        deleteWithSidecars(dataFile);
     }
 
     @Test

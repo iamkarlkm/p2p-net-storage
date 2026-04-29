@@ -1,6 +1,6 @@
 package ds;
 
-import com.q3lives.ds.fs.DsFile;
+import com.q3lives.ds.fs.Ds256FileSystem;
 import com.q3lives.ds.fs.FileMetadata;
 import org.junit.Before;
 import org.junit.Test;
@@ -12,7 +12,7 @@ import static org.junit.Assert.*;
 
 public class DsFileTest {
     private static final String TEST_DIR = "target/test-ds-file";
-    private DsFile dsFile;
+    private Ds256FileSystem dsFile;
 
     @Before
     public void setUp() throws IOException {
@@ -21,7 +21,7 @@ public class DsFileTest {
             deleteRecursively(dir);
         }
         dir.mkdirs();
-        dsFile = new DsFile(TEST_DIR);
+        dsFile = new Ds256FileSystem(TEST_DIR);
     }
 
     private void deleteRecursively(File file) {

@@ -32,6 +32,7 @@ class PeerNodeConfig {
   final String cryptoMode;
   final List<Endpoint> reportedEndpoints;
   final Map<int, String> storageLocations;
+  final Map<int, String> imStorageLocations;
   final String presenceCachePath;
   final String cooldownCachePath;
   final bool enableConnectHint;
@@ -54,6 +55,7 @@ class PeerNodeConfig {
     required this.cryptoMode,
     required this.reportedEndpoints,
     required this.storageLocations,
+    required this.imStorageLocations,
     required this.presenceCachePath,
     required this.cooldownCachePath,
     required this.enableConnectHint,
@@ -87,6 +89,13 @@ class PeerNodeConfig {
         return int.parse(s.substring(2), radix: 16);
       }
       return int.parse(s);
+    }
+
+    int normalizeStoreId(Object? raw) {
+      if (raw == null) return 0;
+      final v = int.tryParse("$raw") ?? 0;
+      if (v == 0) return 0;
+      return v & 0xFFFFFFFF;
     }
 
     String resolvePath(String p) {
@@ -149,19 +158,41 @@ class PeerNodeConfig {
     final sl = cfg["storage_locations"];
     if (sl is Map) {
       for (final e in sl.entries) {
-        final k = int.tryParse("${e.key}") ?? -1;
+        final k = normalizeStoreId(e.key);
         final v = "${e.value ?? ""}".trim();
-        if (k > 0 && v.isNotEmpty) {
+        if (k != 0 && v.isNotEmpty) {
           storageLocations[k] = resolvePath(v);
         }
       }
     } else if (sl is List) {
       for (final e in sl) {
         if (e is Map) {
-          final k = int.tryParse("${e["store_id"] ?? e["storeId"] ?? ""}") ?? -1;
+          final k = normalizeStoreId(e["store_id"] ?? e["storeId"]);
           final v = "${e["path"] ?? e["dir"] ?? ""}".trim();
-          if (k > 0 && v.isNotEmpty) {
+          if (k != 0 && v.isNotEmpty) {
             storageLocations[k] = resolvePath(v);
+          }
+        }
+      }
+    }
+
+    final imStorageLocations = <int, String>{};
+    final isl = cfg["im_storage_locations"];
+    if (isl is Map) {
+      for (final e in isl.entries) {
+        final k = normalizeStoreId(e.key);
+        final v = "${e.value ?? ""}".trim();
+        if (k != 0 && v.isNotEmpty) {
+          imStorageLocations[k] = resolvePath(v);
+        }
+      }
+    } else if (isl is List) {
+      for (final e in isl) {
+        if (e is Map) {
+          final k = normalizeStoreId(e["store_id"] ?? e["storeId"]);
+          final v = "${e["path"] ?? e["dir"] ?? ""}".trim();
+          if (k != 0 && v.isNotEmpty) {
+            imStorageLocations[k] = resolvePath(v);
           }
         }
       }
@@ -179,6 +210,7 @@ class PeerNodeConfig {
       cryptoMode: cryptoMode,
       reportedEndpoints: reportedEndpoints,
       storageLocations: storageLocations,
+      imStorageLocations: imStorageLocations,
       presenceCachePath: presenceCachePath,
       cooldownCachePath: cooldownCachePath,
       enableConnectHint: enableConnectHint,
@@ -229,11 +261,14 @@ class PeerNode {
     }
     await keyf.close();
 
-    if (cfg.storageLocations.isEmpty) {
-      throw StateError("storage_locations is required");
+    if (cfg.storageLocations.isEmpty && cfg.imStorageLocations.isEmpty) {
+      throw StateError("storage_locations or im_storage_locations is required");
     }
     final storage = SharedStorageRegistry();
     for (final e in cfg.storageLocations.entries) {
+      storage.registerStorageLocation(e.key, Directory(e.value));
+    }
+    for (final e in cfg.imStorageLocations.entries) {
       storage.registerStorageLocation(e.key, Directory(e.value));
     }
 

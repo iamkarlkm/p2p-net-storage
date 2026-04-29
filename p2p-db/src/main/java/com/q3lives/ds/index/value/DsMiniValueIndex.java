@@ -87,7 +87,7 @@ public class DsMiniValueIndex {
             dir.mkdirs();
         }
         this.store = new DsFixedBucketStore(dir.getAbsolutePath());
-        File masterDir = new File(dir, DsFixedBucketStore.INDEPENDENT_SPACE + File.separator + "master");
+        File masterDir = new File(dir, DsFixedBucketStore.DATA_SPACE + File.separator + "master");
         if (!masterDir.exists()) {
             masterDir.mkdirs();
         }
@@ -551,19 +551,19 @@ public class DsMiniValueIndex {
 
     private long allocBlock0() throws IOException {
         byte[] zeros = new byte[BLOCK0_SIZE];
-        long id = store.put(DsFixedBucketStore.INDEPENDENT_SPACE, "vix0", zeros);
+        long id = store.put(DsFixedBucketStore.DATA_SPACE, "vix0", zeros);
         initBlock0Header(id);
         return id;
     }
 
     private long allocBlock1() throws IOException {
         byte[] zeros = new byte[BLOCK1_SIZE];
-        return store.put(DsFixedBucketStore.INDEPENDENT_SPACE, "vix1", zeros);
+        return store.put(DsFixedBucketStore.DATA_SPACE, "vix1", zeros);
     }
 
     private long allocBlock2() throws IOException {
         byte[] zeros = new byte[BLOCK2_SIZE];
-        return store.put(DsFixedBucketStore.INDEPENDENT_SPACE, "vix2", zeros);
+        return store.put(DsFixedBucketStore.DATA_SPACE, "vix2", zeros);
     }
 
     private void initBlock0Header(long id) throws IOException {
@@ -593,46 +593,46 @@ public class DsMiniValueIndex {
     }
 
     private long readLong(String type, long id, int offset) throws IOException {
-        byte[] b = store.get(DsFixedBucketStore.INDEPENDENT_SPACE, type, id, offset, 8);
+        byte[] b = store.get(DsFixedBucketStore.DATA_SPACE, type, id, offset, 8);
         return DsDataUtil.loadLong(b, 0);
     }
 
     private void writeLong(String type, long id, int offset, long value) throws IOException {
         byte[] b = new byte[8];
         DsDataUtil.storeLong(b, 0, value);
-        store.update(DsFixedBucketStore.INDEPENDENT_SPACE, type, id, offset, b);
+        store.update(DsFixedBucketStore.DATA_SPACE, type, id, offset, b);
     }
 
     private int readInt(String type, long id, int offset) throws IOException {
-        byte[] b = store.get(DsFixedBucketStore.INDEPENDENT_SPACE, type, id, offset, 4);
+        byte[] b = store.get(DsFixedBucketStore.DATA_SPACE, type, id, offset, 4);
         return DsDataUtil.loadInt(b, 0);
     }
 
     private void writeInt(String type, long id, int offset, int value) throws IOException {
         byte[] b = new byte[4];
         DsDataUtil.storeInt(b, 0, value);
-        store.update(DsFixedBucketStore.INDEPENDENT_SPACE, type, id, offset, b);
+        store.update(DsFixedBucketStore.DATA_SPACE, type, id, offset, b);
     }
 
     private int readU8(String type, long id, int offset) throws IOException {
-        byte[] b = store.get(DsFixedBucketStore.INDEPENDENT_SPACE, type, id, offset, 1);
+        byte[] b = store.get(DsFixedBucketStore.DATA_SPACE, type, id, offset, 1);
         return b[0] & 0xFF;
     }
 
     private void writeU8(String type, long id, int offset, int value) throws IOException {
         byte[] b = new byte[] { (byte) (value & 0xFF) };
-        store.update(DsFixedBucketStore.INDEPENDENT_SPACE, type, id, offset, b);
+        store.update(DsFixedBucketStore.DATA_SPACE, type, id, offset, b);
     }
 
     private void writeU16(String type, long id, int offset, int value) throws IOException {
         byte[] b = new byte[2];
         b[0] = (byte) (value & 0xFF);
         b[1] = (byte) ((value >>> 8) & 0xFF);
-        store.update(DsFixedBucketStore.INDEPENDENT_SPACE, type, id, offset, b);
+        store.update(DsFixedBucketStore.DATA_SPACE, type, id, offset, b);
     }
 
     private int readU16(String type, long id, int offset) throws IOException {
-        byte[] b = store.get(DsFixedBucketStore.INDEPENDENT_SPACE, type, id, offset, 2);
+        byte[] b = store.get(DsFixedBucketStore.DATA_SPACE, type, id, offset, 2);
         return (b[0] & 0xFF) | ((b[1] & 0xFF) << 8);
     }
 

@@ -39,4 +39,35 @@ class P2PCommand {
   static const int filePutResp = 1002;
   static const int fileGetReq = 1003;
   static const int fileGetResp = 1004;
+
+  static const int imUserLogin = 10000;
+  static const int imUserLogout = 10001;
+  static const int imUserList = 10002;
+  static const int imUserHeartbeat = 10003;
+  static const int imUserStatusUpdate = 10004;
+
+  static const int imChatSend = 11000;
+  static const int imChatReceive = 11001;
+  static const int imChatAck = 11002;
+  static const int imChatStatusUpdate = 11003;
+  static const int imChatHistoryRequest = 11004;
+  static const int imChatHistoryResponse = 11005;
+  static const int imChatRecall = 11006;
+  static const int imChatForward = 11007;
+
+  static const int imGroupCreate = 12000;
+  static const int imGroupDismiss = 12001;
+  static const int imGroupJoin = 12002;
+  static const int imGroupLeave = 12003;
+  static const int imGroupList = 12004;
+  static const int imGroupMembers = 12005;
+  static const int imGroupMessageSend = 12006;
+  static const int imGroupMessageReceive = 12007;
+  static const int imGroupSetAdmin = 12008;
+  static const int imGroupRemoveMember = 12009;
+  static const int imGroupUpdateInfo = 12010;
+
+  static const int imSystemStatus = 13000;
+  static const int imConnectionTest = 13001;
+  static const int imErrorResponse = 13002;
 }

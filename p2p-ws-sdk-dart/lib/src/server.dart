@@ -13,6 +13,7 @@ import "keyfile.dart";
 import "messages/control.dart";
 import "messages/control_plane.dart";
 import "messages/data.dart";
+import "messages/im.dart";
 import "messages/wrapper.dart";
 import "shared_storage.dart";
 import "xor.dart";
@@ -78,6 +79,19 @@ class P2PServer {
 }
 
 class _InboundSession {
+  static final Map<String, _InboundSession> _onlineUsers = {};
+  static final Map<String, List<IMChatModel>> _chatHistory = {};
+  static final Map<String, String> _msgSenderIndex = {};
+  static final Map<String, String> _msgStatusIndex = {};
+  static final Map<String, IMGroupModel> _groups = {};
+  static final Map<String, Set<String>> _groupMembers = {};
+  static final Map<String, List<IMChatModel>> _groupHistory = {};
+  static final Map<String, Set<String>> _groupAdmins = {};
+
+  static const int _imStorePublicU32 = 0xFFFFFFFF;
+  static const int _imStoreGroupU32 = 0xFFFFFFFE;
+  static const int _imStorePrivateU32 = 0xFFFFFFFD;
+
   final WebSocket _ws;
   final P2PServerConfig _cfg;
   final KeyFileReader _keyf;
@@ -85,6 +99,8 @@ class _InboundSession {
   final SharedStorageRegistry _storage;
 
   int? _offset;
+  String? _userId;
+  IMUserModel? _userModel;
 
   late final Map<int, Future<void> Function(P2PWrapper)> _handlers = _buildHandlers();
 
@@ -122,6 +138,15 @@ class _InboundSession {
         }
       }
     } finally {
+      final uid = _userId;
+      if (uid != null) {
+        final cur = _onlineUsers[uid];
+        if (identical(cur, this)) {
+          _onlineUsers.remove(uid);
+        }
+      }
+      _userId = null;
+      _userModel = null;
       await _keyf.close();
     }
   }
@@ -130,6 +155,25 @@ class _InboundSession {
     return {
       P2PCommand.cryptUpdate: _handleCryptUpdate,
       P2PCommand.peerHello: _handlePeerHello,
+
+      P2PCommand.imUserLogin: _handleImUserLogin,
+      P2PCommand.imUserLogout: _handleImUserLogout,
+      P2PCommand.imUserList: _handleImUserList,
+      P2PCommand.imChatSend: _handleImChatSend,
+      P2PCommand.imChatAck: _handleImChatAck,
+      P2PCommand.imChatStatusUpdate: _handleImChatStatusUpdate,
+      P2PCommand.imChatHistoryRequest: _handleImChatHistoryRequest,
+
+      P2PCommand.imGroupCreate: _handleImGroupCreate,
+      P2PCommand.imGroupDismiss: _handleImGroupDismiss,
+      P2PCommand.imGroupJoin: _handleImGroupJoin,
+      P2PCommand.imGroupLeave: _handleImGroupLeave,
+      P2PCommand.imGroupList: _handleImGroupList,
+      P2PCommand.imGroupMembers: _handleImGroupMembers,
+      P2PCommand.imGroupMessageSend: _handleImGroupMessageSend,
+      P2PCommand.imGroupSetAdmin: _handleImGroupSetAdmin,
+      P2PCommand.imGroupRemoveMember: _handleImGroupRemoveMember,
+      P2PCommand.imGroupUpdateInfo: _handleImGroupUpdateInfo,
 
       P2PCommand.putFile: _handlePutFile,
       P2PCommand.forcePutFile: _handlePutFile,
@@ -150,6 +194,746 @@ class _InboundSession {
       P2PCommand.filePutReq: _handleDeprecated,
       P2PCommand.fileGetReq: _handleDeprecated,
     };
+  }
+
+  static bool _isOwner(IMGroupModel g, String operatorId) => g.ownerId == operatorId;
+
+  static bool _isAdmin(String groupId, String userId) => _groupAdmins[groupId]?.contains(userId) ?? false;
+
+  static bool _isOwnerOrAdmin(IMGroupModel g, String userId) => _isOwner(g, userId) || _isAdmin(g.groupId, userId);
+
+  Future<void> _pushSystemEventToUser(String userId, IMSystemEvent e) async {
+    final s = _onlineUsers[userId];
+    if (s == null) return;
+    await s._sendEncrypted(P2PWrapper(seq: 0, command: P2PCommand.imSystemStatus, data: encodeIMSystemEvent(e)));
+  }
+
+  static String _pairKey(String a, String b) => (a.compareTo(b) <= 0) ? "$a|$b" : "$b|$a";
+
+  static int _nowMs() => DateTime.now().millisecondsSinceEpoch;
+
+  static String _newMsgId() => "${_nowMs()}_${Random.secure().nextInt(1 << 30)}";
+
+  Future<void> _handleImUserLogin(P2PWrapper w) async {
+    IMUserModel user;
+    try {
+      user = decodeIMUserModel(w.data);
+    } catch (e) {
+      final err = encodeStdError(StdError("invalid user payload: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    if (user.userId.isEmpty) {
+      final err = encodeStdError(const StdError("user_id required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    _userId = user.userId;
+    _onlineUsers[user.userId] = this;
+    final out = IMUserModel(
+      userId: user.userId,
+      username: user.username,
+      nickname: user.nickname,
+      token: user.token,
+      status: user.status.isEmpty ? "ONLINE" : user.status,
+      ip: user.ip,
+      port: user.port,
+      publicKey: user.publicKey,
+      avatar: user.avatar,
+      signature: user.signature,
+      extra: user.extra,
+    );
+    _userModel = out;
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: encodeIMUserModel(out)));
+  }
+
+  Future<void> _handleImUserLogout(P2PWrapper w) async {
+    final uid = _userId;
+    if (uid != null) {
+      final cur = _onlineUsers[uid];
+      if (identical(cur, this)) {
+        _onlineUsers.remove(uid);
+      }
+      _userId = null;
+    }
+    _userModel = null;
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: Uint8List(0)));
+  }
+
+  Future<void> _handleImUserList(P2PWrapper w) async {
+    final items = <IMUserModel>[];
+    for (final s in _onlineUsers.values) {
+      final m = s._userModel;
+      if (m != null) {
+        items.add(m);
+      }
+    }
+    final out = encodeIMUserListResponse(IMUserListResponse(items));
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: out));
+  }
+
+  Future<void> _handleImChatSend(P2PWrapper w) async {
+    IMChatModel msg;
+    try {
+      msg = decodeIMChatModel(w.data);
+    } catch (e) {
+      final err = encodeStdError(StdError("invalid chat payload: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    if (msg.senderId.isEmpty || msg.receiverId.isEmpty) {
+      final err = encodeStdError(const StdError("sender_id and receiver_id required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+
+    final msgId = msg.msgId.isEmpty ? _newMsgId() : msg.msgId;
+    final ts = msg.timestamp <= 0 ? _nowMs() : msg.timestamp;
+    final normalized = IMChatModel(
+      msgId: msgId,
+      senderId: msg.senderId,
+      receiverId: msg.receiverId,
+      receiverType: msg.receiverType,
+      msgType: msg.msgType,
+      content: msg.content,
+      timestamp: ts,
+      extra: msg.extra,
+      quoteMsgId: msg.quoteMsgId,
+      atUsers: msg.atUsers,
+      fileInfo: msg.fileInfo,
+    );
+
+    IMChatModel finalMsg;
+    try {
+      finalMsg = await _persistImFileIfNeeded(normalized, groupId: null);
+    } catch (e) {
+      final err = encodeStdError(StdError("im file store failed: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+
+    final key = _pairKey(finalMsg.senderId, finalMsg.receiverId);
+    final list = (_chatHistory[key] ??= <IMChatModel>[]);
+    list.add(finalMsg);
+    if (list.length > 200) {
+      list.removeRange(0, list.length - 200);
+    }
+    _msgSenderIndex[msgId] = finalMsg.senderId;
+    _msgStatusIndex[msgId] = "DELIVERED";
+
+    final receiver = _onlineUsers[finalMsg.receiverId];
+    if (receiver != null) {
+      await receiver._sendEncrypted(P2PWrapper(seq: 0, command: P2PCommand.imChatReceive, data: encodeIMChatModel(finalMsg)));
+    }
+    final ack = IMChatAck(
+      msgId: msgId,
+      userId: finalMsg.senderId,
+      timestamp: _nowMs(),
+      ackType: "DELIVERED",
+      peerId: finalMsg.receiverId,
+    );
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: encodeIMChatAck(ack)));
+  }
+
+  Future<void> _handleImChatAck(P2PWrapper w) async {
+    IMChatAck ack;
+    try {
+      ack = decodeIMChatAck(w.data);
+    } catch (e) {
+      final err = encodeStdError(StdError("invalid ack payload: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    if (ack.msgId.isEmpty) {
+      final err = encodeStdError(const StdError("msg_id required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    final senderId = _msgSenderIndex[ack.msgId];
+    if (senderId != null) {
+      final sender = _onlineUsers[senderId];
+      if (sender != null) {
+        await sender._sendEncrypted(P2PWrapper(seq: 0, command: P2PCommand.imChatAck, data: encodeIMChatAck(ack)));
+      }
+    }
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: Uint8List(0)));
+  }
+
+  Future<void> _handleImChatStatusUpdate(P2PWrapper w) async {
+    IMChatAck ack;
+    try {
+      ack = decodeIMChatAck(w.data);
+    } catch (e) {
+      final err = encodeStdError(StdError("invalid status payload: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    if (ack.msgId.isEmpty) {
+      final err = encodeStdError(const StdError("msg_id required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    final senderId = _msgSenderIndex[ack.msgId];
+    if (senderId != null) {
+      final sender = _onlineUsers[senderId];
+      if (sender != null) {
+        await sender._sendEncrypted(P2PWrapper(seq: 0, command: P2PCommand.imChatStatusUpdate, data: encodeIMChatAck(ack)));
+      }
+    }
+    if (ack.ackType.isNotEmpty) {
+      _msgStatusIndex[ack.msgId] = ack.ackType;
+    }
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: Uint8List(0)));
+  }
+
+  Future<void> _handleImChatHistoryRequest(P2PWrapper w) async {
+    IMChatHistoryRequest q;
+    try {
+      q = decodeIMChatHistoryRequest(w.data);
+    } catch (e) {
+      final err = encodeStdError(StdError("invalid history payload: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    if (q.userId.isEmpty || q.peerId.isEmpty) {
+      final err = encodeStdError(const StdError("user_id and peer_id required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    final peerId = q.peerId;
+    final groupList = _groupHistory[peerId];
+    final list = groupList ?? (_chatHistory[_pairKey(q.userId, peerId)] ?? const <IMChatModel>[]);
+    final limit = q.limit <= 0 ? 50 : q.limit;
+    final start = list.length > limit ? (list.length - limit) : 0;
+    final items = list.sublist(start).map(_applyStatusToChat).toList(growable: false);
+    await _sendEncrypted(
+      P2PWrapper(
+        seq: w.seq,
+        command: P2PCommand.imChatHistoryResponse,
+        data: encodeIMChatHistoryResponse(IMChatHistoryResponse(items)),
+      ),
+    );
+  }
+
+  static IMChatModel _applyStatusToChat(IMChatModel m) {
+    final status = _msgStatusIndex[m.msgId];
+    if (status == null || status.isEmpty) return m;
+    final extra = _mergeStatusExtra(m.extra, status);
+    if (extra == m.extra) return m;
+    return IMChatModel(
+      msgId: m.msgId,
+      senderId: m.senderId,
+      receiverId: m.receiverId,
+      receiverType: m.receiverType,
+      msgType: m.msgType,
+      content: m.content,
+      timestamp: m.timestamp,
+      extra: extra,
+      quoteMsgId: m.quoteMsgId,
+      atUsers: m.atUsers,
+      fileInfo: m.fileInfo,
+    );
+  }
+
+  static String _mergeStatusExtra(String extra, String status) {
+    const key = "|status:";
+    final idx = extra.indexOf(key);
+    if (idx < 0) return "$extra$key$status";
+    final end = extra.indexOf("|", idx + 1);
+    if (end < 0) return "${extra.substring(0, idx)}$key$status";
+    return "${extra.substring(0, idx)}$key$status${extra.substring(end)}";
+  }
+
+  Future<void> _handleImGroupCreate(P2PWrapper w) async {
+    IMGroupModel inGroup;
+    try {
+      inGroup = decodeIMGroupModel(w.data);
+    } catch (e) {
+      final err = encodeStdError(StdError("invalid group payload: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    final ownerId = _userId ?? inGroup.ownerId;
+    if (ownerId.isEmpty) {
+      final err = encodeStdError(const StdError("owner_id required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    final groupId = inGroup.groupId.isEmpty ? "g_${_newMsgId()}" : inGroup.groupId;
+    final out = IMGroupModel(
+      groupId: groupId,
+      name: inGroup.name,
+      ownerId: ownerId,
+      avatar: inGroup.avatar,
+      notice: inGroup.notice,
+      extra: inGroup.extra,
+      adminIds: const <String>[],
+    );
+    _groups[groupId] = out;
+    (_groupMembers[groupId] ??= <String>{}).add(ownerId);
+    _groupAdmins[groupId] = <String>{};
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: encodeIMGroupModel(out)));
+  }
+
+  Future<void> _handleImGroupDismiss(P2PWrapper w) async {
+    IMGroupDismissRequest r;
+    try {
+      r = decodeIMGroupDismissRequest(w.data);
+    } catch (e) {
+      final err = encodeStdError(StdError("invalid group dismiss payload: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    if (r.groupId.isEmpty || r.operatorId.isEmpty) {
+      final err = encodeStdError(const StdError("group_id and operator_id required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    final g = _groups[r.groupId];
+    if (g == null) {
+      final err = encodeStdError(const StdError("group not found"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdError, data: err));
+      return;
+    }
+    if (!_isOwner(g, r.operatorId)) {
+      final err = encodeStdError(const StdError("permission denied"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdError, data: err));
+      return;
+    }
+    final members = _groupMembers[r.groupId] ?? const <String>{};
+    final e = IMSystemEvent(
+      type: "GROUP_DISMISSED",
+      groupId: r.groupId,
+      operatorId: r.operatorId,
+      targetId: "",
+      timestamp: _nowMs(),
+      message: "group dismissed",
+    );
+    _groups.remove(r.groupId);
+    _groupMembers.remove(r.groupId);
+    _groupHistory.remove(r.groupId);
+    _groupAdmins.remove(r.groupId);
+    for (final uid in members) {
+      await _pushSystemEventToUser(uid, e);
+    }
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: Uint8List(0)));
+  }
+
+  Future<void> _handleImGroupJoin(P2PWrapper w) async {
+    final uid = _userId;
+    if (uid == null || uid.isEmpty) {
+      final err = encodeStdError(const StdError("login required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdError, data: err));
+      return;
+    }
+    IMGroupModel g;
+    try {
+      g = decodeIMGroupModel(w.data);
+    } catch (e) {
+      final err = encodeStdError(StdError("invalid group payload: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    if (g.groupId.isEmpty) {
+      final err = encodeStdError(const StdError("group_id required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    if (_groups[g.groupId] == null) {
+      final err = encodeStdError(const StdError("group not found"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdError, data: err));
+      return;
+    }
+    (_groupMembers[g.groupId] ??= <String>{}).add(uid);
+    final e = IMSystemEvent(
+      type: "GROUP_MEMBER_JOINED",
+      groupId: g.groupId,
+      operatorId: uid,
+      targetId: uid,
+      timestamp: _nowMs(),
+      message: "joined group",
+    );
+    final members = _groupMembers[g.groupId] ?? const <String>{};
+    for (final m in members) {
+      await _pushSystemEventToUser(m, e);
+    }
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: Uint8List(0)));
+  }
+
+  Future<void> _handleImGroupLeave(P2PWrapper w) async {
+    final uid = _userId;
+    if (uid == null || uid.isEmpty) {
+      final err = encodeStdError(const StdError("login required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdError, data: err));
+      return;
+    }
+    IMGroupModel g;
+    try {
+      g = decodeIMGroupModel(w.data);
+    } catch (e) {
+      final err = encodeStdError(StdError("invalid group payload: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    if (g.groupId.isEmpty) {
+      final err = encodeStdError(const StdError("group_id required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    _groupMembers[g.groupId]?.remove(uid);
+    _groupAdmins[g.groupId]?.remove(uid);
+    final e = IMSystemEvent(
+      type: "GROUP_MEMBER_LEFT",
+      groupId: g.groupId,
+      operatorId: uid,
+      targetId: uid,
+      timestamp: _nowMs(),
+      message: "left group",
+    );
+    final members = _groupMembers[g.groupId] ?? const <String>{};
+    for (final m in members) {
+      await _pushSystemEventToUser(m, e);
+    }
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: Uint8List(0)));
+  }
+
+  Future<void> _handleImGroupList(P2PWrapper w) async {
+    final uid = _userId;
+    if (uid == null || uid.isEmpty) {
+      final out = encodeIMGroupListResponse(IMGroupListResponse(_groups.values.toList(growable: false)));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: out));
+      return;
+    }
+    final items = <IMGroupModel>[];
+    for (final g in _groups.values) {
+      final members = _groupMembers[g.groupId];
+      if (members == null || !members.contains(uid)) continue;
+      final admins = _groupAdmins[g.groupId] ?? const <String>{};
+      items.add(IMGroupModel(
+        groupId: g.groupId,
+        name: g.name,
+        ownerId: g.ownerId,
+        avatar: g.avatar,
+        notice: g.notice,
+        extra: g.extra,
+        adminIds: admins.toList(growable: false),
+      ));
+    }
+    final out = encodeIMGroupListResponse(IMGroupListResponse(items));
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: out));
+  }
+
+  Future<void> _handleImGroupMembers(P2PWrapper w) async {
+    IMGroupModel g;
+    try {
+      g = decodeIMGroupModel(w.data);
+    } catch (e) {
+      final err = encodeStdError(StdError("invalid group payload: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    if (g.groupId.isEmpty) {
+      final err = encodeStdError(const StdError("group_id required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    final members = _groupMembers[g.groupId] ?? const <String>{};
+    final items = <IMUserModel>[];
+    for (final uid in members) {
+      final s = _onlineUsers[uid];
+      final m = s?._userModel;
+      if (m != null) {
+        items.add(m);
+      }
+    }
+    final out = encodeIMGroupMembersResponse(IMGroupMembersResponse(groupId: g.groupId, items: items));
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: out));
+  }
+
+  Future<void> _handleImGroupMessageSend(P2PWrapper w) async {
+    IMChatModel msg;
+    try {
+      msg = decodeIMChatModel(w.data);
+    } catch (e) {
+      final err = encodeStdError(StdError("invalid group chat payload: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    if (msg.senderId.isEmpty || msg.receiverId.isEmpty) {
+      final err = encodeStdError(const StdError("sender_id and receiver_id(group_id) required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    final groupId = msg.receiverId;
+    if (_groups[groupId] == null) {
+      final err = encodeStdError(const StdError("group not found"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdError, data: err));
+      return;
+    }
+    final msgId = msg.msgId.isEmpty ? _newMsgId() : msg.msgId;
+    final ts = msg.timestamp <= 0 ? _nowMs() : msg.timestamp;
+    final normalized = IMChatModel(
+      msgId: msgId,
+      senderId: msg.senderId,
+      receiverId: groupId,
+      receiverType: msg.receiverType.isEmpty ? "GROUP" : msg.receiverType,
+      msgType: msg.msgType,
+      content: msg.content,
+      timestamp: ts,
+      extra: msg.extra,
+      quoteMsgId: msg.quoteMsgId,
+      atUsers: msg.atUsers,
+      fileInfo: msg.fileInfo,
+    );
+
+    IMChatModel finalMsg;
+    try {
+      finalMsg = await _persistImFileIfNeeded(normalized, groupId: groupId);
+    } catch (e) {
+      final err = encodeStdError(StdError("im file store failed: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    final list = (_groupHistory[groupId] ??= <IMChatModel>[]);
+    list.add(finalMsg);
+    if (list.length > 200) {
+      list.removeRange(0, list.length - 200);
+    }
+    _msgSenderIndex[msgId] = finalMsg.senderId;
+    _msgStatusIndex[msgId] = "DELIVERED";
+
+    final members = _groupMembers[groupId] ?? const <String>{};
+    for (final uid in members) {
+      if (uid == finalMsg.senderId) continue;
+      final s = _onlineUsers[uid];
+      if (s == null) continue;
+      await s._sendEncrypted(P2PWrapper(seq: 0, command: P2PCommand.imGroupMessageReceive, data: encodeIMChatModel(finalMsg)));
+    }
+
+    final ack = IMChatAck(
+      msgId: msgId,
+      userId: finalMsg.senderId,
+      timestamp: _nowMs(),
+      ackType: "DELIVERED",
+      peerId: groupId,
+    );
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: encodeIMChatAck(ack)));
+  }
+
+  Future<IMChatModel> _persistImFileIfNeeded(IMChatModel msg, {required String? groupId}) async {
+    final fi = msg.fileInfo;
+    if (fi == null) return msg;
+    if (fi.data.isEmpty) return msg;
+
+    final receiverType = msg.receiverType.trim();
+    final defaultStoreId = receiverType == "GROUP" ? _imStoreGroupU32 : _imStorePrivateU32;
+    final storeId = fi.storeId == 0 ? defaultStoreId : (fi.storeId & 0xFFFFFFFF);
+
+    String prefix;
+    if (storeId == _imStorePublicU32) {
+      prefix = msg.msgId;
+    } else if (storeId == _imStoreGroupU32) {
+      final gid = groupId ?? "";
+      if (gid.isEmpty) {
+        throw StateError("group_id required for IM group storage");
+      }
+      prefix = "$gid/${msg.msgId}";
+    } else if (storeId == _imStorePrivateU32) {
+      prefix = "${msg.senderId}/${msg.msgId}";
+    } else {
+      prefix = msg.msgId;
+    }
+
+    final name = _safeBaseName(fi.path);
+    final relPath = "$prefix/$name";
+    final file = _storage.getSandboxFileForWrite(storeId, relPath);
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(fi.data, flush: true);
+
+    final md5 = fi.md5.isNotEmpty ? fi.md5 : crypto.md5.convert(fi.data).toString();
+    final outFi = FileDataModel(storeId: storeId, length: fi.data.length, data: Uint8List(0), path: relPath, md5: md5, blockSize: fi.blockSize);
+    return IMChatModel(
+      msgId: msg.msgId,
+      senderId: msg.senderId,
+      receiverId: msg.receiverId,
+      receiverType: msg.receiverType,
+      msgType: msg.msgType,
+      content: msg.content,
+      timestamp: msg.timestamp,
+      extra: msg.extra,
+      quoteMsgId: msg.quoteMsgId,
+      atUsers: msg.atUsers,
+      fileInfo: outFi,
+    );
+  }
+
+  static String _safeBaseName(String raw) {
+    final s = raw.trim();
+    if (s.isEmpty) return "file.bin";
+    final parts = s.replaceAll("\\", "/").split("/");
+    for (var i = parts.length - 1; i >= 0; i--) {
+      final p = parts[i].trim();
+      if (p.isEmpty) continue;
+      if (p == "." || p == "..") break;
+      return p;
+    }
+    return "file.bin";
+  }
+
+  Future<void> _handleImGroupRemoveMember(P2PWrapper w) async {
+    IMGroupRemoveMemberRequest r;
+    try {
+      r = decodeIMGroupRemoveMemberRequest(w.data);
+    } catch (e) {
+      final err = encodeStdError(StdError("invalid remove_member payload: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    if (r.groupId.isEmpty || r.operatorId.isEmpty || r.memberId.isEmpty) {
+      final err = encodeStdError(const StdError("group_id/operator_id/member_id required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    final g = _groups[r.groupId];
+    if (g == null) {
+      final err = encodeStdError(const StdError("group not found"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdError, data: err));
+      return;
+    }
+    if (!_isOwnerOrAdmin(g, r.operatorId)) {
+      final err = encodeStdError(const StdError("permission denied"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdError, data: err));
+      return;
+    }
+    _groupMembers[r.groupId]?.remove(r.memberId);
+    _groupAdmins[r.groupId]?.remove(r.memberId);
+    final e = IMSystemEvent(
+      type: "GROUP_MEMBER_REMOVED",
+      groupId: r.groupId,
+      operatorId: r.operatorId,
+      targetId: r.memberId,
+      timestamp: _nowMs(),
+      message: "removed from group",
+    );
+    final members = _groupMembers[r.groupId] ?? const <String>{};
+    for (final uid in members) {
+      await _pushSystemEventToUser(uid, e);
+    }
+    await _pushSystemEventToUser(r.memberId, e);
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: Uint8List(0)));
+  }
+
+  Future<void> _handleImGroupUpdateInfo(P2PWrapper w) async {
+    IMGroupUpdateInfoRequest r;
+    try {
+      r = decodeIMGroupUpdateInfoRequest(w.data);
+    } catch (e) {
+      final err = encodeStdError(StdError("invalid update_info payload: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    if (r.groupId.isEmpty || r.operatorId.isEmpty) {
+      final err = encodeStdError(const StdError("group_id and operator_id required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    final g = _groups[r.groupId];
+    if (g == null) {
+      final err = encodeStdError(const StdError("group not found"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdError, data: err));
+      return;
+    }
+    if (!_isOwnerOrAdmin(g, r.operatorId)) {
+      final err = encodeStdError(const StdError("permission denied"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdError, data: err));
+      return;
+    }
+    final admins = _groupAdmins[r.groupId] ?? const <String>{};
+    final out = IMGroupModel(
+      groupId: g.groupId,
+      name: r.name.isEmpty ? g.name : r.name,
+      ownerId: g.ownerId,
+      avatar: r.avatar.isEmpty ? g.avatar : r.avatar,
+      notice: r.notice.isEmpty ? g.notice : r.notice,
+      extra: r.extra.isEmpty ? g.extra : r.extra,
+      adminIds: admins.toList(growable: false),
+    );
+    _groups[r.groupId] = out;
+    final e = IMSystemEvent(
+      type: "GROUP_INFO_UPDATED",
+      groupId: r.groupId,
+      operatorId: r.operatorId,
+      targetId: "",
+      timestamp: _nowMs(),
+      message: "group info updated",
+    );
+    final members = _groupMembers[r.groupId] ?? const <String>{};
+    for (final uid in members) {
+      await _pushSystemEventToUser(uid, e);
+    }
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: encodeIMGroupModel(out)));
+  }
+
+  Future<void> _handleImGroupSetAdmin(P2PWrapper w) async {
+    IMGroupSetAdminRequest r;
+    try {
+      r = decodeIMGroupSetAdminRequest(w.data);
+    } catch (e) {
+      final err = encodeStdError(StdError("invalid set_admin payload: $e"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    if (r.groupId.isEmpty || r.operatorId.isEmpty || r.memberId.isEmpty) {
+      final err = encodeStdError(const StdError("group_id/operator_id/member_id required"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.invalidData, data: err));
+      return;
+    }
+    final g = _groups[r.groupId];
+    if (g == null) {
+      final err = encodeStdError(const StdError("group not found"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdError, data: err));
+      return;
+    }
+    if (!_isOwner(g, r.operatorId)) {
+      final err = encodeStdError(const StdError("permission denied"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdError, data: err));
+      return;
+    }
+    final members = _groupMembers[r.groupId] ?? const <String>{};
+    if (!members.contains(r.memberId)) {
+      final err = encodeStdError(const StdError("member not in group"));
+      await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdError, data: err));
+      return;
+    }
+    final admins = (_groupAdmins[r.groupId] ??= <String>{});
+    if (r.isAdmin) {
+      admins.add(r.memberId);
+    } else {
+      admins.remove(r.memberId);
+    }
+    final out = IMGroupModel(
+      groupId: g.groupId,
+      name: g.name,
+      ownerId: g.ownerId,
+      avatar: g.avatar,
+      notice: g.notice,
+      extra: g.extra,
+      adminIds: admins.toList(growable: false),
+    );
+    _groups[r.groupId] = out;
+    final e = IMSystemEvent(
+      type: "GROUP_ROLE_CHANGED",
+      groupId: r.groupId,
+      operatorId: r.operatorId,
+      targetId: r.memberId,
+      timestamp: _nowMs(),
+      message: r.isAdmin ? "set admin" : "unset admin",
+    );
+    for (final uid in members) {
+      await _pushSystemEventToUser(uid, e);
+    }
+    await _pushSystemEventToUser(r.memberId, e);
+    await _sendEncrypted(P2PWrapper(seq: w.seq, command: P2PCommand.stdOk, data: encodeIMGroupModel(out)));
   }
 
   Future<void> _handleHand(P2PWrapper w) async {

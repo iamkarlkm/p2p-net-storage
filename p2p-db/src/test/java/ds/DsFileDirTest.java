@@ -1,6 +1,6 @@
 package ds;
 
-import com.q3lives.ds.fs.DsFile;
+import com.q3lives.ds.fs.Ds256FileSystem;
 import com.q3lives.ds.fs.FileMetadata;
 import org.junit.Before;
 import org.junit.Test;
@@ -12,7 +12,7 @@ import static org.junit.Assert.*;
 
 public class DsFileDirTest {
     private static final String TEST_DIR = "target/test-ds-file-dir";
-    private DsFile fs;
+    private Ds256FileSystem fs;
 
     @Before
     public void setUp() throws IOException {
@@ -21,7 +21,7 @@ public class DsFileDirTest {
             deleteRecursively(dir);
         }
         dir.mkdirs();
-        fs = new DsFile(TEST_DIR);
+        fs = new Ds256FileSystem(TEST_DIR);
     }
 
     private void deleteRecursively(File file) {
@@ -58,10 +58,10 @@ public class DsFileDirTest {
     @Test
     public void testSystemPath() throws Exception {
         byte[] content = "sys".getBytes(StandardCharsets.UTF_8);
-        fs.saveFile("$/cfg/sys.txt", content, new FileMetadata());
-        assertArrayEquals(content, fs.getFileContentByPath("$/cfg/sys.txt"));
+        fs.saveFile("$cfg/sys.txt", content, new FileMetadata());
+        assertArrayEquals(content, fs.getFileContentByPath("$cfg/sys.txt"));
 
-        List<Long> cfgEntries = fs.listDir("$/cfg", 0, 10);
+        List<Long> cfgEntries = fs.listDir("$cfg", 0, 10);
         assertFalse(cfgEntries.isEmpty());
     }
 

@@ -58,7 +58,7 @@ public class DsSha256KV {
             dir.mkdirs();
         }
         this.bucketStore = new DsFixedBucketStore(dir.getAbsolutePath());
-        File masterDir = new File(dir, DsFixedBucketStore.INDEPENDENT_SPACE + File.separator + "master");
+        File masterDir = new File(dir, DsFixedBucketStore.DATA_SPACE + File.separator + "master");
         if (!masterDir.exists()) {
             masterDir.mkdirs();
         }
@@ -131,13 +131,13 @@ public class DsSha256KV {
         int keyLen = oldKeyLen;
         int keyHash32 = DsDataUtil.hash32(keyBytes);
         if (keyId == 0) {
-            keyId = bucketStore.put(DsFixedBucketStore.INDEPENDENT_SPACE, "key", keyBytes);
+            keyId = bucketStore.put(DsFixedBucketStore.DATA_SPACE, "key", keyBytes);
             keyLen = keyBytes.length;
         }
 
         ValueRef valueRef = storeValue(valueBytes);
         byte[] record = buildIndexRecord(keyLen, keyHash32, keyId, valueRef.valueLen, valueRef.valueHash32, valueRef.valueId);
-        long indexId = bucketStore.put(DsFixedBucketStore.INDEPENDENT_SPACE, "index", record);
+        long indexId = bucketStore.put(DsFixedBucketStore.DATA_SPACE, "index", record);
         masterIndex.put(keyBytes, indexId, existed);
 
         if (oldIndexId != null) {
@@ -257,7 +257,7 @@ public class DsSha256KV {
         int valueLen = valueBytes.length;
         int valueHash32 = DsDataUtil.hash32(valueBytes);
         if (valueLen <= MAX_VALUE_SIZE) {
-            long valueId = bucketStore.put(DsFixedBucketStore.INDEPENDENT_SPACE, "value", valueBytes);
+            long valueId = bucketStore.put(DsFixedBucketStore.DATA_SPACE, "value", valueBytes);
             return new ValueRef(valueLen, valueHash32, valueId);
         }
 
@@ -266,16 +266,16 @@ public class DsSha256KV {
         for (int i = 0; i < numChunks; i++) {
             int offset = i * MAX_VALUE_SIZE;
             int len = Math.min(MAX_VALUE_SIZE, valueLen - offset);
-            byte[] chunk = new byte[len];
-            System.arraycopy(valueBytes, offset, chunk, 0, len);
-            chunkIds[i] = bucketStore.put(DsFixedBucketStore.INDEPENDENT_SPACE, "value", chunk);
+//            byte[] chunk = new byte[len];
+//            System.arraycopy(valueBytes, offset, chunk, 0, len);
+            chunkIds[i] = bucketStore.put(DsFixedBucketStore.DATA_SPACE, "value", valueBytes,offset,len);
         }
 
         byte[] listData = new byte[numChunks * 8];
         for (int i = 0; i < numChunks; i++) {
             DsDataUtil.storeLong(listData, i * 8, chunkIds[i]);
         }
-        long listId = bucketStore.put(DsFixedBucketStore.INDEPENDENT_SPACE, "value", listData);
+        long listId = bucketStore.putMeta( "value", listData);
         return new ValueRef(valueLen, valueHash32, listId);
     }
 
@@ -288,14 +288,14 @@ public class DsSha256KV {
         }
 
         int numChunks = (valueLen + MAX_VALUE_SIZE - 1) / MAX_VALUE_SIZE;
-        byte[] listData = bucketStore.get("value", valueId, numChunks * 8);
+        byte[] listData = bucketStore.getMeta("value", valueId, numChunks * 8);
         byte[] out = new byte[valueLen];
         int dst = 0;
         for (int i = 0; i < numChunks; i++) {
             long chunkId = DsDataUtil.loadLong(listData, i * 8);
             int len = Math.min(MAX_VALUE_SIZE, valueLen - dst);
-            byte[] chunk = bucketStore.get("value", chunkId, len);
-            System.arraycopy(chunk, 0, out, dst, len);
+            bucketStore.get("value", chunkId, len,out,dst);
+            //System.arraycopy(chunk, 0, out, dst, len);
             dst += len;
         }
         return out;
@@ -311,7 +311,7 @@ public class DsSha256KV {
         }
 
         int numChunks = (valueLen + MAX_VALUE_SIZE - 1) / MAX_VALUE_SIZE;
-        byte[] listData = bucketStore.get("value", valueId, numChunks * 8);
+        byte[] listData = bucketStore.getMeta("value", valueId, numChunks * 8);
         for (int i = 0; i < numChunks; i++) {
             long chunkId = DsDataUtil.loadLong(listData, i * 8);
             bucketStore.remove("value", chunkId);

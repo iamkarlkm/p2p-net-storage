@@ -1,0 +1,128 @@
+syntax = "proto3";
+
+package p2pws;
+
+import "p2p_data.proto";
+
+// IM 业务载荷（用于 P2PWrapper.data）
+// 命令号段建议与 p2p-core 的 P2PCommand 对齐：10000-13099
+
+message IMUserModel {
+  string user_id = 1;
+  string username = 2;
+  string nickname = 3;
+  string token = 4;
+  string status = 5;
+  string ip = 6;
+  uint32 port = 7;
+  string public_key = 8;
+  string avatar = 9;
+  string signature = 10;
+  string extra = 11;
+}
+
+message IMChatModel {
+  string msg_id = 1;
+  string sender_id = 2;
+  string receiver_id = 3;
+  string receiver_type = 4; // USER / GROUP
+  string msg_type = 5; // TEXT / IMAGE / FILE / ...
+  string content = 6;
+  uint64 timestamp = 7;
+  string extra = 8;
+  string quote_msg_id = 9;
+  repeated string at_users = 10;
+  FileDataModel file_info = 11;
+}
+
+message IMChatAck {
+  string msg_id = 1;
+  string user_id = 2;
+  uint64 timestamp = 3;
+  string ack_type = 4; // DELIVERED / READ / STATUS
+  string peer_id = 5; // 对端 userId 或 groupId（可选，用于路由/展示）
+}
+
+message IMChatHistoryRequest {
+  string user_id = 1;
+  string peer_id = 2;
+  uint32 limit = 3;
+}
+
+message IMChatHistoryResponse {
+  repeated IMChatModel items = 1;
+}
+
+message IMGroupModel {
+  string group_id = 1;
+  string name = 2;
+  string owner_id = 3;
+  string avatar = 4;
+  string notice = 5;
+  string extra = 6;
+  repeated string admin_ids = 7;
+}
+
+message IMGroupDismissRequest {
+  string group_id = 1;
+  string operator_id = 2;
+}
+
+message IMGroupRemoveMemberRequest {
+  string group_id = 1;
+  string operator_id = 2;
+  string member_id = 3;
+}
+
+message IMGroupUpdateInfoRequest {
+  string group_id = 1;
+  string operator_id = 2;
+  string name = 3;
+  string avatar = 4;
+  string notice = 5;
+  string extra = 6;
+}
+
+message IMGroupSetAdminRequest {
+  string group_id = 1;
+  string operator_id = 2;
+  string member_id = 3;
+  bool is_admin = 4;
+}
+
+message IMSystemEvent {
+  string type = 1; // GROUP_DISMISSED / GROUP_MEMBER_REMOVED / GROUP_ROLE_CHANGED / ...
+  string group_id = 2;
+  string operator_id = 3;
+  string target_id = 4;
+  uint64 timestamp = 5;
+  string message = 6;
+}
+
+message IMGroupMembersResponse {
+  string group_id = 1;
+  repeated IMUserModel items = 2;
+}
+
+message IMGroupListRequest {
+  string user_id = 1;
+}
+
+message IMGroupListResponse {
+  repeated IMGroupModel items = 1;
+}
+
+message IMGroupHistoryRequest {
+  string user_id = 1;
+  string group_id = 2;
+  uint32 limit = 3;
+}
+
+message IMGroupHistoryResponse {
+  string group_id = 1;
+  repeated IMChatModel items = 2;
+}
+
+message IMUserListResponse {
+  repeated IMUserModel items = 1;
+}

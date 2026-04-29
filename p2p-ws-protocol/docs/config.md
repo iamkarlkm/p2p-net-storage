@@ -33,8 +33,37 @@
 - `ws_path`：WebSocket path，例如 `/p2p`
 - `keyfile_path`：离线 keyfile 路径（相对路径相对于 YAML 文件所在目录解析）
 - `magic`/`version`/`flags_plain`/`flags_encrypted`/`max_frame_payload`：同 client
+- `storage_locations`：可选；共享文件空间映射（`store_id -> dir`），用于 `GET_FILE/PUT_FILE/...` 等文件命令
+- `im_storage_locations`：可选；IM 文件交换共享空间映射（`store_id -> dir`），用于 `IMChatModel.file_info` 相关落盘/读取
 
 示例文件：`examples/server.yaml`
+
+## peer.yaml（peer 节点）
+
+peer 节点通常同时具备：
+- 作为 client 接入 center 的能力（`ws_url`）
+- 作为 server 提供本地 WS 服务的能力（`listen_port`）
+
+字段：在 `client.yaml` 的基础上增加：
+- `listen_port`：本机 peer server 监听端口
+- `storage_locations`：共享文件空间映射（`store_id -> dir`），用于 `GET_FILE/PUT_FILE/...` 等文件命令
+- `im_storage_locations`：IM 文件交换共享空间映射（`store_id -> dir`）
+
+### IM 预定义共享空间（3 个）
+
+IM 文件交换统一使用 3 个预定义空间：
+- `public`：公共共享空间
+- `group`：群共享空间（实际落盘路径会自动附加 `group_id` 子目录）
+- `private`：用户私有空间（实际落盘路径会自动附加 `user_id` 子目录）
+
+这些空间在 `FileDataModel.store_id` 上使用“负数语义”的预留编号：
+- `-1`：public
+- `-2`：group
+- `-3`：private
+
+注意：协议里 `store_id` 是 `uint32`。实现上会把 `-1/-2/-3` 按 32-bit 无符号解释编码到 wire（例如 `-1` 对应 `4294967295`），因此：
+- YAML 中推荐直接写 `-1/-2/-3`
+- 程序内部需要按 `uint32` 处理/比较（避免语言差异导致的负数编码问题）
 
 ## center.yaml / registered_users.yaml
 

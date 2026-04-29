@@ -16,3 +16,14 @@ buildNumber.properties
 # JDT-specific (Eclipse Java Development Tools)
 .classpath
 *.dat
+*.py
+*.zip
+test_*
+
+
+# brain:begin gitignore-session
+.brain/session.json
+.brain/sessions/
+.brain/policy.override.yaml
+.brain/state/
+# brain:end gitignore-session

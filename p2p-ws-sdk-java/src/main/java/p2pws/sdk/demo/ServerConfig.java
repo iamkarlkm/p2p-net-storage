@@ -8,7 +8,8 @@ public record ServerConfig(
     int version,
     int flagsPlain,
     int flagsEncrypted,
-    int maxFramePayload
+    int maxFramePayload,
+    java.util.Map<Integer, String> storageLocations,
+    java.util.Map<Integer, String> imStorageLocations
 ) {
 }
-

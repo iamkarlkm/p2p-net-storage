@@ -14,7 +14,7 @@ public class DsFixedBucketStoreUpdatePolicyTest {
         dir.mkdirs();
 
         DsFixedBucketStore store = new DsFixedBucketStore(dir.getPath());
-        String space = DsFixedBucketStore.INDEPENDENT_SPACE;
+        String space = DsFixedBucketStore.DATA_SPACE;
         String type = "value";
 
         byte[] v1 = new byte[300];

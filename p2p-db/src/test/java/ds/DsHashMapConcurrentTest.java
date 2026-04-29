@@ -1,6 +1,6 @@
 package ds;
 
-import com.q3lives.ds.collections.DsHashMapI64;
+import com.q3lives.ds.collections.DsHashMap;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -16,22 +16,33 @@ import static org.junit.Assert.*;
 
 public class DsHashMapConcurrentTest {
 
-    private DsHashMapI64 dsHashMap;
+    private DsHashMap dsHashMap;
     private File dataFile;
 
     @Before
     public void setUp() throws Exception {
-        dataFile = new File("test_dshashmap_concurrent.dat");
+        dataFile = File.createTempFile("test_dshashmap_concurrent_", ".dat");
+        dataFile.deleteOnExit();
         deleteWithSidecars(dataFile);
-        dsHashMap = new DsHashMapI64(dataFile);
+        dsHashMap = new DsHashMap(dataFile);
     }
 
     private static void deleteWithSidecars(File f) {
         File[] files = new File[] {
                 f,
+                new File(f.getAbsolutePath() + ".e16"),
+                new File(f.getAbsolutePath() + ".e16.next"),
+                new File(f.getAbsolutePath() + ".e16.free"),
+                new File(f.getAbsolutePath() + ".e16.free.tmp"),
+                new File(f.getAbsolutePath() + ".e32"),
+                new File(f.getAbsolutePath() + ".e32.next"),
+                new File(f.getAbsolutePath() + ".e32.free"),
+                new File(f.getAbsolutePath() + ".e32.free.tmp"),
+                new File(f.getAbsolutePath() + ".e64"),
+                new File(f.getAbsolutePath() + ".e64.next"),
+                new File(f.getAbsolutePath() + ".e64.free"),
+                new File(f.getAbsolutePath() + ".e64.free.tmp"),
                 new File(f.getAbsolutePath() + ".k16"),
-                new File(f.getAbsolutePath() + ".k32"),
-                new File(f.getAbsolutePath() + ".k64"),
                 new File(f.getAbsolutePath() + ".m32"),
                 new File(f.getAbsolutePath() + ".m64")
         };
@@ -111,7 +122,7 @@ public class DsHashMapConcurrentTest {
                 if ((i % 2) == 0) {
                     assertNull(got);
                 } else {
-                    assertNotNull(got);
+                    assertNotNull("missing key=" + (base + i), got);
                     assertEquals((base + i) * 10L, got.longValue());
                 }
             }

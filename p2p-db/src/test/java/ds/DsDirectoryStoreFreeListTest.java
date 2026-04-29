@@ -1,6 +1,6 @@
 package ds;
 
-import com.q3lives.ds.fs.DsDirectoryStore;
+import com.q3lives.ds.fs.Ds256DirectoryStore;
 import java.io.File;
 import java.io.IOException;
 import org.junit.Test;
@@ -13,7 +13,7 @@ public class DsDirectoryStoreFreeListTest {
         File dir = new File("target/ds-dirstore-freelist-test-" + System.nanoTime());
         dir.mkdirs();
 
-        DsDirectoryStore store = new DsDirectoryStore(dir.getPath());
+        Ds256DirectoryStore store = new Ds256DirectoryStore(dir.getPath());
         long dirId = store.createDir();
 
         store.appendEntry(dirId, 11);

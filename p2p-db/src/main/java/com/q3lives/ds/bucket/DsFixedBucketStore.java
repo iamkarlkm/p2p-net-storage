@@ -1,9 +1,13 @@
 package com.q3lives.ds.bucket;
 
 import java.io.File;
+import java.io.EOFException;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.Arrays;
@@ -85,14 +89,16 @@ public class DsFixedBucketStore {
     private static final long DEFAULT_FREE_CAP = 1024L;
 
     /**
-     * 共享空间：用于跨业务域共享的公共数据（由上层约定使用）。
+     * 元数据空间：用于少量元数据统一存储和管理(优化时可能存储在可高速读写设备),快速/少量/高频读写。（由上层约定使用）。
      */
-    public static final String SHARED_SPACE = "shared";
+    public static final String META_SPACE = "meta";
 
     /**
-     * 独立空间：用于默认/内部索引等数据（由上层约定使用）。
+     * 主数据空间：数据存储区。
      */
-    public static final String INDEPENDENT_SPACE = "independent";
+    public static final String DATA_SPACE = "data";
+    
+  
 
     /**
      * 更新策略：当新数据落入更小 power 档位时，是否收缩到更小 bucket。
@@ -133,6 +139,11 @@ public class DsFixedBucketStore {
      * </ul>
      *
      * <p>注意：该方法只负责分配 id，不写入数据。</p>
+     * @param space
+     * @param type
+     * @param length
+     * @return 
+     * @throws java.io.IOException
      */
     public long getNewId(String space, String type, int length) throws IOException {
         int unitSize = toBucketSize(length);
@@ -283,6 +294,97 @@ public class DsFixedBucketStore {
         return oldId;
     }
 
+    public long update(String space, String type, long oldId, int offset, byte[] data, int dataOffset, int length) throws IOException {
+        if (data == null) {
+            throw new IllegalArgumentException("data cannot be null");
+        }
+        if (length <= 0) {
+            return oldId;
+        }
+        if (offset < 0) {
+            throw new IllegalArgumentException("offset must be >= 0");
+        }
+        int power = decodePower(oldId);
+        long baseId = decodeOffset(oldId);
+        Bucket bucket = getBucket(space, type, power);
+        bucket.writePartial(baseId, offset, data, dataOffset, length);
+        return oldId;
+    }
+
+    public long update(String space, String type, long oldId, int offset, InputStream in, int length) throws IOException {
+        if (in == null) {
+            throw new IllegalArgumentException("in cannot be null");
+        }
+        if (length <= 0) {
+            return oldId;
+        }
+        if (offset < 0) {
+            throw new IllegalArgumentException("offset must be >= 0");
+        }
+        int power = decodePower(oldId);
+        long baseId = decodeOffset(oldId);
+        Bucket bucket = getBucket(space, type, power);
+        bucket.writeFrom(baseId, offset, in, length);
+        return oldId;
+    }
+
+    public MappedWindow openMappedWindow(String space, String type, long id, int offset, int length, boolean write) throws IOException {
+        if (offset < 0) {
+            throw new IllegalArgumentException("offset must be >= 0");
+        }
+        if (length <= 0) {
+            throw new IllegalArgumentException("length must be > 0");
+        }
+        int power = decodePower(id);
+        long baseId = decodeOffset(id);
+        Bucket bucket = getBucket(space, type, power);
+        if ((long) offset + (long) length > (long) bucket.unitSize) {
+            throw new IllegalArgumentException("mapped window overflow bucket unit");
+        }
+        long position = bucket.toOffset(baseId) + offset;
+        MappedByteBuffer buffer = bucket.mapWindow(position, length);
+        return new MappedWindow(bucket, position, buffer, write);
+    }
+
+    public MappedWindow openMappedWindow(String type, long id, int offset, int length, boolean write) throws IOException {
+        return openMappedWindow(DATA_SPACE, type, id, offset, length, write);
+    }
+
+    public static final class MappedWindow implements AutoCloseable {
+        private final Bucket bucket;
+        private final long position;
+        private final MappedByteBuffer buffer;
+        private final boolean write;
+        private boolean closed;
+
+        private MappedWindow(Bucket bucket, long position, MappedByteBuffer buffer, boolean write) {
+            this.bucket = bucket;
+            this.position = position;
+            this.buffer = buffer;
+            this.write = write;
+        }
+
+        public MappedByteBuffer buffer() {
+            return buffer;
+        }
+
+        public void force() {
+            buffer.force();
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            if (write) {
+                buffer.force();
+            }
+            bucket.unloadWindow(position, buffer);
+        }
+    }
+
     /**
      * 局部读取：从指定 id 的 offset 处读取 length 字节。
      */
@@ -297,6 +399,25 @@ public class DsFixedBucketStore {
         long baseId = decodeOffset(id);
         Bucket bucket = getBucket(space, type, power);
         return bucket.readPartial(baseId, offset, length);
+    }
+
+    public void get(String space, String type, long id, int offset, int length, byte[] out, int outOffset) throws IOException {
+        if (length <= 0) {
+            return;
+        }
+        if (offset < 0) {
+            throw new IllegalArgumentException("offset must be >= 0");
+        }
+        if (out == null) {
+            throw new IllegalArgumentException("out cannot be null");
+        }
+        if (outOffset < 0 || outOffset + length > out.length) {
+            throw new IllegalArgumentException("invalid outOffset/length: outOffset=" + outOffset + ", length=" + length + ", out.length=" + out.length);
+        }
+        int power = decodePower(id);
+        long baseId = decodeOffset(id);
+        Bucket bucket = getBucket(space, type, power);
+        bucket.readPartial(baseId, offset, length, out, outOffset);
     }
 
     /**
@@ -333,6 +454,41 @@ public class DsFixedBucketStore {
     }
 
     /**
+     * 流式写入一条新记录并返回 id（始终分配新 id）。
+     *
+     * <p>该接口不会把整段数据加载进内存；但要求调用方提供准确 length，且 length 不能超过 bucket 的最大单元大小。</p>
+     */
+    public long put(String space, String type, InputStream in, int length) throws IOException {
+        if (in == null) {
+            throw new IllegalArgumentException("in cannot be null");
+        }
+        if (length < 0) {
+            throw new IllegalArgumentException("length must be >= 0");
+        }
+        int bucketSize = toBucketSize(length);
+        if (length > bucketSize) {
+            throw new IllegalArgumentException("length exceeds max bucket size: length=" + length + ", max=" + bucketSize);
+        }
+        long id = getNewId(space, type, length);
+        overwrite(space, type, id, in, length);
+        return id;
+    }
+    
+    /**
+     * 部分写入一条新记录并返回 id（始终分配新 id）。
+     */
+    public long put(String space, String type, byte[] data,int offset,int count) throws IOException {
+        if (data == null) {
+            data = new byte[0];
+        }
+        int rawLen = count;
+        // put 语义：始终分配新 id 并写入；旧 id 的回收由上层选择 remove/update 来完成。
+        long id = getNewId(space, type, rawLen);
+        overwrite(space, type, id, data, offset, count);
+        return id;
+    }
+
+    /**
      * 读取一条记录的前 length 字节（按 id 解码出 power/baseId）。
      */
     public byte[] get(String space, String type, long id, int length) throws IOException {
@@ -343,6 +499,19 @@ public class DsFixedBucketStore {
         long baseId = decodeOffset(id);
         Bucket bucket = getBucket(space, type, power);
         return bucket.read(baseId, length);
+    }
+    
+    /**
+     * 读取一条记录的前 length 字节（按 id 解码出 power/baseId）。
+     */
+    public void get(String space, String type, long id, int length,byte[] out,int offset) throws IOException {
+        if (length <= 0) {
+            return ;
+        }
+        int power = decodePower(id);
+        long baseId = decodeOffset(id);
+        Bucket bucket = getBucket(space, type, power);
+        bucket.read(baseId, length,out,offset);
     }
 
     /**
@@ -365,21 +534,325 @@ public class DsFixedBucketStore {
         int power = decodePower(id);
         long baseId = decodeOffset(id);
         Bucket bucket = getBucket(space, type, power);
+//        if(bucket.unitSize<data.length){
+//            throw new IOException("入口数据超过所属bucket的定长限制!");
+//        }
         bucket.write(baseId, data);
     }
-
+    
     /**
-     * 便捷重载：默认 space=independent。
+     * 流式覆盖写入一条记录（id 不变）。
+     *
+     * <p>写入时只会消费 length 字节；如果输入流不足 length 字节，会抛 EOF。</p>
      */
-    public byte[] get(String type, long id, int length) throws IOException {
-        return get(INDEPENDENT_SPACE, type, id, length);
+    public void overwrite(String space, String type, long id, InputStream in, int length) throws IOException {
+        if (in == null) {
+            throw new IllegalArgumentException("in cannot be null");
+        }
+        if (length < 0) {
+            throw new IllegalArgumentException("length must be >= 0");
+        }
+        int power = decodePower(id);
+        long baseId = decodeOffset(id);
+        Bucket bucket = getBucket(space, type, power);
+        if (length > bucket.unitSize) {
+            throw new IllegalArgumentException("length overflow bucket unit: length=" + length + ", unitSize=" + bucket.unitSize);
+        }
+        bucket.writeFrom(baseId, 0, in, length);
     }
 
     /**
-     * 便捷重载：默认 space=independent。
+     * 覆盖写入一条记录（id 不变）。
+     */
+    public void overwrite(String space, String type, long id, byte[] data,int offset,int count) throws IOException {
+        if (data == null) {
+            return;
+        }
+        int power = decodePower(id);
+        long baseId = decodeOffset(id);
+        Bucket bucket = getBucket(space, type, power);
+
+        bucket.write(baseId, data, offset, count);
+    }
+
+    /**
+     * 便捷重载：默认 space=DATA_SPACE。
+     */
+    public byte[] get(String type, long id, int length) throws IOException {
+        return get(DATA_SPACE, type, id, length);
+    }
+    
+    public void get(String type, long id, int offset, int length, byte[] out, int outOffset) throws IOException {
+        get(DATA_SPACE, type, id, offset, length, out, outOffset);
+    }
+
+    public InputStream openInputStream(String space, String type, long id, int offset, int length) throws IOException {
+        if (length < 0) {
+            throw new IllegalArgumentException("length must be >= 0");
+        }
+        if (offset < 0) {
+            throw new IllegalArgumentException("offset must be >= 0");
+        }
+        int power = decodePower(id);
+        long baseId = decodeOffset(id);
+        Bucket bucket = getBucket(space, type, power);
+        if ((long) offset + (long) length > (long) bucket.unitSize) {
+            throw new IllegalArgumentException("data overflow bucket unit");
+        }
+        return new BucketInputStream(bucket, baseId, offset, length);
+    }
+
+    public InputStream openInputStream(String space, String type, long id, int length) throws IOException {
+        return openInputStream(space, type, id, 0, length);
+    }
+
+    public InputStream openInputStream(String type, long id, int offset, int length) throws IOException {
+        return openInputStream(DATA_SPACE, type, id, offset, length);
+    }
+
+    public InputStream openInputStream(String type, long id, int length) throws IOException {
+        return openInputStream(DATA_SPACE, type, id, 0, length);
+    }
+
+    public RecordRandomAccess openRandomAccess(String space, String type, long id) throws IOException {
+        int power = decodePower(id);
+        long baseId = decodeOffset(id);
+        Bucket bucket = getBucket(space, type, power);
+        return new RecordRandomAccess(bucket, baseId);
+    }
+
+    public RecordRandomAccess openRandomAccess(String type, long id) throws IOException {
+        return openRandomAccess(DATA_SPACE, type, id);
+    }
+
+    public void readTo(String space, String type, long id, int offset, int length, OutputStream out) throws IOException {
+        if (out == null) {
+            throw new IllegalArgumentException("out cannot be null");
+        }
+        try (InputStream in = openInputStream(space, type, id, offset, length)) {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) >= 0) {
+                if (n == 0) {
+                    continue;
+                }
+                out.write(buf, 0, n);
+            }
+        }
+    }
+
+    public static final class RecordRandomAccess implements AutoCloseable {
+        private final Bucket bucket;
+        private final long baseId;
+        private final int unitSize;
+        private long position;
+
+        private RecordRandomAccess(Bucket bucket, long baseId) {
+            this.bucket = bucket;
+            this.baseId = baseId;
+            this.unitSize = bucket.unitSize;
+        }
+
+        public long size() {
+            return unitSize;
+        }
+
+        public long position() {
+            return position;
+        }
+
+        public void position(long newPosition) {
+            if (newPosition < 0 || newPosition > (long) unitSize) {
+                throw new IllegalArgumentException("position out of range: " + newPosition);
+            }
+            position = newPosition;
+        }
+
+        public int read(byte[] dst, int dstOffset, int len) throws IOException {
+            int n = readAt(position, dst, dstOffset, len);
+            if (n > 0) {
+                position += n;
+            }
+            return n;
+        }
+
+        public int readAt(long pos, byte[] dst, int dstOffset, int len) throws IOException {
+            if (dst == null) {
+                throw new IllegalArgumentException("dst cannot be null");
+            }
+            if (dstOffset < 0 || len < 0 || dstOffset + len > dst.length) {
+                throw new IllegalArgumentException("invalid dstOffset/len");
+            }
+            if (pos < 0) {
+                throw new IllegalArgumentException("pos must be >= 0");
+            }
+            if (pos >= (long) unitSize) {
+                return -1;
+            }
+            int remain = (int) Math.min((long) len, (long) unitSize - pos);
+            if (remain <= 0) {
+                return -1;
+            }
+            bucket.readPartial(baseId, (int) pos, remain, dst, dstOffset);
+            return remain;
+        }
+
+        public void write(byte[] src, int srcOffset, int len) throws IOException {
+            writeAt(position, src, srcOffset, len);
+            position += len;
+        }
+
+        public void writeAt(long pos, byte[] src, int srcOffset, int len) throws IOException {
+            if (src == null) {
+                throw new IllegalArgumentException("src cannot be null");
+            }
+            if (len <= 0) {
+                return;
+            }
+            if (srcOffset < 0 || srcOffset + len > src.length) {
+                throw new IllegalArgumentException("invalid srcOffset/len");
+            }
+            if (pos < 0) {
+                throw new IllegalArgumentException("pos must be >= 0");
+            }
+            if (pos + (long) len > (long) unitSize) {
+                throw new IllegalArgumentException("write overflow bucket unit");
+            }
+            bucket.writePartial(baseId, (int) pos, src, srcOffset, len);
+        }
+
+        @Override
+        public void close() {
+        }
+    }
+
+    private static final class BucketInputStream extends InputStream {
+        private final Bucket bucket;
+        private final long baseId;
+        private final int startOffset;
+        private final int totalLength;
+        private int pos;
+        private boolean closed;
+        private final byte[] singleByte = new byte[1];
+
+        private BucketInputStream(Bucket bucket, long baseId, int startOffset, int totalLength) {
+            this.bucket = bucket;
+            this.baseId = baseId;
+            this.startOffset = startOffset;
+            this.totalLength = totalLength;
+        }
+
+        @Override
+        public int read() throws IOException {
+            int n = read(singleByte, 0, 1);
+            if (n <= 0) {
+                return -1;
+            }
+            return singleByte[0] & 0xFF;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            if (closed) {
+                throw new IOException("stream closed");
+            }
+            if (b == null) {
+                throw new NullPointerException("buffer is null");
+            }
+            if (off < 0 || len < 0 || off + len > b.length) {
+                throw new IndexOutOfBoundsException("off/len out of bounds");
+            }
+            if (pos >= totalLength) {
+                return -1;
+            }
+            int remain = totalLength - pos;
+            int toRead = Math.min(len, remain);
+            bucket.readPartial(baseId, startOffset + pos, toRead, b, off);
+            pos += toRead;
+            return toRead;
+        }
+
+        @Override
+        public long skip(long n) {
+            if (n <= 0) {
+                return 0;
+            }
+            int remain = totalLength - pos;
+            int step = (int) Math.min((long) remain, n);
+            pos += step;
+            return step;
+        }
+
+        @Override
+        public int available() {
+            return Math.max(0, totalLength - pos);
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+        }
+    }
+
+    static void readFully(InputStream in, byte[] buf, int off, int len) throws IOException {
+        int remain = len;
+        while (remain > 0) {
+            int n = in.read(buf, off, remain);
+            if (n < 0) {
+                throw new EOFException("unexpected EOF");
+            }
+            if (n == 0) {
+                continue;
+            }
+            off += n;
+            remain -= n;
+        }
+    }
+
+    /**
+     * 便捷重载：默认 space=DATA_SPACE。
+     */
+    public void get(String type, long id, int length,byte[] out,int offset) throws IOException {
+        get(DATA_SPACE, type, id, length,out,offset);
+    }
+
+    /**
+     * 便捷重载：默认 space=DATA_SPACE。
      */
     public void remove(String type, long id) throws IOException {
-        remove(INDEPENDENT_SPACE, type, id);
+        remove(DATA_SPACE, type, id);
+    }
+    
+     /**
+     * 便捷重载：默认 space=META_SPACE。
+     * @param type
+     * @param data
+     * @return 
+     * @throws java.io.IOException
+     */
+    public long putMeta(String type, byte[] data) throws IOException {
+        if (data == null) {
+            data = new byte[0];
+        }
+        int rawLen = data.length;
+        // put 语义：始终分配新 id 并写入；旧 id 的回收由上层选择 remove/update 来完成。
+        long id = getNewId(META_SPACE, type, rawLen);
+        overwrite(META_SPACE, type, id, data);
+        return id;
+    }
+    
+    /**
+     * 便捷重载：默认 space=META_SPACE。
+     */
+    public byte[] getMeta(String type, long id, int length) throws IOException {
+        return get(META_SPACE, type, id, length);
+    }
+
+    /**
+     * 便捷重载：默认 space=DATA_SPACE。
+     */
+    public void removeMeta(String type, long id) throws IOException {
+        remove(META_SPACE, type, id);
     }
 
     /**
@@ -597,6 +1070,21 @@ public class DsFixedBucketStore {
             return HEADER_SIZE + baseId * (long) unitSize;
         }
 
+        private MappedByteBuffer mapWindow(long position, int length) throws IOException {
+            ensureCapacity(length, -1L, position);
+            try (RandomAccessFile file = new RandomAccessFile(dataFile, "rw"); FileChannel channel = file.getChannel()) {
+                long size = position + length;
+                if (file.length() < size) {
+                    file.setLength(size);
+                }
+                return channel.map(FileChannel.MapMode.READ_WRITE, position, length);
+            }
+        }
+
+        private void unloadWindow(long position, MappedByteBuffer buffer) {
+            unloadBuffer(buffer);
+        }
+
         /**
          * 回收一个 baseId：仅入队到 free-ring，不清零数据内容。
          */
@@ -609,14 +1097,15 @@ public class DsFixedBucketStore {
             Long bufferIndex = offset / BLOCK_SIZE;
             int bufferOffset = (int) (offset % BLOCK_SIZE);
             MappedByteBuffer buffer = loadBuffer(bufferIndex);
-            int len = Math.min(unitSize, data.length);
+            int len = Math.min(unitSize, data.length);//定长截断
             if (bufferOffset + unitSize <= BLOCK_SIZE) {
                 buffer.put(bufferOffset, data, 0, len);
-                if (len < unitSize) {
-                    for (int i = bufferOffset + len; i < bufferOffset + unitSize; i++) {
-                        buffer.put(i, (byte) 0);
-                    }
-                }
+                //目前实现为了性能考虑,不处理残留旧数据
+//                if (len < unitSize) {//剩余部分补 0，否则会残留旧数据
+//                    for (int i = bufferOffset + len; i < bufferOffset + unitSize; i++) {
+//                        buffer.put(i, (byte) 0);
+//                    }
+//                }
                 dirty(bufferIndex);
                 return;
             }
@@ -632,6 +1121,72 @@ public class DsFixedBucketStore {
                 dirty(bi);
                 remain -= can;
                 src += can;
+                bi++;
+                off = 0;
+            }
+             //目前实现为了性能考虑,不处理残留旧数据
+//            if (len < unitSize) {//剩余部分补 0，否则会残留旧数据
+//                zeroFillUnitTail(baseId, len, unitSize - len);
+//            }
+        }
+        /**
+         * 入口数据部分写入
+         * @param baseId
+         * @param data
+         * @throws IOException 
+         */
+        void write(long baseId, byte[] data,int offsetIn,int count) throws IOException {
+            long offset = toOffset(baseId);
+            Long bufferIndex = offset / BLOCK_SIZE;
+            int bufferOffset = (int) (offset % BLOCK_SIZE);
+            MappedByteBuffer buffer = loadBuffer(bufferIndex);
+            int len = Math.min(unitSize, count);//定长截断
+            if (bufferOffset + unitSize <= BLOCK_SIZE) {
+                buffer.put(bufferOffset, data, offsetIn, len);
+                 //目前实现为了性能考虑,不处理残留旧数据
+//                if (len < unitSize) {//剩余部分补 0，否则会残留旧数据
+//                    for (int i = bufferOffset + len; i < bufferOffset + unitSize; i++) {
+//                        buffer.put(i, (byte) 0);
+//                    }
+//                }
+                dirty(bufferIndex);
+                return;
+            }
+
+            int remain = len;
+            int src = offsetIn;
+            long bi = bufferIndex;
+            int off = bufferOffset;
+            while (remain > 0) {
+                buffer = loadBuffer(bi);
+                int can = Math.min(BLOCK_SIZE - off, remain);
+                buffer.put(off, data, src, can);
+                dirty(bi);
+                remain -= can;
+                src += can;
+                bi++;
+                off = 0;
+            }
+             //目前实现为了性能考虑,不处理残留旧数据
+//            if (len < unitSize) {//剩余部分补 0，否则会残留旧数据
+//                zeroFillUnitTail(baseId, len, unitSize - len);
+//            }
+        }
+
+        private void zeroFillUnitTail(long baseId, int offsetInUnit, int length) throws IOException {
+            if (length <= 0) {
+                return;
+            }
+            long abs = toOffset(baseId) + (long) offsetInUnit;
+            long bi = abs / BLOCK_SIZE;
+            int off = (int) (abs % BLOCK_SIZE);
+            int remain = length;
+            while (remain > 0) {
+                MappedByteBuffer buffer = loadBuffer(bi);
+                int can = Math.min(BLOCK_SIZE - off, remain);
+                buffer.put(off, ZERO_BLOCK_BYTES, 0, can);
+                dirty(bi);
+                remain -= can;
                 bi++;
                 off = 0;
             }
@@ -674,6 +1229,75 @@ public class DsFixedBucketStore {
             }
         }
 
+        void writePartial(long baseId, int offsetInUnit, byte[] data, int dataOffset, int length) throws IOException {
+            if (offsetInUnit < 0) {
+                throw new IllegalArgumentException("offset must be >= 0");
+            }
+            if (data == null) {
+                throw new IllegalArgumentException("data cannot be null");
+            }
+            if (length <= 0) {
+                return;
+            }
+            if (dataOffset < 0 || dataOffset + length > data.length) {
+                throw new IllegalArgumentException("invalid dataOffset/length: dataOffset=" + dataOffset + ", length=" + length + ", data.length=" + data.length);
+            }
+            if ((long) offsetInUnit + (long) length > (long) unitSize) {
+                throw new IllegalArgumentException("data overflow bucket unit");
+            }
+
+            long abs = toOffset(baseId) + (long) offsetInUnit;
+            long bi = abs / BLOCK_SIZE;
+            int off = (int) (abs % BLOCK_SIZE);
+            int remain = length;
+            int src = dataOffset;
+            while (remain > 0) {
+                MappedByteBuffer buffer = loadBuffer(bi);
+                int can = Math.min(BLOCK_SIZE - off, remain);
+                buffer.put(off, data, src, can);
+                dirty(bi);
+                remain -= can;
+                src += can;
+                bi++;
+                off = 0;
+            }
+        }
+
+        void writeFrom(long baseId, int offsetInUnit, InputStream in, int length) throws IOException {
+            if (offsetInUnit < 0) {
+                throw new IllegalArgumentException("offset must be >= 0");
+            }
+            if (in == null) {
+                throw new IllegalArgumentException("in cannot be null");
+            }
+            if (length <= 0) {
+                return;
+            }
+            if ((long) offsetInUnit + (long) length > (long) unitSize) {
+                throw new IllegalArgumentException("data overflow bucket unit");
+            }
+
+            byte[] buf = new byte[Math.min(64 * 1024, length)];
+            long abs = toOffset(baseId) + (long) offsetInUnit;
+            long bi = abs / BLOCK_SIZE;
+            int off = (int) (abs % BLOCK_SIZE);
+            int remain = length;
+            while (remain > 0) {
+                MappedByteBuffer buffer = loadBuffer(bi);
+                int canWrite = Math.min(BLOCK_SIZE - off, remain);
+                int readLen = Math.min(buf.length, canWrite);
+                DsFixedBucketStore.readFully(in, buf, 0, readLen);
+                buffer.put(off, buf, 0, readLen);
+                dirty(bi);
+                off += readLen;
+                remain -= readLen;
+                if (off >= BLOCK_SIZE) {
+                    bi++;
+                    off = 0;
+                }
+            }
+        }
+
         byte[] readPartial(long baseId, int offsetInUnit, int length) throws IOException {
             if (offsetInUnit < 0) {
                 throw new IllegalArgumentException("offset must be >= 0");
@@ -711,6 +1335,47 @@ public class DsFixedBucketStore {
             return out;
         }
 
+        void readPartial(long baseId, int offsetInUnit, int length, byte[] out, int outOffset) throws IOException {
+            if (offsetInUnit < 0) {
+                throw new IllegalArgumentException("offset must be >= 0");
+            }
+            if (length <= 0) {
+                return;
+            }
+            if ((long) offsetInUnit + (long) length > (long) unitSize) {
+                throw new IllegalArgumentException("data overflow bucket unit");
+            }
+            if (out == null) {
+                throw new IllegalArgumentException("out cannot be null");
+            }
+            if (outOffset < 0 || outOffset + length > out.length) {
+                throw new IllegalArgumentException("invalid outOffset/length: outOffset=" + outOffset + ", length=" + length + ", out.length=" + out.length);
+            }
+
+            long abs = toOffset(baseId) + (long) offsetInUnit;
+            Long bufferIndex = abs / BLOCK_SIZE;
+            int bufferOffset = (int) (abs % BLOCK_SIZE);
+            MappedByteBuffer buffer = loadBuffer(bufferIndex);
+            if (bufferOffset + length <= BLOCK_SIZE) {
+                buffer.get(bufferOffset, out, outOffset, length);
+                return;
+            }
+
+            int remain = length;
+            int dst = outOffset;
+            long bi = bufferIndex;
+            int off = bufferOffset;
+            while (remain > 0) {
+                buffer = loadBuffer(bi);
+                int can = Math.min(BLOCK_SIZE - off, remain);
+                buffer.get(off, out, dst, can);
+                remain -= can;
+                dst += can;
+                bi++;
+                off = 0;
+            }
+        }
+
         byte[] read(long baseId, int length) throws IOException {
             int len = Math.min(length, unitSize);
             byte[] out = new byte[len];
@@ -736,6 +1401,33 @@ public class DsFixedBucketStore {
                 off = 0;
             }
             return out;
+        }
+        
+        void read(long baseId, int length,byte[] out,int offsetOut) throws IOException {
+            int len = Math.min(length, unitSize);
+            //byte[] out = new byte[len];
+            long offset = toOffset(baseId);
+            Long bufferIndex = offset / BLOCK_SIZE;
+            int bufferOffset = (int) (offset % BLOCK_SIZE);
+            MappedByteBuffer buffer = loadBuffer(bufferIndex);
+            if (bufferOffset + len <= BLOCK_SIZE) {
+                buffer.get(bufferOffset, out, offsetOut, len);
+                return;
+            }
+            int remain = len;
+            int dst = offsetOut;
+            long bi = bufferIndex;
+            int off = bufferOffset;
+            while (remain > 0) {
+                buffer = loadBuffer(bi);
+                int can = Math.min(BLOCK_SIZE - off, remain);
+                buffer.get(off, out, dst, can);
+                remain -= can;
+                dst += can;
+                bi++;
+                off = 0;
+            }
+            
         }
 
         private void initFree() throws IOException {

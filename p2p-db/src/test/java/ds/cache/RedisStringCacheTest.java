@@ -66,7 +66,7 @@ public class RedisStringCacheTest {
         RedisStringCache cache = new RedisStringCache(TEST_DIR, 128);
         cache.set("k1", "v1");
         assertEquals("v1", cache.get("k1"));
-
+        
         RedisStringCache cache2 = new RedisStringCache(TEST_DIR, 128);
         assertEquals("v1", cache2.get("k1"));
     }

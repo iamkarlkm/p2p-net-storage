@@ -1,6 +1,6 @@
 package ds;
 
-import com.q3lives.ds.collections.DsHashMapI64;
+import com.q3lives.ds.collections.DsHashMap;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -13,23 +13,29 @@ import static org.junit.Assert.*;
 
 public class DsHashMapMapInterfaceTest {
 
-    private DsHashMapI64 backing;
+    private DsHashMap backing;
     private Map<Long, Long> map;
 
     @Before
     public void setUp() throws Exception {
         File dataFile = new File("test_dshashmap_map_iface.dat");
         deleteWithSidecars(dataFile);
-        backing = new DsHashMapI64(dataFile);
+        backing = new DsHashMap(dataFile);
         map = backing;
     }
 
     private static void deleteWithSidecars(File f) {
         File[] files = new File[] {
                 f,
-                new File(f.getAbsolutePath() + ".k16"),
-                new File(f.getAbsolutePath() + ".k32"),
-                new File(f.getAbsolutePath() + ".k64"),
+                new File(f.getAbsolutePath() + ".e16"),
+                new File(f.getAbsolutePath() + ".e16.next"),
+                new File(f.getAbsolutePath() + ".e16.free"),
+                new File(f.getAbsolutePath() + ".e32"),
+                new File(f.getAbsolutePath() + ".e32.next"),
+                new File(f.getAbsolutePath() + ".e32.free"),
+                new File(f.getAbsolutePath() + ".e64"),
+                new File(f.getAbsolutePath() + ".e64.next"),
+                new File(f.getAbsolutePath() + ".e64.free"),
                 new File(f.getAbsolutePath() + ".m32"),
                 new File(f.getAbsolutePath() + ".m64")
         };

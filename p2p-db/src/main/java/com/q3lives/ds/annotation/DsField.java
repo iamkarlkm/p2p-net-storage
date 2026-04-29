@@ -12,8 +12,8 @@ import java.lang.annotation.Target;
 @Target(ElementType.FIELD)
 @Retention(RetentionPolicy.RUNTIME)
 public @interface DsField {
-    String dataType();
-    int length();
+    String name() default "";
+    int length();//byte-based
     int precision();
     int scale();
 }

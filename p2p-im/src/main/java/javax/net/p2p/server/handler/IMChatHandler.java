@@ -1,6 +1,7 @@
 package javax.net.p2p.server.handler;
 
 import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.im.runtime.ImRuntime;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.IMChatModel;
 import javax.net.p2p.model.P2PWrapper;
@@ -12,9 +13,6 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 public class IMChatHandler implements P2PCommandHandler {
-    
-    // 模拟消息存储
-    // private static final List<IMChatModel> MESSAGE_STORE = new ArrayList<>();
 
     @Override
     public P2PCommand getCommand() {
@@ -35,14 +33,7 @@ public class IMChatHandler implements P2PCommandHandler {
             
             log.info("Processing chat message: {} -> {} ({})", chatMsg.getSenderId(), chatMsg.getReceiverId(), chatMsg.getMsgType());
             
-            // 1. 验证消息完整性
-            if (chatMsg.getMsgId() == null) {
-                // 生成UUID
-                chatMsg.setMsgId(java.util.UUID.randomUUID().toString());
-            }
-            if (chatMsg.getTimestamp() <= 0) {
-                chatMsg.setTimestamp(System.currentTimeMillis());
-            }
+            ImRuntime.normalizeChat(chatMsg);
             
             // 2. 根据接收者类型处理
             if ("USER".equalsIgnoreCase(chatMsg.getReceiverType())) {
@@ -60,8 +51,7 @@ public class IMChatHandler implements P2PCommandHandler {
                 return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "Unknown receiver type: " + chatMsg.getReceiverType());
             }
             
-            // 3. 存储消息记录（可选）
-            // MESSAGE_STORE.add(chatMsg);
+            ImRuntime.appendChat(chatMsg);
             
             log.info("Chat message processed successfully: {}", chatMsg.getMsgId());
             

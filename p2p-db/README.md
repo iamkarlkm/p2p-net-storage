@@ -35,11 +35,20 @@
 
 *   **`ds.DsHashSet`**:
     *   **用途**: 持久化的哈希集合。
-    *   **实现**: 使用多级哈希表。
-        *   **位图 (Bitmap)**: `isHasValueBitmap` 用于快速判断某位置是否有值。
-        *   **冲突解决**: 采用多级桶策略。如果 Hash 冲突，该位置会存储一个指向下一级 Bucket 的指针 (Pointer)，直到达到最大层级。
-    *   **并发策略**: 采用分段锁 (Segmented Locking)，将哈希空间分为 16 个段，每个段有独立的锁。常用操作 (add/remove/contains) 仅锁定对应段，极大提高了并发性能。全局元数据更新仍受 `headerOpLock` 保护。
-    *   **特性**: 适合存储去重的 ID 集合、文件指纹等。
+    *   **实现**: 位图驱动的 256-ary trie（更接近多级页表/Trie，而非传统链表拉链的哈希桶）。
+        *   **位图 (Bitmap)**: 每个 node 用 2-bit * 256 描述 slot 状态（EMPTY / VALUE / CHILD / NEXT_LEVEL）。
+        *   **slot payload**: slot 区“索引指针”支持变长存储（2/4/8 字节），用于存放 `entryId` 或 `child nodeId`，减少小 key 空间的磁盘占用与带宽。
+        *   **三段快速跳跃寻址**（`DsHashSetI64`）：按 key 值域拆分 16/32/64 三段（负数与超 32-bit 走 64 段），本地 16-bit 段更省空间；对外接口保持透明。
+        *   **有序遍历**: `iterator()` 为 DFS 惰性遍历，不依赖全量快照排序；顺序按“有符号 long 的自然序”（负数段在前）对齐。
+    *   **并发策略**: 以 node/block 为粒度的锁；头部元数据（size/nextId）由 `headerOpLock` 保护。
+    *   **特性**: 适合存储去重的 ID 集合、文件指纹等；超大数据量读取优先使用 `iterator()/range()/forEachRange()`，避免 `toArray*()` 全量快照。
+
+*   **`ds.DsHashMapI64`**:
+    *   **用途**: 持久化的 `Map<long,long>`（key/value 都为 64-bit）。
+    *   **实现**: 与 `DsHashSetI64` 相同的位图驱动 256-ary trie，slot payload 变长存储；key/value 存入独立 `entryStore`，slot 内仅存 `entryId` 或 `child nodeId`。
+    *   **entryId 回收复用**: 引入 free-ring（旁路 `.free` 文件）在删除时回收 `entryId`，后续优先复用，避免 entryStore 单调膨胀。
+    *   **有序 API 对齐**: `first/last/getByIndex/indexOf/range/forEachRange` 统一基于惰性遍历语义实现，不再通过全量 `sortedKeySnapshot()` 排序。
+    *   **三段快速跳跃寻址**: 与 set 一致的 16/32/64 分段，保证小 key 更省空间并维持全局自然序遍历。
 
 *   **`ds.DsDataIndex`**:
     *   **用途**: 定长记录存储 (Fixed-length Record Store)。
@@ -64,3 +73,4 @@
 
 ## 7. 补充文档
 *   `DsHashSetI64 / DsMemorySet` FastPut 前缀快速插入缓存基线、`DsMemorySet` 顺序读取约束以及原样 `sync/load` 持久化说明：`doc/fast-put-benchmark.md`
+*   `DsHashSetI64 / DsHashMapI64` 位图 trie、变长指针、三段寻址与有序遍历语义说明：`doc/collections.md`

@@ -24,6 +24,14 @@ public final class WsServerMain {
         FileKeyFileProvider provider = new FileKeyFileProvider();
         provider.put(keyfilePath);
 
+        StorageRegistry storage = new StorageRegistry();
+        for (var e : cfg.storageLocations().entrySet()) {
+            storage.register(e.getKey(), Path.of(e.getValue()));
+        }
+        for (var e : cfg.imStorageLocations().entrySet()) {
+            storage.register(e.getKey(), Path.of(e.getValue()));
+        }
+
         EventLoopGroup boss = new NioEventLoopGroup(1);
         EventLoopGroup worker = new NioEventLoopGroup();
         try {
@@ -37,7 +45,7 @@ public final class WsServerMain {
                             .addLast(new HttpServerCodec())
                             .addLast(new HttpObjectAggregator(1024 * 1024))
                             .addLast(new WebSocketServerProtocolHandler(cfg.wsPath(), null, false))
-                            .addLast(new DemoServerHandler(provider, keyId, provider.length(keyId), cfg.magic(), cfg.version(), cfg.flagsPlain(), cfg.flagsEncrypted(), cfg.maxFramePayload()));
+                            .addLast(new DemoServerHandler(provider, keyId, provider.length(keyId), cfg.magic(), cfg.version(), cfg.flagsPlain(), cfg.flagsEncrypted(), cfg.maxFramePayload(), storage));
                     }
                 });
             b.bind(cfg.listenPort()).sync();

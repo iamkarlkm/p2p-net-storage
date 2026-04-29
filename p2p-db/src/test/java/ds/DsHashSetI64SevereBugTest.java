@@ -1,6 +1,6 @@
 package ds;
 
-import com.q3lives.ds.collections.DsHashSetI64;
+import com.q3lives.ds.collections.DsHashSet;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -13,24 +13,41 @@ import static org.junit.Assert.*;
 
 public class DsHashSetI64SevereBugTest {
 
-    private DsHashSetI64 dsHashSet;
+    private DsHashSet dsHashSet;
     private File dataFile;
 
     @Before
     public void setUp() throws Exception {
         System.setProperty("ds.hashset.debugPaths", "true");
         dataFile = new File("test_dshashset_i64_severe_bug.dat");
-        dsHashSet = new DsHashSetI64(dataFile);
+        deleteWithSidecars(dataFile);
+        dsHashSet = new DsHashSet(dataFile);
         dsHashSet.clear();
     }
 
     @After
     public void tearDown() throws Exception {
         dsHashSet.close();
-        if (dataFile.exists()) {
-            dataFile.delete();
-        }
+        deleteWithSidecars(dataFile);
         System.clearProperty("ds.hashset.debugPaths");
+    }
+
+    private static void deleteWithSidecars(File file) {
+        if (file == null) {
+            return;
+        }
+        String base = file.getAbsolutePath();
+        new File(base).delete();
+        new File(base + ".m32").delete();
+        new File(base + ".m64").delete();
+        new File(base + ".e16").delete();
+        new File(base + ".e32").delete();
+        new File(base + ".e64").delete();
+        new File(base + ".e16.free").delete();
+        new File(base + ".e32.free").delete();
+        new File(base + ".e64.free").delete();
+        new File(base + ".s32").delete();
+        new File(base + ".s64").delete();
     }
 
     @Test
@@ -106,9 +123,9 @@ public class DsHashSetI64SevereBugTest {
             assertTrue(dsHashSet.contains(prefixA | 0x0000FF00L | i));
             assertTrue(dsHashSet.contains(prefixB | 0x0000FF00L | i));
         }
-        DsHashSetI64.FastPutStats stats = dsHashSet.getFastPutStats();
+        DsHashSet.FastPutStats stats = dsHashSet.getFastPutStats();
         assertNotNull(stats);
-        assertTrue(stats.lastHitCount() > 0);
+        assertTrue(stats.quickHitCount() > 0 || stats.lastHitCount() > 0);
         assertTrue(stats.quickCacheSize() > 0);
         assertTrue(stats.quickCacheCapacity() >= stats.quickCacheSize());
         assertEquals(dsHashSet.getFastPutStatsMap().get("quickCacheCapacity"), Integer.valueOf(Math.max(8, Integer.getInteger("ds.hashset.quickCacheSize", 256))));

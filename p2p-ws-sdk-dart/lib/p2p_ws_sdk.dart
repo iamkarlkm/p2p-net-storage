@@ -8,6 +8,7 @@ export "src/keyfile.dart";
 export "src/messages/control.dart";
 export "src/messages/control_plane.dart";
 export "src/messages/data.dart";
+export "src/messages/im.dart";
 export "src/messages/wrapper.dart";
 export "src/peer_node.dart";
 export "src/rsa.dart";

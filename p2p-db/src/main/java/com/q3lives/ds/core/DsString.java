@@ -26,7 +26,7 @@ public class DsString {
      * @throws java.io.IOException
      */
     public DsString(String rootDir) throws IOException {
-        this.dataStore = new DsData(rootDir, STORE_NAME, DsFixedBucketStore.INDEPENDENT_SPACE);
+        this.dataStore = new DsData(rootDir, STORE_NAME, DsFixedBucketStore.DATA_SPACE);
     }
 
     /**

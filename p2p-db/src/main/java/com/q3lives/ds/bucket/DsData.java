@@ -19,6 +19,13 @@ import com.q3lives.ds.util.DsPathUtil;
  *   <li>局部读写：支持按 offset/len 读取 value 的子片段；写入采用 Copy-On-Write 语义。</li>
  * </ul>
  *
+ * <p>为什么需要两层（masterIndex + bucketStore）：</p>
+ * <ul>
+ *   <li>masterIndex 负责“内容寻址”：用 valueBytes 找到 indexId。这样上层不需要自己维护 hash->id 的结构。</li>
+ *   <li>bucketStore 负责“定长/变长数据落盘”：valueBytes 存在 TYPE_VALUE；索引 record（固定 16B）存在 TYPE_INDEX。</li>
+ *   <li>拆分的理由是为了同时满足：查找快（索引层） + 数据可复用/可回收（valueId、refCount）。</li>
+ * </ul>
+ *
  * <p>index record（16B）布局：</p>
  * <ul>
  *   <li>int valueLen</li>
@@ -57,7 +64,7 @@ public class DsData {
      * @param storeName 存储名（单段名称）
      */
     public DsData(String dirPath, String storeName) throws IOException {
-        this(dirPath, storeName, DsFixedBucketStore.INDEPENDENT_SPACE);
+        this(dirPath, storeName, DsFixedBucketStore.DATA_SPACE);
     }
 
     /**
@@ -91,14 +98,20 @@ public class DsData {
      */
     public long put(byte[] valueBytes) throws IOException {
         if (valueBytes == null) {
+            // 统一把 null 视为“空值”，避免上层出现两套语义（null vs empty）导致去重/索引不一致
             valueBytes = new byte[0];
         }
         int valueLen = valueBytes.length;
+        // 这里提前缓存 hash16 的原因：
+        // 1) readIndexRecord 只拿到 valueLen/valueHash16/refCount/valueId，不需要每次都把 value 读出来；
+        // 2) 短哈希只用于快速过滤，最终仍以 Arrays.equals 做强校验，避免误判。
         short hash16 = (short) (DsDataUtil.hash32(valueBytes) & 0xFFFF);
 
         for (int attempt = 0; attempt < 8; attempt++) {
             Long indexId = masterIndex.get(valueBytes);
             if (indexId == null) {
+                // “未命中”：需要创建新 value 与新 index record，并把 valueBytes->indexId 放入 masterIndex
+                // 注意：masterIndex.put(...) 在最后执行，是为了避免在 value/index 写入失败时留下“悬挂映射”
                 long valueId = bucketStore.put(space, TYPE_VALUE, valueBytes);
                 byte[] record = buildIndexRecord(valueLen, hash16, (short) 1, valueId);
                 long newIndexId = bucketStore.put(space, TYPE_INDEX, record);
@@ -108,8 +121,11 @@ public class DsData {
 
             IndexRecord r = readIndexRecord(indexId);
             if (r.valueLen == valueLen && r.valueHash16 == hash16) {
+                // 快速过滤通过后，再把 value 拉出来做强校验，避免 hash/长度碰撞导致误复用
                 byte[] stored = bucketStore.get(space, TYPE_VALUE, r.valueId, valueLen);
                 if (Arrays.equals(stored, valueBytes)) {
+                    // 同值：只增加 refCount，不重复写 value
+                    // refCount 用 short 的原因：index record 固定 16B，且引用计数通常不会巨大
                     short newRef = (short) (r.refCount + 1);
                     byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
                     bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
@@ -118,6 +134,8 @@ public class DsData {
             }
 
             byte[] otherValue = bucketStore.get(space, TYPE_VALUE, r.valueId, r.valueLen);
+            // 发生碰撞：masterIndex 的层级哈希命中到了同一个 indexId，但 value 不相同
+            // 通过 promoteOnCollision(...) 升级索引层级（例如从 hash32 升级到更强层），然后重试
             masterIndex.promoteOnCollision(valueBytes, otherValue, indexId);
         }
 
@@ -166,6 +184,7 @@ public class DsData {
      */
     public long updatePartialValueByIndexId(long indexId, int offset, byte[] data) throws IOException {
         if (data == null || data.length == 0) {
+            // 空写入没有意义，直接返回避免无谓 IO
             return indexId;
         }
         IndexRecord r = readIndexRecord(indexId);
@@ -174,10 +193,14 @@ public class DsData {
         }
 
         // 先构造“修改后的新值”，用于判断是否真的发生变化，以及后续去重/升级。
+        // 这里选择“读全量 value 再 patch”的原因：
+        // 1) masterIndex 是以内容寻址的，更新必须知道 newVal 才能正确改 key；
+        // 2) 还需要与潜在重复值合并（newVal 可能已经存在），因此必须得到完整 newVal。
         byte[] oldVal = bucketStore.get(space, TYPE_VALUE, r.valueId, r.valueLen);
         byte[] newVal = Arrays.copyOf(oldVal, oldVal.length);
         System.arraycopy(data, 0, newVal, offset, data.length);
         if (Arrays.equals(oldVal, newVal)) {
+            // 实际没有变化：保持 indexId 不变，避免写放大
             return indexId;
         }
 
@@ -195,6 +218,9 @@ public class DsData {
             Long otherIndexId = masterIndex.get(newVal);
             if (otherIndexId == null) {
                 // 唯一拥有者 + 新值未存在：原地更新 value，并把 masterIndex 从 oldVal->indexId 改为 newVal->indexId
+                // 先 remove(oldVal) 再 put(newVal) 的理由：
+                // - masterIndex 的 key 是 valueBytes 本身，更新时必须把旧 key 移除
+                // - 先移除再写入，避免 oldVal/newVal 同时指向同一个 indexId 造成歧义
                 masterIndex.remove(oldVal);
                 bucketStore.update(space, TYPE_VALUE, r.valueId, offset, data);
                 short newHash16 = (short) (DsDataUtil.hash32(newVal) & 0xFFFF);
@@ -205,6 +231,7 @@ public class DsData {
             }
             if (otherIndexId == indexId) {
                 // 保护性分支：如果 masterIndex 已经映射到自身（可能由上一次写入/重试造成），仍按“原地更新+重绑映射”处理
+                // 这里 put(..., true) 的理由：允许覆盖同 key 的既有映射，避免并发/重试导致的异常
                 masterIndex.remove(oldVal);
                 bucketStore.update(space, TYPE_VALUE, r.valueId, offset, data);
                 short newHash16 = (short) (DsDataUtil.hash32(newVal) & 0xFFFF);
@@ -219,6 +246,7 @@ public class DsData {
                 byte[] otherVal = bucketStore.get(space, TYPE_VALUE, other.valueId, other.valueLen);
                 if (Arrays.equals(otherVal, newVal)) {
                     // 新值已存在：合并到已有 indexId（otherIndexId），并释放旧 indexId（引用归零会回收）
+                    // 合并理由：保证“内容寻址去重”的核心不变量——同内容只保留一份 value
                     short otherNewRef = (short) (other.refCount + 1);
                     byte[] otherRecord = buildIndexRecord(other.valueLen, other.valueHash16, otherNewRef, other.valueId);
                     bucketStore.overwrite(space, TYPE_INDEX, otherIndexId, otherRecord);
@@ -257,9 +285,11 @@ public class DsData {
             IndexRecord r = readIndexRecord(indexId);
             int ref = r.refCount & 0xFFFF;
             if (ref <= 0) {
+                // refCount<=0 代表已删除或无效，retain 不应把“死记录”复活
                 return false;
             }
             if (ref >= 0xFFFF) {
+                // 饱和保护：short 只有 16-bit，达到上限后继续 +1 会溢出变负数
                 return true;
             }
             short newRef = (short) (ref + 1);
@@ -276,7 +306,9 @@ public class DsData {
      *
      * <p>当 refCount 递减到 0 时，会删除 masterIndex 映射并回收 index/value 的 bucket id。</p>
      *
+     * @param indexId
      * @return 成功释放返回 true；不存在/已删除返回 false
+     * @throws java.io.IOException
      */
     public boolean remove(long indexId) throws IOException {
         try {
@@ -285,16 +317,20 @@ public class DsData {
                 return false;
             }
             if (r.refCount > 1) {
+                // 还有其他引用：仅做 ref--，不做真实删除
                 short newRef = (short) (r.refCount - 1);
                 byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
                 bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
                 return true;
             }
 
+            // refCount==1：这是最后一个引用，需要把“内容寻址映射 + 数据记录”一起回收
             byte[] valueBytes = bucketStore.get(space, TYPE_VALUE, r.valueId, r.valueLen);
             masterIndex.remove(valueBytes);
             
-            // set refcount to 0 before removing to satisfy getRefCount
+            // 先把 refCount 写成 0 再 remove 的理由：
+            // - getRefCountByIndexId 对异常会返回 0，但“记录仍存在但 refCount=0”更容易被诊断/调试；
+            // - 即使随后 remove 失败，上层至少不会再把它当作有效引用。
             byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, (short) 0, r.valueId);
             bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
             
@@ -321,6 +357,7 @@ public class DsData {
     private IndexRecord readIndexRecord(long indexId) throws IOException {
         byte[] b = bucketStore.get(space, TYPE_INDEX, indexId, INDEX_RECORD_SIZE);
         IndexRecord r = new IndexRecord();
+        // index record 使用固定布局的原因：读取时无需反序列化对象结构，且便于随机访问与 mmap/RAF 实现复用
         r.valueLen = DsDataUtil.loadInt(b, 0);
         r.valueHash16 = loadShort(b, 4);
         r.refCount = loadShort(b, 6);
@@ -330,6 +367,8 @@ public class DsData {
 
     private static byte[] buildIndexRecord(int valueLen, short valueHash16, short refCount, long valueId) {
         byte[] b = new byte[INDEX_RECORD_SIZE];
+        // 这里是小端编码（loadShort/storeShort 与 DsDataUtil.loadInt/storeInt 配套）
+        // 选择小端仅为与本项目内部工具保持一致；不对外暴露二进制格式时，可优先考虑实现一致性
         DsDataUtil.storeInt(b, 0, valueLen);
         storeShort(b, 4, valueHash16);
         storeShort(b, 6, refCount);

@@ -21,6 +21,8 @@ export type ClientConfig = {
   flags_encrypted?: number
   max_frame_payload?: number
   listen_port?: number | string
+  storage_locations?: any
+  im_storage_locations?: any
 }
 
 export function loadClientConfig(p: string): ClientConfig {
@@ -46,6 +48,8 @@ export function loadClientConfig(p: string): ClientConfig {
     flags_encrypted: cfg0?.flags_encrypted,
     max_frame_payload: cfg0?.max_frame_payload,
     listen_port: cfg0?.listen_port,
+    storage_locations: cfg0?.storage_locations,
+    im_storage_locations: cfg0?.im_storage_locations,
   }
   if (!cfg || typeof cfg !== "object") throw new Error("invalid yaml")
   if (!cfg.user_id) throw new Error("user_id required")

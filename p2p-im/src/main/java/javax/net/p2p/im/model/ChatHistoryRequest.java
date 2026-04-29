@@ -14,6 +14,12 @@ public class ChatHistoryRequest implements Serializable {
     
     private static final long serialVersionUID = 1L;
     
+    /** 查询者用户ID */
+    private String userId;
+
+    /** 对端用户ID（点对点聊天时使用） */
+    private String peerId;
+
     /** 目标ID（用户ID或群组ID） */
     private String targetId;
     
@@ -38,6 +44,22 @@ public class ChatHistoryRequest implements Serializable {
     }
     
     // Getter和Setter
+    public String getUserId() {
+        return userId;
+    }
+
+    public void setUserId(String userId) {
+        this.userId = userId;
+    }
+
+    public String getPeerId() {
+        return peerId;
+    }
+
+    public void setPeerId(String peerId) {
+        this.peerId = peerId;
+    }
+
     public String getTargetId() {
         return targetId;
     }

@@ -61,12 +61,7 @@ public class DbFile {
         if (metadata.globalFileId == null || metadata.globalFileId.isEmpty()) {
             metadata.globalFileId = UUID.randomUUID().toString();
         }
-        long now = System.currentTimeMillis();
-        if (metadata.time.createTime == 0) {
-            metadata.time.createTime = now;
-        }
-        metadata.time.modifyTime = now;
-        metadata.time.metaModifyTime = now;
+        
         metadata.basic.fileSize = content.length;
         metadata.storage.fileSizePhysical = content.length; // 暂未压缩
         metadata.basic.contentHash = contentHashStr;

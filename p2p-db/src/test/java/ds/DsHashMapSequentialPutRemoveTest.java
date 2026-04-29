@@ -1,0 +1,120 @@
+package ds;
+
+import com.q3lives.ds.collections.DsHashMap;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+
+import java.io.File;
+
+import static org.junit.Assert.*;
+
+public class DsHashMapSequentialPutRemoveTest {
+
+    private DsHashMap dsHashMap;
+    private File dataFile;
+
+    @Before
+    public void setUp() throws Exception {
+        dataFile = File.createTempFile("test_dshashmap_sequential_", ".dat");
+        dataFile.deleteOnExit();
+        deleteWithSidecars(dataFile);
+        dsHashMap = new DsHashMap(dataFile);
+    }
+
+    private static void deleteWithSidecars(File f) {
+        File[] files = new File[] {
+                f,
+                new File(f.getAbsolutePath() + ".e16"),
+                new File(f.getAbsolutePath() + ".e16.next"),
+                new File(f.getAbsolutePath() + ".e16.free"),
+                new File(f.getAbsolutePath() + ".e16.free.tmp"),
+                new File(f.getAbsolutePath() + ".e32"),
+                new File(f.getAbsolutePath() + ".e32.next"),
+                new File(f.getAbsolutePath() + ".e32.free"),
+                new File(f.getAbsolutePath() + ".e32.free.tmp"),
+                new File(f.getAbsolutePath() + ".e64"),
+                new File(f.getAbsolutePath() + ".e64.next"),
+                new File(f.getAbsolutePath() + ".e64.free"),
+                new File(f.getAbsolutePath() + ".e64.free.tmp"),
+                new File(f.getAbsolutePath() + ".k16"),
+                new File(f.getAbsolutePath() + ".m32"),
+                new File(f.getAbsolutePath() + ".m64")
+        };
+        for (File x : files) {
+            if (x.exists()) {
+                x.delete();
+            }
+        }
+    }
+
+    @After
+    public void tearDown() throws Exception {
+        dsHashMap.close();
+    }
+
+    @Test
+    public void testSequentialPutThenRemoveEvenKeys() throws Exception {
+        int writers = 4;
+        int perWriter = 2000;
+
+        // 顺序执行与并发测试相同的写入/删除集合，用于隔离“逻辑错误 vs 并发错误”
+        for (int t = 0; t < writers; t++) {
+            long base = (long) t * 1_000_000L;
+            for (int i = 0; i < perWriter; i++) {
+                dsHashMap.put(base + i, (base + i) * 10L);
+            }
+            for (int i = 0; i < perWriter; i += 2) {
+                dsHashMap.remove(base + i);
+            }
+        }
+
+        for (int t = 0; t < writers; t++) {
+            long base = (long) t * 1_000_000L;
+            for (int i = 0; i < perWriter; i++) {
+                Long got = dsHashMap.get(base + i);
+                if ((i % 2) == 0) {
+                    assertNull(got);
+                } else {
+                    assertNotNull("missing key=" + (base + i), got);
+                    assertEquals((base + i) * 10L, got.longValue());
+                }
+            }
+        }
+    }
+
+    @Test
+    public void testInterleavedPutThenInterleavedRemove() throws Exception {
+        int writers = 4;
+        int perWriter = 2000;
+
+        // 更接近并发场景的“交错顺序”：按 i 轮询写入各 writer 的 key
+        for (int i = 0; i < perWriter; i++) {
+            for (int t = 0; t < writers; t++) {
+                long base = (long) t * 1_000_000L;
+                dsHashMap.put(base + i, (base + i) * 10L);
+            }
+        }
+
+        // 同样交错删除偶数 key
+        for (int i = 0; i < perWriter; i += 2) {
+            for (int t = 0; t < writers; t++) {
+                long base = (long) t * 1_000_000L;
+                dsHashMap.remove(base + i);
+            }
+        }
+
+        for (int t = 0; t < writers; t++) {
+            long base = (long) t * 1_000_000L;
+            for (int i = 0; i < perWriter; i++) {
+                Long got = dsHashMap.get(base + i);
+                if ((i % 2) == 0) {
+                    assertNull(got);
+                } else {
+                    assertNotNull("missing key=" + (base + i), got);
+                    assertEquals((base + i) * 10L, got.longValue());
+                }
+            }
+        }
+    }
+}

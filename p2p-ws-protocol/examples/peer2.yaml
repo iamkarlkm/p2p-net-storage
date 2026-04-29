@@ -10,6 +10,13 @@ reported_endpoints:
     addr: 127.0.0.1:18093
 storage_locations:
   11: ./peer2_storage_11
+im_storage_locations:
+  - store_id: -1
+    path: ./peer2_im_public
+  - store_id: -2
+    path: ./peer2_im_group
+  - store_id: -3
+    path: ./peer2_im_private
 presence_cache_path: ./peer2_presence.json
 magic: 0x1234
 version: 1

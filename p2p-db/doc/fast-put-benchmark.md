@@ -56,6 +56,15 @@
 - `contains/remove(Number)` 兼容
 - `first/last/toArrayLong/iterator` 顺序修正
 
+另外，`DsHashSetI64` 近期底层结构有两项与 FastPut 强相关的改进（不改变 FastPut 的语义，仅改变寻址与存储布局）：
+
+- **slot 区指针变长存储（2/4/8 字节）**：slot 内仅保存 `entryId/child nodeId`，实际 key 存入 entryStore，减少小 key 段的节点体积。
+- **三段(16/32/64)快速跳跃寻址**：负数与超 32-bit 的 key 走 64 位段；`[0..0xFFFF)` 走 16 位段；`[0xFFFF..0xFFFFFFFF)` 走 32 位段；对外接口保持透明。
+
+统计口径说明：
+
+- `getFastPutStats()` 在三段模式下会对各段统计做合并，便于 benchmark 直接观察整体命中/失效情况。
+
 ### 4.1 顺序写场景
 
 样本结论：

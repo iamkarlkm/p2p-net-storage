@@ -1,7 +1,7 @@
 
 package ds;
 
-import com.q3lives.ds.constant.InodeConsts;
+import com.q3lives.ds.fs.InodeConsts;
 import com.q3lives.ds.fs.InodeStructRW;
 import java.io.RandomAccessFile;
 import java.nio.MappedByteBuffer;

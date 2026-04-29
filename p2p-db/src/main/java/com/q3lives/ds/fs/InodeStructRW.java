@@ -1,7 +1,6 @@
 
 package com.q3lives.ds.fs;
 
-import com.q3lives.ds.constant.InodeConsts;
 import java.nio.MappedByteBuffer;
 
 public class InodeStructRW {

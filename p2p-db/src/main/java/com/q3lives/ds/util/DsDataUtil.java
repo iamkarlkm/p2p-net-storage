@@ -6,6 +6,7 @@ import net.jpountz.xxhash.XXHashFactory;
 
 import java.nio.charset.Charset;
 import java.util.Random;
+import org.apache.commons.codec.DecoderException;
 
 /**
  * 数据工具类。
@@ -27,6 +28,70 @@ public class DsDataUtil {
     private static final long LOCAL_XXHASH64_SEED = 0x9747b28c9747b28cl;
 
     protected static boolean DEFAULT_COUNT = true;
+    
+    private static final ThreadLocal<StringBuilder> HEX_STRING_BUILDER = ThreadLocal.withInitial(() -> new StringBuilder(64));
+      /**
+     * Used to build output as hex.
+     */
+    private static final char[] DIGITS_UPPER = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D',
+            'E', 'F' };
+    
+    public final static String toHex(final byte[] data, final int offset, final int len) {
+        int end = offset + len;
+        StringBuilder sb = HEX_STRING_BUILDER.get();
+        sb.setLength(0);
+        for (int i = offset; i < end; i++) {
+            sb.append(DIGITS_UPPER[(0xF0 & data[i]) >>> 4]);
+            sb.append(DIGITS_UPPER[0x0F & data[i]]);
+        }
+        return sb.toString();
+    }
+    /**
+     * 大写编码的hex字符串{ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D','E', 'F' }
+     * @param data
+     * @return 
+     */
+    public final static String toHex(final byte[] data) {
+        StringBuilder sb = HEX_STRING_BUILDER.get();
+        sb.setLength(0);
+        for (int i = 0; i < data.length; i++) {
+            sb.append(DIGITS_UPPER[(0xF0 & data[i]) >>> 4]);
+            sb.append(DIGITS_UPPER[0x0F & data[i]]);
+        }
+        return sb.toString();
+    }
+    
+    /**
+     * 只支持大写正确编码的hex字符串{ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D','E', 'F' }
+     * @param hex
+     * @return 
+     */
+    public final static byte[] fromHex(String hex) {
+
+        byte[] out = new byte[hex.length() / 2];
+        char[] data = hex.toCharArray();
+        // two characters form the hex value.
+        for (int i = 0, j = 0; i < out.length; i++) {
+            char ch = data[j];
+            j++;
+            int digit = Character.digit(ch, 16);
+            if (digit == -1) {
+                throw new RuntimeException("Illegal hexadecimal character " + ch + " at index " + i);
+            }
+            int f = digit << 4;
+            
+            ch = data[j];
+            j++;
+            digit = Character.digit(ch, 16);
+            if (digit == -1) {
+                throw new RuntimeException("Illegal hexadecimal character " + ch + " at index " + i);
+            }
+            f = f | digit;
+            out[i] = (byte) (f & 0xFF);
+        }
+
+        return out;
+    }
 
     /**
      * 计算字节数组的 32位 xxHash 值。
@@ -43,6 +108,29 @@ public class DsDataUtil {
         int hashCode = 0;
         try {
             hash.update(data, 0, data.length);
+            hashCode = hash.getValue();
+        } finally {
+            hash.reset();
+        }
+        return hashCode;
+    }
+
+    public final static int hash32(byte[] data, int offset, int len) {
+        if (data == null) {
+            throw new IllegalArgumentException("data cannot be null");
+        }
+        if (offset < 0 || len < 0 || offset + len > data.length) {
+            throw new IllegalArgumentException("invalid offset/len: offset=" + offset + ", len=" + len + ", data.length=" + data.length);
+        }
+        StreamingXXHash32 hash = LOCAL_XXHASH32.get();
+        if (null == hash) {
+            XXHashFactory factory = XXHashFactory.fastestInstance();
+            hash = factory.newStreamingHash32(LOCAL_XXHASH32_SEED);
+            LOCAL_XXHASH32.set(hash);
+        }
+        int hashCode = 0;
+        try {
+            hash.update(data, offset, len);
             hashCode = hash.getValue();
         } finally {
             hash.reset();
@@ -174,11 +262,33 @@ public class DsDataUtil {
             throw new RuntimeException(e);
         }
     }
+    
+    public final static byte[] newSha256Id() {
+        return sha256(java.util.UUID.randomUUID().toString().getBytes());
+    }
+    
+    public final static String newSha256IdString() {
+        return toHex(sha256(java.util.UUID.randomUUID().toString().getBytes()));
+    }
+    
+    public final static byte[] sha256Id(String nodeId) {
+         if(nodeId.length()!=64){
+            throw new RuntimeException("Illegal sha256Id,expected 64 chars,but " + nodeId.length());
+         }
+        return fromHex(nodeId);
+    }
+    
+    public final static String sha256IdString(byte[] nodeId) {
+         if(nodeId.length !=32 ){
+            throw new RuntimeException("Illegal sha256Id,expected 32 byte,but " + nodeId.length);
+         }
+        return toHex(nodeId);
+    }
 
     private static final Charset UTF_8 = Charset.forName("UTF-8");
     private static final int LONG_SIZE = 8;
     private static final int INT_SIZE = 4;
-    private static final int SHORT_SIZE = 4;
+    private static final int SHORT_SIZE = 2;
     private static final int MD5_SIZE = 16;
 
     /**
@@ -188,8 +298,7 @@ public class DsDataUtil {
      * @param value
      */
     public final static void storeLong(byte[] bytes, int offset, long value) {
-       
-        for (int i = 0,j=LONG_SIZE-1; i < LONG_SIZE; i++,j--) {
+        for (int i = 0, j = LONG_SIZE - 1; i < LONG_SIZE; i++, j--) {
             bytes[offset + i] = (byte) (value >> (j * 8));
         }
 
@@ -210,7 +319,7 @@ public class DsDataUtil {
     public final static long loadLong(byte[] bytes, int offset) {
         long value = 0;
         for (int i = 0; i < LONG_SIZE; i++) {
-            value |= ((long) (bytes[offset + i] & 0xFF)) << (i * 8);
+            value = (value << 8) | ((long) (bytes[offset + i] & 0xFF));
         }
         return value;
     }

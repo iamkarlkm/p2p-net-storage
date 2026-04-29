@@ -1,6 +1,5 @@
 package com.q3lives.ds.core;
 
-import static com.q3lives.ds.core.DsMemory.BLOCK_SIZE;
 import com.q3lives.ds.fs.Ds128SuperInode;
 import jdk.internal.access.foreign.UnmapperProxy;
 
@@ -8,13 +7,14 @@ import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.Charset;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -262,6 +262,10 @@ public class DsObject {
      */
     protected File dataFile;
 
+    public File getDataFile() {
+        return dataFile;
+    }
+
     protected MappedByteBuffer headerBuffer;
 
     /**
@@ -500,6 +504,25 @@ public class DsObject {
 
     public boolean isBackgroundFlushEnabled() {
         return flushExecutor != null;
+    }
+
+    public void unloadAllMappedBuffers() {
+        disableBackgroundFlush();
+        sync();
+        Long[] dataKeys = datatBuffers.keySet().toArray(new Long[0]);
+        for (Long k : dataKeys) {
+            try {
+                unloadBuffer(k);
+            } catch (IOException e) {
+            }
+        }
+        Long[] frameKeys = frameBuffers.keySet().toArray(new Long[0]);
+        for (Long k : frameKeys) {
+            try {
+                unloadFrame(k);
+            } catch (IOException e) {
+            }
+        }
     }
 
     protected void flushDirtyOnce() {
@@ -1264,13 +1287,37 @@ public class DsObject {
      * @throws IOException IO异常
      */
     protected void storeLongOffset(long position, long value) throws IOException {
-        Long bufferIndex = position / BLOCK_SIZE;
-        int offset = (int) (position % BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
+        long bufferIndex = bufferIndexFromPosition(position);
+        int offset = bufferOffsetFromPosition(position);
+        if (!willCrossBoundary(offset, 8)) {
+            MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
+            try {
+                buffer.putLong(offset, value);
+            } finally {
+                unlockBufferForUpdate(bufferIndex);
+            }
+            return;
+        }
+        int first = BLOCK_SIZE - offset;
+        int remaining = 8 - first;
+        MappedByteBuffer buffer1 = loadBufferForUpdate(bufferIndex);
         try {
-            buffer.putLong(offset, value);
+            for (int i = 0; i < first; i++) {
+                int shift = (7 - i) * 8;
+                buffer1.put(offset + i, (byte) (value >>> shift));
+            }
         } finally {
             unlockBufferForUpdate(bufferIndex);
+        }
+        MappedByteBuffer buffer2 = loadBufferForUpdate(bufferIndex + 1);
+        try {
+            for (int i = 0; i < remaining; i++) {
+                int globalIndex = first + i;
+                int shift = (7 - globalIndex) * 8;
+                buffer2.put(i, (byte) (value >>> shift));
+            }
+        } finally {
+            unlockBufferForUpdate(bufferIndex + 1);
         }
     }
 
@@ -1374,14 +1421,31 @@ public class DsObject {
      * @throws IOException IO异常
      */
     protected int loadU16ByOffset(long position) throws IOException {
-        Long bufferIndex = position / BLOCK_SIZE;
-        int offset = (int) (position % BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+        long bufferIndex = bufferIndexFromPosition(position);
+        int offset = bufferOffsetFromPosition(position);
+        if (!willCrossBoundary(offset, 2)) {
+            MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+            try {
+                return buffer.getShort(offset) & 0xFFFF;
+            } finally {
+                unlockBufferForRead(bufferIndex);
+            }
+        }
+        MappedByteBuffer buffer1 = loadBufferForRead(bufferIndex);
+        byte b0;
         try {
-            return buffer.getShort(offset) & 0xFFFF;
+            b0 = buffer1.get(offset);
         } finally {
             unlockBufferForRead(bufferIndex);
         }
+        MappedByteBuffer buffer2 = loadBufferForRead(bufferIndex + 1);
+        byte b1;
+        try {
+            b1 = buffer2.get(0);
+        } finally {
+            unlockBufferForRead(bufferIndex + 1);
+        }
+        return ((b0 & 0xFF) << 8) | (b1 & 0xFF);
 
     }
 
@@ -1393,14 +1457,36 @@ public class DsObject {
      * @throws IOException IO异常
      */
     protected long loadU32ByOffset(long position) throws IOException {
-        Long bufferIndex = position / BLOCK_SIZE;
-        int offset = (int) (position % BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+        long bufferIndex = bufferIndexFromPosition(position);
+        int offset = bufferOffsetFromPosition(position);
+        if (!willCrossBoundary(offset, 4)) {
+            MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+            try {
+                return buffer.getInt(offset) & 0xFFFFFFFFL;
+            } finally {
+                unlockBufferForRead(bufferIndex);
+            }
+        }
+        int first = BLOCK_SIZE - offset;
+        int remaining = 4 - first;
+        int v = 0;
+        MappedByteBuffer buffer1 = loadBufferForRead(bufferIndex);
         try {
-            return buffer.getInt(offset) & 0xFFFFFFFFL;
+            for (int i = 0; i < first; i++) {
+                v = (v << 8) | (buffer1.get(offset + i) & 0xFF);
+            }
         } finally {
             unlockBufferForRead(bufferIndex);
         }
+        MappedByteBuffer buffer2 = loadBufferForRead(bufferIndex + 1);
+        try {
+            for (int i = 0; i < remaining; i++) {
+                v = (v << 8) | (buffer2.get(i) & 0xFF);
+            }
+        } finally {
+            unlockBufferForRead(bufferIndex + 1);
+        }
+        return v & 0xFFFFFFFFL;
 
     }
 
@@ -1680,13 +1766,37 @@ public class DsObject {
      * @throws IOException IO异常
      */
     protected void storeIntOffset(long position, int value) throws IOException {
-        Long bufferIndex = position / BLOCK_SIZE;
-        int offset = (int) (position % BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
+        long bufferIndex = bufferIndexFromPosition(position);
+        int offset = bufferOffsetFromPosition(position);
+        if (!willCrossBoundary(offset, 4)) {
+            MappedByteBuffer buffer = loadBufferForUpdate(bufferIndex);
+            try {
+                buffer.putInt(offset, value);
+            } finally {
+                unlockBufferForUpdate(bufferIndex);
+            }
+            return;
+        }
+        int first = BLOCK_SIZE - offset;
+        int remaining = 4 - first;
+        MappedByteBuffer buffer1 = loadBufferForUpdate(bufferIndex);
         try {
-            buffer.putInt(offset, value);
+            for (int i = 0; i < first; i++) {
+                int shift = (3 - i) * 8;
+                buffer1.put(offset + i, (byte) (value >>> shift));
+            }
         } finally {
             unlockBufferForUpdate(bufferIndex);
+        }
+        MappedByteBuffer buffer2 = loadBufferForUpdate(bufferIndex + 1);
+        try {
+            for (int i = 0; i < remaining; i++) {
+                int globalIndex = first + i;
+                int shift = (3 - globalIndex) * 8;
+                buffer2.put(i, (byte) (value >>> shift));
+            }
+        } finally {
+            unlockBufferForUpdate(bufferIndex + 1);
         }
     }
 
@@ -2332,6 +2442,8 @@ public class DsObject {
         }
 
     }
+
+
 
   
 }

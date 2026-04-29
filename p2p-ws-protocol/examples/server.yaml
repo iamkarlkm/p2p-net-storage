@@ -6,3 +6,12 @@ version: 1
 flags_plain: 4
 flags_encrypted: 5
 max_frame_payload: 4194304
+storage_locations:
+  11: ./server_storage_11
+im_storage_locations:
+  - store_id: -1
+    path: ./server_im_public
+  - store_id: -2
+    path: ./server_im_group
+  - store_id: -3
+    path: ./server_im_private

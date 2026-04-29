@@ -8,7 +8,7 @@ import com.q3lives.ds.util.DsPathUtil;
 /**
  * byte[] 的最薄封装：把 {@link DsFixedBucketStore} 绑定到固定的 space/type 上。
  *
- * <p>用途：</p>
+ * <p>用途：不去重数据原始存储</p>
  * <ul>
  *   <li>用于把“一个逻辑数据集”映射到同一组 bucket 文件（按 type 分组，按长度选择 power 档位）。</li>
  *   <li>对外只暴露 put/get/remove/overwrite，id 语义完全由 bucket 层决定。</li>
@@ -28,7 +28,7 @@ public class DsBytes {
     public DsBytes(String rootDir, String type) {
         DsPathUtil.validateSegment(type, "type");
         this.store = new DsFixedBucketStore(rootDir);
-        this.space = DsFixedBucketStore.INDEPENDENT_SPACE;
+        this.space = DsFixedBucketStore.DATA_SPACE;
         this.type = type;
     }
 

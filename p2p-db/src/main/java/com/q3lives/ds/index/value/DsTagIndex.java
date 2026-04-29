@@ -42,6 +42,9 @@ public class DsTagIndex {
 
     /**
      * 将 fileId 添加到 tag 对应的链表中（头插）。
+     * @param tag
+     * @param fileId
+     * @throws java.io.IOException
      */
     public void addTag(String tag, long fileId) throws IOException {
         byte[] tagHash = DsDataUtil.sha256(tag.getBytes(StandardCharsets.UTF_8));

@@ -1,12 +1,11 @@
 package javax.net.p2p.server.handler;
 
 import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.im.runtime.ImRuntime;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.IMUserModel;
 import javax.net.p2p.model.P2PWrapper;
 import lombok.extern.slf4j.Slf4j;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.Map;
 
 /**
  * IM用户登录处理器
@@ -14,9 +13,6 @@ import java.util.Map;
  */
 @Slf4j
 public class IMUserLoginHandler implements P2PCommandHandler {
-    
-    // 模拟在线用户存储，实际应使用数据库或Redis
-    private static final Map<String, IMUserModel> ONLINE_USERS = new ConcurrentHashMap<>();
 
     @Override
     public P2PCommand getCommand() {
@@ -41,8 +37,7 @@ public class IMUserLoginHandler implements P2PCommandHandler {
             // TODO: 验证RSA公钥
             
             // 更新在线状态
-            user.setStatus("ONLINE");
-            ONLINE_USERS.put(user.getUserId(), user);
+            ImRuntime.login(user);
             
             log.info("User {} logged in successfully", user.getUsername());
             
@@ -59,13 +54,13 @@ public class IMUserLoginHandler implements P2PCommandHandler {
      * 获取在线用户
      */
     public static IMUserModel getOnlineUser(String userId) {
-        return ONLINE_USERS.get(userId);
+        return ImRuntime.getOnlineUser(userId);
     }
     
     /**
      * 移除在线用户
      */
     public static void removeUser(String userId) {
-        ONLINE_USERS.remove(userId);
+        ImRuntime.logout(userId);
     }
 }
