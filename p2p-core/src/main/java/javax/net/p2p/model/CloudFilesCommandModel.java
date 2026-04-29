@@ -11,12 +11,12 @@ import java.util.Arrays;
  *
  * @author karl
  */
-public class HdfsCommandModel<T> {
+public class CloudFilesCommandModel<T> {
     private String command;
     private String[] params;
     private T data;
 
-    public HdfsCommandModel(String command, String... params) {
+    public CloudFilesCommandModel(String command, String... params) {
         this.command = command;
         this.params = params;
     }
@@ -48,7 +48,7 @@ public class HdfsCommandModel<T> {
 
     @Override
     public String toString() {
-        return "HdfsCommandModel{" + "command=" + command + ", params=" + Arrays.asList(params) + ", data=" + data + '}';
+        return "CloudFilesCommandModel{" + "command=" + command + ", params=" + Arrays.asList(params) + ", data=" + data + '}';
     }
 
     
