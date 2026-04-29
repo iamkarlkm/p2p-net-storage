@@ -29,7 +29,7 @@ public class FileLssjCheckServerHandler implements P2PCommandHandler {
 		try {
 			if (request.getCommand().getValue() == P2PCommand.CHECK_LSSJ_FILE.getValue()) {
 				LssjCheckModel payload = (LssjCheckModel) request.getData();
-				//new File("E:/VEH_IMAGES");
+				//new File("E:/IMAGES");
 				File parent = SharedStorage.getStorageLocation(payload.storeId);
 				if (parent == null) {
 					return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "存储ID对应目录不存在 -> " + payload.storeId);
@@ -41,9 +41,9 @@ public class FileLssjCheckServerHandler implements P2PCommandHandler {
 					//return P2PWrapper.builder(request.getSeq(),P2PCommand.STD_ERROR, "文件不存在 -> "+payload.path);
 					img = new File(parent, payload.fileName2);
 					if (!img.exists()) {
-						img = new File("d:/kmcgs_images", payload.fileName);
+						img = new File("d:/images", payload.fileName);
 						if (!img.exists()) {
-							img = new File("d:/kmcgs_images", payload.fileName2);
+							img = new File("d:/images", payload.fileName2);
 							if (img.exists()) {
 								subPath = payload.fileName2;
 								payload.storeId = 101;
