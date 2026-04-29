@@ -12,7 +12,7 @@ import javax.net.p2p.common.AbstractP2PMessageServiceAdapter;
  * @author karl
  */
 @Slf4j
-public abstract class AbstractP2PClient extends AbstractP2PMessageServiceAdapter {
+public abstract class AbstractP2PClient extends AbstractP2PMessageServiceAdapter implements AutoCloseable{
     
     public static String SERVER_IP = "127.0.0.1";
     public static int SERVER_PORT = 6060;
@@ -105,6 +105,11 @@ public abstract class AbstractP2PClient extends AbstractP2PMessageServiceAdapter
        if(clientRefCount<=0){
            ExecutorServicePool.releaseP2PClientPools();
        }
+   }
+   
+    @Override
+   public void close(){
+       shutdown();
    }
     
 }

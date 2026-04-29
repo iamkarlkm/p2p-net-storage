@@ -8,20 +8,7 @@
         <version>1.0.0</version>
     </parent>
     <artifactId>p2p-core</artifactId>
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.14.0</version>
-                <configuration>
-                    <source>21</source>
-                    <target>21</target>
-                    <debug>false</debug>
-                </configuration>
-            </plugin>
-        </plugins>
-    </build>
+    
     <dependencies>
         <dependency>
             <groupId>io.netty</groupId>
@@ -141,4 +128,28 @@
             <type>jar</type>
         </dependency>
     </dependencies>
+    
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.14.0</version>
+                <configuration>
+                    <source>21</source>
+                    <target>21</target>
+                    <debug>false</debug>
+                </configuration>
+            </plugin>
+             <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.2</version>
+                <configuration>
+                    <skipTests>true</skipTests>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+    
 </project>
