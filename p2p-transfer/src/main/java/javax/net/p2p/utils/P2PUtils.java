@@ -18,8 +18,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.net.p2p.api.P2PCommand;
-import javax.net.p2p.client.pooled.MyClient;
-import javax.net.p2p.client.pooled.P2PNode;
+import javax.net.p2p.client.P2PClientTcp;
 import javax.net.p2p.client.processor.FileSegmentsGetProcessor;
 import javax.net.p2p.client.processor.FileSegmentsPutProcessor;
 import javax.net.p2p.config.P2PConfig;
@@ -47,13 +46,13 @@ public class P2PUtils  implements P2PFileService{
 
 	
 
-	private final P2PNode node;
+	private final P2PClientTcp node;
 
-	public P2PNode getNode() {
+	public P2PClientTcp getNode() {
 		return node;
 	}
 
-	public P2PUtils(P2PNode node) {
+	public P2PUtils(P2PClientTcp node) {
 		this.node = node;
 	}
         
@@ -956,10 +955,9 @@ public class P2PUtils  implements P2PFileService{
 //	}
 	
 	public static void main1(String[] args) throws Exception {
-		try (MyClient client = MyClient.getInstance();
-				P2PNode p2PNode = client.getNode(
+		try (P2PClientTcp client = P2PClientTcp.getInstance(P2PClientTcp.class,
 				new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 6060))) {
-			P2PUtils p2PUtils = new P2PUtils(p2PNode);
+			P2PUtils p2PUtils = new P2PUtils(client);
 			File src = new File("E:\\BaiduNetdiskDownload\\navicat121_premium_cs_x64.exe");
 			File dest = new File("e:/p2p_test/test.seg.bin.res");
 			System.out.println(SecurityUtils.getFileMD5String(src));
