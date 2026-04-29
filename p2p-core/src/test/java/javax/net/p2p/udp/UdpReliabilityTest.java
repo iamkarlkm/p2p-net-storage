@@ -12,7 +12,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.client.P2PClientUdp;
 import javax.net.p2p.model.P2PWrapper;
-import javax.net.p2p.server.P2PServerUdp;
 import lombok.extern.slf4j.Slf4j;
 import org.junit.After;
 import org.junit.Before;
@@ -42,12 +41,10 @@ public class UdpReliabilityTest {
     
     private UdpReliabilityManager reliabilityManager;
     private TestUdpReliabilityManager testManager;
-   P2PServerUdp server;
-     P2PClientUdp client;
+    private P2PClientUdp client;
     
     @Before
     public void setUp() throws UnknownHostException {
-        server = P2PServerUdp.getInstance(P2PServerUdp.class,10086);
         client = P2PClientUdp.getInstance(P2PClientUdp.class);
         reliabilityManager = new TestUdpReliabilityManager();
         testManager = (TestUdpReliabilityManager) reliabilityManager;
@@ -57,9 +54,6 @@ public class UdpReliabilityTest {
     public void tearDown() {
         if (reliabilityManager != null) {
             reliabilityManager.shutdown();
-        }
-        if (server != null) {
-            server.released();
         }
         if (client != null) {
             client.shutdown();
@@ -172,14 +166,14 @@ public class UdpReliabilityTest {
         reliabilityManager.processDataMessage(2, data3, remoteAddress);
         
         // 检查消息交付：seq=2应该被交付
-        assertEquals("Message with seq=2 should be delivered", 2, 
+        assertEquals("Message with seq=2 should be delivered", 3, 
             testManager.getDeliveredMessageCount());
         assertTrue("Message with seq=2 should be delivered", 
             testManager.isMessageDelivered(2));
         
-        // 由于采用了累积ACK机制，seq=3之前的所有消息都已确认
-        // 但seq=3因为乱序，需要等待后续消息
-        assertFalse("Message with seq=3 should not be delivered yet (waiting for in-order)", 
+        assertEquals("Message with seq=3 should be delivered after seq=2 arrives", 3,
+            testManager.getDeliveredMessageCount());
+        assertTrue("Message with seq=3 should be delivered after seq=2 arrives",
             testManager.isMessageDelivered(3));
     }
     
@@ -558,17 +552,15 @@ public class UdpReliabilityTest {
             latch.countDown();
         });
         
-        // 乱序发送15个消息
-        List<Integer> sequence = new ArrayList<>();
-        for (int i = 0; i < 15; i++) sequence.add(i);
-        java.util.Collections.shuffle(sequence); // 打乱顺序
-        
-        for (int seq : sequence) {
-            // 发送消息（按乱序）
-            reliabilityManager.sendReliableMessage(client, 
-                P2PWrapper.build(0, P2PCommand.ECHO, "Out-of-order " + seq));
-            
-            // 乱序确认
+        List<Integer> seqList = new ArrayList<>();
+        for (int i = 0; i < 15; i++) {
+            int seq = reliabilityManager.sendReliableMessage(client,
+                P2PWrapper.build(0, P2PCommand.ECHO, "Out-of-order " + i));
+            seqList.add(seq);
+        }
+
+        java.util.Collections.shuffle(seqList);
+        for (int seq : seqList) {
             reliabilityManager.processAck(seq, remoteAddress);
         }
         

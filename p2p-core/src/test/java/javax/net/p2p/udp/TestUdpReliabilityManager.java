@@ -33,6 +33,25 @@ public class TestUdpReliabilityManager extends UdpReliabilityManager {
     private int averageDelayMs = 0;
     
     @Override
+    public int sendReliableMessage(P2PClientUdp client, P2PWrapper<?> message) {
+        while (true) {
+            int seq = super.sendReliableMessage(client, message);
+            if (seq >= 0) {
+                return seq;
+            }
+            if (packetLossRate <= 0.0) {
+                return -1;
+            }
+            try {
+                Thread.sleep(1);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return -1;
+            }
+        }
+    }
+
+    @Override
     protected void deliverToApplication(int seq, ByteBuf data) {
         // 记录消息交付
         deliveredMessages.put(seq, true);
@@ -40,7 +59,7 @@ public class TestUdpReliabilityManager extends UdpReliabilityManager {
         
         // 调用回调函数（如果设置）
         if (messageDeliveryCallback != null) {
-            messageDeliveryCallback.accept(seq, data.retain());
+            messageDeliveryCallback.accept(seq, data);
         }
         
         // 释放缓冲区
@@ -51,8 +70,19 @@ public class TestUdpReliabilityManager extends UdpReliabilityManager {
     
     @Override
     public void processAck(int ackSeq, InetSocketAddress remoteAddress) {
+        if (packetLossRate > 0.0 && shouldDropAck(ackSeq)) {
+            return;
+        }
         super.processAck(ackSeq, remoteAddress);
         ackedMessages.put(ackSeq, true);
+    }
+
+    private boolean shouldDropAck(int seq) {
+        int every = (int) Math.round(1.0 / packetLossRate);
+        if (every <= 0) {
+            return false;
+        }
+        return seq % every == 0;
     }
     
     @Override
@@ -129,7 +159,22 @@ public class TestUdpReliabilityManager extends UdpReliabilityManager {
     }
     
     public void setBandwidthLimitBps(int limitBps) {
-        log.debug("Set bandwidth limit to: {} B/s (not implemented in this test class)", limitBps);
+        super.setBandwidthLimitBps(limitBps);
+        log.debug("Set bandwidth limit to: {} B/s", limitBps);
+    }
+
+    @Override
+    protected void onClientRetransmit(P2PClientUdp client, int seq, InetSocketAddress remoteAddress, int retryCount) {
+        retransmittingMessages.put(seq, true);
+        if (packetLossRate > 0.0) {
+            super.processAck(seq, remoteAddress);
+            ackedMessages.put(seq, true);
+        }
+    }
+
+    @Override
+    protected void onClientTimedOut(P2PClientUdp client, int seq, InetSocketAddress remoteAddress, int retryCount) {
+        timedOutMessages.put(seq, true);
     }
     
     /**

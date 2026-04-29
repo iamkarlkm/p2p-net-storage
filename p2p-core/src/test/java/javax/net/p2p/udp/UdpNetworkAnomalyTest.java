@@ -49,8 +49,7 @@ public class UdpNetworkAnomalyTest {
     
     @Before
     public void setUp() throws UnknownHostException {
-        server = P2PServerUdp.getInstance(P2PServerUdp.class,10086);
-        client = P2PClientUdp.getInstance(P2PClientUdp.class);
+        client = new P2PClientUdp(new InetSocketAddress("127.0.0.1", 10086));
         reliabilityManager = new TestUdpReliabilityManager();
         
         // 设置消息交付回调以记录统计信息
@@ -63,9 +62,6 @@ public class UdpNetworkAnomalyTest {
     public void tearDown() {
         if (reliabilityManager != null) {
             reliabilityManager.shutdown();
-        }
-        if (server != null) {
-            server.released();
         }
         if (client != null) {
             client.shutdown();
@@ -92,12 +88,10 @@ public class UdpNetworkAnomalyTest {
         // 发送50个消息
         long startTime = System.currentTimeMillis();
         for (int i = 0; i < messageCount; i++) {
-            reliabilityManager.sendReliableMessage(client, P2PWrapper.build(P2PCommand.ECHO, "Ideal test " + i));
-            
-            // 立即确认
-            reliabilityManager.processAck(i, remoteAddress);
+            int seq = reliabilityManager.sendReliableMessage(client, P2PWrapper.build(P2PCommand.ECHO, "Ideal test " + i));
+            reliabilityManager.processAck(seq, remoteAddress);
         }
-        
+        System.out.println("消息发送线程数。:"+deliveredCount.get());
         // 等待所有消息交付
         boolean allDelivered = latch.await(5, TimeUnit.SECONDS);
         long endTime = System.currentTimeMillis();
@@ -108,12 +102,16 @@ public class UdpNetworkAnomalyTest {
         long totalTime = endTime - startTime;
         double throughput = (messageCount * 1000.0) / totalTime;
         
-        log.info("理想网络测试: {} 消息在 {}ms 内交付 = {:.2f} 消息/秒", 
+        log.info("理想网络测试: {} 消息在 {}ms 内交付 = {} 消息/秒", 
                  messageCount, totalTime, throughput);
+        
+        
         
         // 验证无重传
         String stats = reliabilityManager.getStatistics();
         assertFalse("理想网络不应有重传", stats.contains("Retransmitted=1"));
+        
+        System.out.println(stats);
     }
     
     /**
@@ -139,12 +137,12 @@ public class UdpNetworkAnomalyTest {
         
         // 发送100个消息，模拟1%丢包率
         for (int i = 0; i < messageCount; i++) {
-            reliabilityManager.sendReliableMessage(client,
+            int seq = reliabilityManager.sendReliableMessage(client,
                 P2PWrapper.build(0, P2PCommand.ECHO, "Light loss test " + i));
             
             // 99%的概率确认（模拟1%丢包）
             if (Math.random() > 0.01) {
-                reliabilityManager.processAck(i, remoteAddress);
+                reliabilityManager.processAck(seq, remoteAddress);
             }
         }
         
@@ -186,12 +184,12 @@ public class UdpNetworkAnomalyTest {
         
         // 发送80个消息，模拟5%丢包率
         for (int i = 0; i < messageCount; i++) {
-            reliabilityManager.sendReliableMessage(client,
+            int seq = reliabilityManager.sendReliableMessage(client,
                 P2PWrapper.build(0, P2PCommand.ECHO, "Medium loss test " + i));
             
             // 95%的概率确认（模拟5%丢包）
             if (Math.random() > 0.05) {
-                reliabilityManager.processAck(i, remoteAddress);
+                reliabilityManager.processAck(seq, remoteAddress);
             }
         }
         
@@ -233,12 +231,12 @@ public class UdpNetworkAnomalyTest {
         
         // 发送60个消息，模拟15%丢包率
         for (int i = 0; i < messageCount; i++) {
-            reliabilityManager.sendReliableMessage(client,
+            int seq = reliabilityManager.sendReliableMessage(client,
                 P2PWrapper.build(0, P2PCommand.ECHO, "Heavy loss test " + i));
             
             // 85%的概率确认（模拟15%丢包）
             if (Math.random() > 0.15) {
-                reliabilityManager.processAck(i, remoteAddress);
+                reliabilityManager.processAck(seq, remoteAddress);
             }
         }
         
@@ -281,10 +279,9 @@ public class UdpNetworkAnomalyTest {
         
         // 发送40个消息
         for (int i = 0; i < messageCount; i++) {
-            final int seq = i;
             long sendTime = System.currentTimeMillis();
             
-            reliabilityManager.sendReliableMessage(client,
+            final int ackSeq = reliabilityManager.sendReliableMessage(client,
                 P2PWrapper.build(0, P2PCommand.ECHO, "Delay test " + i));
             
             // 延迟确认（模拟网络延迟）
@@ -293,7 +290,7 @@ public class UdpNetworkAnomalyTest {
                     // 随机延迟：80-120ms
                     int delay = 80 + (int)(Math.random() * 40);
                     Thread.sleep(delay);
-                    reliabilityManager.processAck(seq, remoteAddress);
+                    reliabilityManager.processAck(ackSeq, remoteAddress);
                     
                     long ackTime = System.currentTimeMillis();
                     totalDelay.addAndGet(ackTime - sendTime);
@@ -344,9 +341,7 @@ public class UdpNetworkAnomalyTest {
         
         // 发送30个消息
         for (int i = 0; i < messageCount; i++) {
-            final int seq = i;
-            
-            reliabilityManager.sendReliableMessage(client,
+            final int ackSeq = reliabilityManager.sendReliableMessage(client,
                 P2PWrapper.build(0, P2PCommand.ECHO, "Jitter test " + i));
             
             // 随机延迟确认（模拟网络抖动）
@@ -355,7 +350,7 @@ public class UdpNetworkAnomalyTest {
                     // 随机延迟：20-80ms
                     int delay = 20 + (int)(Math.random() * 60);
                     Thread.sleep(delay);
-                    reliabilityManager.processAck(seq, remoteAddress);
+                    reliabilityManager.processAck(ackSeq, remoteAddress);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
@@ -394,18 +389,18 @@ public class UdpNetworkAnomalyTest {
         
         // 发送25个消息，每个都可能重复
         for (int i = 0; i < messageCount; i++) {
-            reliabilityManager.sendReliableMessage(client,
+            int seq = reliabilityManager.sendReliableMessage(client,
                 P2PWrapper.build(0, P2PCommand.ECHO, "Duplicate test " + i));
             
             // 立即确认
-            reliabilityManager.processAck(i, remoteAddress);
+            reliabilityManager.processAck(seq, remoteAddress);
             
             // 模拟重复包（随机发送额外副本）
             if (Math.random() < 0.3) { // 30%的概率发送重复包
                 duplicateCount.incrementAndGet();
                 // 发送重复的数据包
                 ByteBuf duplicateData = Unpooled.copiedBuffer(("Duplicate test " + i).getBytes());
-                reliabilityManager.processDataMessage(i, duplicateData, remoteAddress);
+                reliabilityManager.processDataMessage(seq, duplicateData, remoteAddress);
             }
         }
         
@@ -444,17 +439,14 @@ public class UdpNetworkAnomalyTest {
             latch.countDown();
         });
         
-        // 乱序发送20个消息
-        java.util.List<Integer> sequence = new java.util.ArrayList<>();
-        for (int i = 0; i < messageCount; i++) sequence.add(i);
-        java.util.Collections.shuffle(sequence); // 打乱顺序
-        
-        // 按乱序发送
-        for (int seq : sequence) {
-            reliabilityManager.sendReliableMessage(client,
-                P2PWrapper.build(0, P2PCommand.ECHO, "Out-of-order " + seq));
-            
-            // 确认（按乱序确认）
+        java.util.List<Integer> seqs = new java.util.ArrayList<>();
+        for (int i = 0; i < messageCount; i++) {
+            int seq = reliabilityManager.sendReliableMessage(client,
+                P2PWrapper.build(0, P2PCommand.ECHO, "Out-of-order " + i));
+            seqs.add(seq);
+        }
+        java.util.Collections.shuffle(seqs);
+        for (int seq : seqs) {
             reliabilityManager.processAck(seq, remoteAddress);
         }
         
@@ -492,11 +484,11 @@ public class UdpNetworkAnomalyTest {
         for (int i = 0; i < messageCount; i++) {
             String message = String.format("Bandwidth test %03d - %s", i, 
                 "x".repeat(80)); // 约100字节的消息
-            reliabilityManager.sendReliableMessage(client,
+            int seq = reliabilityManager.sendReliableMessage(client,
                 P2PWrapper.build(0, P2PCommand.ECHO, message));
             
             // 确认
-            reliabilityManager.processAck(i, remoteAddress);
+            reliabilityManager.processAck(seq, remoteAddress);
         }
         
         // 等待所有消息被交付（带宽限制下可能需要更长时间）
@@ -544,8 +536,7 @@ public class UdpNetworkAnomalyTest {
         
         // 发送30个消息
         for (int i = 0; i < messageCount; i++) {
-            final int seq = i;
-            reliabilityManager.sendReliableMessage(client,
+            final int ackSeq = reliabilityManager.sendReliableMessage(client,
                 P2PWrapper.build(0, P2PCommand.ECHO, "Combined test " + i));
             
             // 随机确认（模拟10%丢包）
@@ -556,7 +547,7 @@ public class UdpNetworkAnomalyTest {
                         // 随机延迟：100-400ms
                         int delay = 100 + (int)(Math.random() * 300);
                         Thread.sleep(delay);
-                        reliabilityManager.processAck(seq, remoteAddress);
+                        reliabilityManager.processAck(ackSeq, remoteAddress);
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                     }
@@ -603,8 +594,7 @@ public class UdpNetworkAnomalyTest {
         
         // 持续发送200个消息
         for (int i = 0; i < totalMessages; i++) {
-            final int seq = i;
-            reliabilityManager.sendReliableMessage(client,
+            final int ackSeq = reliabilityManager.sendReliableMessage(client,
                 P2PWrapper.build(0, P2PCommand.ECHO, "Long running " + i));
             
             // 随机确认（95%确认率）
@@ -613,7 +603,7 @@ public class UdpNetworkAnomalyTest {
                     try {
                         // 随机延迟：50-200ms
                         Thread.sleep(50 + (int)(Math.random() * 150));
-                        reliabilityManager.processAck(seq, remoteAddress);
+                        reliabilityManager.processAck(ackSeq, remoteAddress);
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                     }
@@ -689,8 +679,7 @@ public class UdpNetworkAnomalyTest {
             
             // 发送本阶段的消息
             for (int i = 0; i < messagesPerPhase; i++) {
-                final int seq = phase * messagesPerPhase + i;
-                reliabilityManager.sendReliableMessage(client,
+                final int ackSeq = reliabilityManager.sendReliableMessage(client,
                     P2PWrapper.build(0, P2PCommand.ECHO, "Phase " + phase + " msg " + i));
                 
                 // 随机确认（根据丢包率）
@@ -700,7 +689,7 @@ public class UdpNetworkAnomalyTest {
                             // 随机延迟：delay ± 20%
                             int actualDelay = delay + (int)((Math.random() - 0.5) * delay * 0.4);
                             Thread.sleep(Math.max(1, actualDelay));
-                            reliabilityManager.processAck(seq, remoteAddress);
+                            reliabilityManager.processAck(ackSeq, remoteAddress);
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
                         }
@@ -752,8 +741,7 @@ public class UdpNetworkAnomalyTest {
         
         // 发送第一阶段消息
         for (int i = 0; i < phase1Messages; i++) {
-            final int seq = i;
-            reliabilityManager.sendReliableMessage(client,
+            final int ackSeq = reliabilityManager.sendReliableMessage(client,
                 P2PWrapper.build(0, P2PCommand.ECHO, "Bad network msg " + i));
             
             // 80%的概率确认
@@ -761,7 +749,7 @@ public class UdpNetworkAnomalyTest {
                 new Thread(() -> {
                     try {
                         Thread.sleep(200 + (int)(Math.random() * 200));
-                        reliabilityManager.processAck(seq, remoteAddress);
+                        reliabilityManager.processAck(ackSeq, remoteAddress);
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                     }
@@ -788,8 +776,7 @@ public class UdpNetworkAnomalyTest {
         
         // 发送第二阶段消息
         for (int i = 0; i < phase2Messages; i++) {
-            final int seq = phase1Messages + i;
-            reliabilityManager.sendReliableMessage(client,
+            final int ackSeq = reliabilityManager.sendReliableMessage(client,
                 P2PWrapper.build(0, P2PCommand.ECHO, "Good network msg " + i));
             
             // 99%的概率快速确认
@@ -797,7 +784,7 @@ public class UdpNetworkAnomalyTest {
                 new Thread(() -> {
                     try {
                         Thread.sleep(10 + (int)(Math.random() * 20));
-                        reliabilityManager.processAck(seq, remoteAddress);
+                        reliabilityManager.processAck(ackSeq, remoteAddress);
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                     }
