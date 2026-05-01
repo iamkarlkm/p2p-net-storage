@@ -1,0 +1,66 @@
+syntax = "proto3";
+
+package p2p.rpc.dfsmap.v1;
+
+option java_multiple_files = true;
+option java_package = "javax.net.p2p.rpc.dfsmap.proto";
+option java_outer_classname = "RpcDfsMapProto";
+
+message DfsMapGetRequest {
+  int32 api_version = 1;
+  int64 epoch = 2;
+  int64 key = 3;
+}
+
+message DfsMapGetResponse {
+  int32 status = 1;
+  int64 epoch = 2;
+  int64 key = 3;
+  bool found = 4;
+  int64 value = 5;
+}
+
+message DfsMapPutRequest {
+  int32 api_version = 1;
+  int64 epoch = 2;
+  int64 key = 3;
+  int64 value = 4;
+  bool return_old_value = 5;
+}
+
+message DfsMapPutResponse {
+  int32 status = 1;
+  int64 epoch = 2;
+  int64 key = 3;
+  bool had_old = 4;
+  int64 old_value = 5;
+}
+
+message DfsMapRemoveRequest {
+  int32 api_version = 1;
+  int64 epoch = 2;
+  int64 key = 3;
+  bool return_old_value = 4;
+}
+
+message DfsMapRemoveResponse {
+  int32 status = 1;
+  int64 epoch = 2;
+  int64 key = 3;
+  bool removed = 4;
+  int64 old_value = 5;
+}
+
+message DfsMapRangeRequest {
+  int32 api_version = 1;
+  int64 epoch = 2;
+  int64 start = 3;
+  int32 count = 4;
+  bool keys_only = 5;
+}
+
+message DfsMapRangeItem {
+  int64 key = 1;
+  int64 value = 2;
+  bool has_value = 3;
+}

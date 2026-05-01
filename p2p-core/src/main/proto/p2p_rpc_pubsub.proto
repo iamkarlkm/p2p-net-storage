@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package p2p.rpc.pubsub.v1;
+
+option java_multiple_files = true;
+option java_package = "javax.net.p2p.rpc.pubsub.proto";
+option java_outer_classname = "RpcPubSubProto";
+
+message PubSubPublishRequest {
+  string topic = 1;
+  string message = 2;
+}
+
+message PubSubPublishResponse {
+  bool accepted = 1;
+  int32 subscriber_count = 2;
+}
+
+message PubSubSubscribeRequest {
+  string topic = 1;
+}
+
+message PubSubEvent {
+  string topic = 1;
+  string message = 2;
+  int32 index = 3;
+}

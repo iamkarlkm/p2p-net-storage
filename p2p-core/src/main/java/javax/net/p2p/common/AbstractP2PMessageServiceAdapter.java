@@ -38,6 +38,7 @@ import javax.net.p2p.common.ChannelAwaitOnMessage;
 import javax.net.p2p.common.ExecutorServicePool;
 import javax.net.p2p.common.ReferencedSingleton;
 import javax.net.p2p.exception.RequestTimeoutException;
+import javax.net.p2p.interfaces.BoundStreamMessageService;
 import javax.net.p2p.interfaces.P2PMessageService;
 import javax.net.p2p.interfaces.StreamResponse;
 import javax.net.p2p.model.CancelP2PWrapper;
@@ -51,7 +52,7 @@ import javax.net.p2p.utils.SecurityUtils;
  * @author karl
  */
 @Slf4j
-public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSingleton implements P2PMessageService {
+public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSingleton implements P2PMessageService, BoundStreamMessageService {
 
  
     /**
@@ -228,6 +229,11 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
 //    @Override
     @Override
     public P2PWrapper streamRequest(P2PWrapper request,AbstractStreamResponseAdapter streamMessage) throws Exception {
+        return openBoundStreamRequest(request, streamMessage).ack();
+    }
+
+    @Override
+    public BoundStreamRequest openBoundStreamRequest(P2PWrapper request, AbstractStreamResponseAdapter streamMessage) throws Exception {
         checkConnectionFaile();
         if(request.getSeq()==0){
             request.setSeq(messageSequence.incrementAndGet());
@@ -237,13 +243,12 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
             //从已有业务处理器集或对应连接池获取一个空闲业务处理器
             mesageExecutor = pollMesageExecutor(0, TimeUnit.SECONDS);
             STREAM_RESPONSE_HANDLER_MAP.put(request.getSeq(), streamMessage);
-            return mesageExecutor.syncExcute(request, 0, TimeUnit.SECONDS);
+            return new BoundStreamRequest(mesageExecutor.syncExcute(request, 0, TimeUnit.SECONDS), mesageExecutor);
         } catch (TimeoutException | RequestTimeoutException ex) {
             //尝试重新连接服务器
             try {
                 mesageExecutor = pollMesageExecutor(0, TimeUnit.SECONDS);
-                P2PWrapper result = mesageExecutor.syncExcute(request, 0, TimeUnit.SECONDS);
-                return result;
+                return new BoundStreamRequest(mesageExecutor.syncExcute(request, 0, TimeUnit.SECONDS), mesageExecutor);
             } catch (TimeoutException ex2) {
                 log.error("The channel {} is can not connected,isConnectionFailed = true -> {},{}" + mesageExecutor.getChannel(), request, ex2.getMessage());
                 isConnectionFailed = true;

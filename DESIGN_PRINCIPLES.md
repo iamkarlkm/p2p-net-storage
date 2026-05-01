@@ -1,4 +1,4 @@
-# ImageFileServer 设计原则和设计模式
+# p2p-net-storage 设计原则和设计模式
 
 ## 架构设计原则
 
@@ -681,4 +681,4 @@ public class MessageStatisticsVisitor implements MessageVisitor {
 
 ---
 
-*本文档总结了ImageFileServer项目中应用的设计原则、设计模式和架构模式，为项目的设计决策提供理论依据和实践指导。这些原则和模式的应用使得项目具有良好的可维护性、可扩展性、高性能和高可靠性。*
+*本文档总结了p2p-net-storage项目中应用的设计原则、设计模式和架构模式，为项目的设计决策提供理论依据和实践指导。这些原则和模式的应用使得项目具有良好的可维护性、可扩展性、高性能和高可靠性。*

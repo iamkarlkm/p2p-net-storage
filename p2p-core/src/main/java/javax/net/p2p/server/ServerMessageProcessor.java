@@ -50,6 +50,7 @@ import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.interfaces.P2PChannelAwareCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.model.StreamP2PWrapper;
+import javax.net.p2p.rpc.server.RpcControlSupport;
 import java.util.concurrent.ConcurrentHashMap;
 import lombok.extern.slf4j.Slf4j;
 
@@ -144,6 +145,11 @@ public class ServerMessageProcessor extends AbstractTcpMessageProcessor {
                 return;
             }
             ctx.channel().writeAndFlush(P2PWrapper.build(msg.getSeq(), P2PCommand.STD_ERROR, "task not found"));
+            return;
+        }
+        if (msg.getCommand() == P2PCommand.RPC_CONTROL) {
+            P2PWrapper<byte[]> controlResponse = RpcControlSupport.handleControl((P2PWrapper<byte[]>) msg, lastLongTimedRequestAdapterMap, lastStreamRequestAdapterMap);
+            ctx.channel().writeAndFlush(controlResponse);
             return;
         }
 

@@ -1,9 +1,9 @@
-# ImageFileServer 项目结构文档
+# p2p-net-storage 项目结构文档
 
 ## 项目整体结构
 
 ```
-ImageFileServer/
+p2p-net-storage/
 ├── src/                          # 源代码目录
 │   ├── main/                     # 主代码目录
 │   │   ├── java/                 # Java源代码
@@ -111,7 +111,7 @@ javax/net/p2p/
 │   ├── ClientInfo.java           # 客户端信息模型
 │   └── ...
 ├── server/                       # 服务器模块
-│   ├── ImageFileServer.java      # 主服务器入口
+│   ├── p2p-net-storage.java      # 主服务器入口
 │   ├── P2PServer.java            # P2P服务器
 │   ├── P2PServerTcp.java         # TCP服务器
 │   ├── P2PServerUdp.java         # UDP服务器
@@ -240,8 +240,8 @@ target/
 ├── maven-status/                 # Maven状态
 ├── maven-archiver/               # Maven归档
 ├── surefire-reports/             # 测试报告
-├── ImageFileServer-1.0.0.jar     # 主JAR包
-└── ImageFileServer-1.0.0-jar-with-dependencies.jar # 带依赖的JAR包
+├── p2p-net-storage-1.0.0.jar     # 主JAR包
+└── p2p-net-storage-1.0.0-jar-with-dependencies.jar # 带依赖的JAR包
 ```
 
 ## 依赖库结构
@@ -279,7 +279,7 @@ lib/                              # 第三方库目录
 
 ```mermaid
 graph TD
-    A[ImageFileServer] --> B[P2PServer]
+    A[p2p-net-storage] --> B[P2PServer]
     B --> C[ServerMessageProcessor]
     C --> D[P2PWrapperEncoder/Decoder]
     D --> E[Netty Framework]
@@ -311,8 +311,8 @@ graph TD
 
 | 模块 | 依赖的模块 | 被依赖的模块 |
 |------|------------|--------------|
-| **ImageFileServer** | P2PServer, P2PConfig | 无 |
-| **P2PServer** | ServerMessageProcessor, PipelineInitializer | ImageFileServer |
+| **p2p-net-storage** | P2PServer, P2PConfig | 无 |
+| **P2PServer** | ServerMessageProcessor, PipelineInitializer | p2p-net-storage |
 | **ServerMessageProcessor** | P2PCommand, 业务处理器 | P2PServer |
 | **P2PWrapperEncoder/Decoder** | Protostuff, ByteBuf | ServerMessageProcessor, 客户端 |
 | **业务处理器** | FileUtil, P2pCosUtils, P2pHdfsUtils | ServerMessageProcessor |
@@ -378,7 +378,7 @@ graph TD
 ```xml
 <project>
   <groupId>com.q3lives</groupId>
-  <artifactId>ImageFileServer</artifactId>
+  <artifactId>p2p-net-storage</artifactId>
   <version>1.0.0</version>
   
   <dependencies>
@@ -401,7 +401,7 @@ graph TD
 
 ### 2. 打包结构
 ```
-ImageFileServer-1.0.0-jar-with-dependencies.jar
+p2p-net-storage-1.0.0-jar-with-dependencies.jar
 ├── META-INF/
 │   ├── MANIFEST.MF              # 清单文件
 │   └── ...
@@ -423,7 +423,7 @@ ImageFileServer-1.0.0-jar-with-dependencies.jar
 │   ├── logback.xml             # 日志配置
 │   └── ssl/                    # SSL证书
 ├── lib/                         # 依赖库
-│   └── ImageFileServer-1.0.0-jar-with-dependencies.jar
+│   └── p2p-net-storage-1.0.0-jar-with-dependencies.jar
 ├── logs/                        # 日志目录
 │   ├── image-file-server.log   # 主日志
 │   ├── error.log               # 错误日志
@@ -540,4 +540,4 @@ chore: 构建工具或依赖更新
 
 ---
 
-*本文档提供了ImageFileServer项目的完整结构说明，包括目录结构、模块组织、依赖关系、构建部署等方面，为项目开发和维护提供完整的参考。*
+*本文档提供了p2p-net-storage项目的完整结构说明，包括目录结构、模块组织、依赖关系、构建部署等方面，为项目开发和维护提供完整的参考。*

@@ -1,0 +1,120 @@
+syntax = "proto3";
+
+package p2p.rpc.v1;
+
+option java_multiple_files = true;
+option java_package = "javax.net.p2p.rpc.proto";
+option java_outer_classname = "RpcProto";
+
+enum RpcFrameType {
+  RPC_FRAME_TYPE_UNSPECIFIED = 0;
+  OPEN = 1;
+  DATA = 2;
+  CLOSE = 3;
+  CANCEL = 4;
+  ERROR = 5;
+  WINDOW_UPDATE = 6;
+  HEARTBEAT = 7;
+}
+
+enum RpcCallType {
+  RPC_CALL_TYPE_UNSPECIFIED = 0;
+  UNARY = 1;
+  SERVER_STREAM = 2;
+  CLIENT_STREAM = 3;
+  BIDI_STREAM = 4;
+}
+
+enum RpcStatusCode {
+  OK = 0;
+  BAD_REQUEST = 1;
+  UNAUTHORIZED = 2;
+  FORBIDDEN = 3;
+  NOT_FOUND = 4;
+  METHOD_NOT_ALLOWED = 5;
+  DEADLINE_EXCEEDED = 6;
+  CANCELED = 7;
+  CONFLICT = 8;
+  PAYLOAD_TOO_LARGE = 9;
+  TOO_MANY_REQUESTS = 10;
+  CIRCUIT_OPEN = 11;
+  SERVICE_UNAVAILABLE = 12;
+  INTERNAL_ERROR = 13;
+  CODEC_ERROR = 14;
+  UNSUPPORTED_VERSION = 15;
+}
+
+message RpcMeta {
+  uint64 request_id = 1;
+  string service = 2;
+  string method = 3;
+  string service_version = 4;
+  RpcCallType call_type = 5;
+  uint64 deadline_epoch_ms = 6;
+  string codec = 7;
+  string trace_id = 8;
+  string span_id = 9;
+  string parent_span_id = 10;
+  string caller_node_id = 11;
+  string caller_user_id = 12;
+  map<string, string> headers = 13;
+  bool idempotent = 14;
+  uint32 method_hash = 15;
+}
+
+message RpcStatus {
+  RpcStatusCode code = 1;
+  string message = 2;
+  bool retriable = 3;
+  map<string, string> details = 4;
+}
+
+message RpcFlowControl {
+  uint32 permits = 1;
+  uint32 max_inflight_frames = 2;
+  uint32 max_frame_bytes = 3;
+}
+
+message RpcFrame {
+  RpcMeta meta = 1;
+  RpcFrameType frame_type = 2;
+  bytes payload = 3;
+  RpcStatus status = 4;
+  uint32 chunk_index = 5;
+  bool end_of_stream = 6;
+  RpcFlowControl flow_control = 7;
+  bool end_of_message = 8;
+}
+
+message HealthCheckRequest {
+  string service = 1;
+}
+
+message HealthCheckResponse {
+  bool healthy = 1;
+  bool ready = 2;
+  string message = 3;
+}
+
+message DiscoverRequest {
+  string service = 1;
+  bool include_methods = 2;
+}
+
+message MethodDescriptor {
+  string method = 1;
+  string input_type = 2;
+  string output_type = 3;
+  RpcCallType call_type = 4;
+  bool idempotent = 5;
+}
+
+message ServiceDescriptor {
+  string service = 1;
+  string version = 2;
+  repeated MethodDescriptor methods = 3;
+}
+
+message DiscoverResponse {
+  repeated ServiceDescriptor services = 1;
+}

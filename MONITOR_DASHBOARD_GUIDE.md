@@ -17,7 +17,7 @@
 
 ```bash
 # 进入项目根目录
-cd c:\2025\code\ImageFileServer
+cd c:\2025\code\p2p-net-storage
 
 # 编译项目
 mvn clean compile
@@ -198,8 +198,8 @@ export MONITOR_DATA_DIR=/var/lib/udp-monitor
 #### 步骤1: 编译项目
 ```bash
 # 克隆或复制项目
-git clone <项目地址>
-cd ImageFileServer
+git clone https://github.com/iamkarlkm/p2p-net-storage
+cd p2p-net-storage
 
 # 编译项目
 mvn clean package -DskipTests
@@ -211,14 +211,14 @@ ls target/*.jar
 #### 步骤2: 启动监控服务
 ```bash
 # 方式1: 使用启动器
-java -jar target/ImageFileServer-1.0.0.jar monitor --start
+java -jar target/p2p-net-storage-1.0.0.jar monitor --start
 
 # 方式2: 直接启动Web服务器
-java -cp "target/ImageFileServer-1.0.0.jar:target/dependency/*" \
+java -cp "target/p2p-net-storage-1.0.0.jar:target/dependency/*" \
   javax.net.p2p.monitor.web.MonitorWebServer
 
 # 方式3: 启动WebSocket服务器
-java -cp "target/ImageFileServer-1.0.0.jar:target/dependency/*" \
+java -cp "target/p2p-net-storage-1.0.0.jar:target/dependency/*" \
   javax.net.p2p.monitor.web.WebSocketServer
 ```
 
@@ -237,7 +237,7 @@ curl http://localhost:8088/monitor/api/udp/health
 ```dockerfile
 FROM openjdk:11-jre-slim
 WORKDIR /app
-COPY target/ImageFileServer-1.0.0.jar app.jar
+COPY target/p2p-net-storage-1.0.0.jar app.jar
 COPY target/dependency/*.jar lib/
 EXPOSE 8088 8089 6060
 ENTRYPOINT ["java", "-cp", "app.jar:lib/*", \

@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package p2p.rpc.stream.v1;
+
+option java_multiple_files = true;
+option java_package = "javax.net.p2p.rpc.stream.proto";
+option java_outer_classname = "RpcStreamBuiltinProto";
+
+message StreamCollectRequest {
+  string message = 1;
+}
+
+message StreamCollectResponse {
+  repeated string messages = 1;
+  uint32 count = 2;
+  string joined = 3;
+}
+
+message StreamChatRequest {
+  string message = 1;
+}
+
+message StreamChatResponse {
+  uint32 index = 1;
+  string message = 2;
+}

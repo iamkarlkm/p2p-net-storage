@@ -422,7 +422,25 @@ public enum P2PCommand {
 
     PUBSUB_STREAM(21001, P2PServiceCategory.DATA_TRANSFER),
 
-    PUBSUB_PUBLISH(21002, P2PServiceCategory.DATA_TRANSFER);
+    PUBSUB_PUBLISH(21002, P2PServiceCategory.DATA_TRANSFER),
+
+    /** RPC 单次请求响应 */
+    RPC_UNARY(30000, P2PServiceCategory.RPC),
+
+    /** RPC 流式调用 */
+    RPC_STREAM(30001, P2PServiceCategory.RPC),
+
+    /** RPC 控制面，承载取消和错误等控制信号 */
+    RPC_CONTROL(30002, P2PServiceCategory.RPC),
+
+    /** RPC 健康检查 */
+    RPC_HEALTH(30003, P2PServiceCategory.RPC),
+
+    /** RPC 服务发现 */
+    RPC_DISCOVER(30004, P2PServiceCategory.RPC),
+
+    /** RPC 服务端事件推送 */
+    RPC_EVENT(30005, P2PServiceCategory.RPC);
     /** 命令的数值编码，用于网络传输和序列化 */
     private final int value;
     private final P2PServiceCategory category;

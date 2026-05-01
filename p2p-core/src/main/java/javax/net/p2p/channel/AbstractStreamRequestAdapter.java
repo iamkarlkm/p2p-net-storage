@@ -1,5 +1,6 @@
 package javax.net.p2p.channel;
 
+import java.util.ArrayDeque;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Future;
@@ -44,11 +45,13 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
 
     private StreamP2PWrapper streamMessage;
 
+    private ArrayDeque<StreamP2PWrapper> pendingStreamMessages;
+
     private Integer requestId;
 
-    private final ReentrantLock lock = new ReentrantLock();
+    private ReentrantLock lock = new ReentrantLock();
 
-    private final Condition awaitCondition = lock.newCondition();
+    private Condition awaitCondition = lock.newCondition();
 
     @Override
     public void run() {
@@ -64,11 +67,7 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
                     lock.lock();
                     try {
                         if (streamMessage != null) {//首次调用执行
-                            StreamP2PWrapper streamResponse = streamRequest.request(executor, streamMessage);
-                            if (streamResponse != null) {
-                                executor.sendResponse(streamResponse);
-                            }
-                            streamMessage = null;
+                            handleStreamMessage(streamMessage);
                         }
                     } catch (InterruptedException ex) {
                         log.error("request:{}  -> exception:{}", streamMessage, ex.getMessage());
@@ -83,27 +82,23 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
                     if (executor.isActive()) {
                         lock.lock();
                         try {
-                            //等待新消息到来
-                            awaitCondition.await();
+                            // 先检查是否已有挂起消息，避免“先 signal 后 await”导致的丢信号竞态。
+                            while (continued && streamMessage == null) {
+                                awaitCondition.await();
+                            }
+                            if (streamMessage == null) {
+                                continue;
+                            }
                             if (streamMessage.isCompleted()) {
-                                StreamP2PWrapper streamResponse = streamRequest.request(executor, streamMessage);
-                                if (streamResponse != null) {
-                                    executor.sendResponse(streamResponse);
-                                }
-                                streamMessage = null;
+                                handleStreamMessage(streamMessage);
                                 break;
                             } else if (streamMessage.isCanceled()) {
                                 continued = false;
                                 streamRequest.cancel(executor, streamMessage);
-                                streamMessage = null;
-
+                                streamMessage = pollPendingStreamMessage();
                                 break;
                             } else {
-                                StreamP2PWrapper streamResponse = streamRequest.request(executor, streamMessage);
-                                if (streamResponse != null) {
-                                    executor.sendResponse(streamResponse);
-                                }
-                                streamMessage = null;
+                                handleStreamMessage(streamMessage);
                             }
                         } catch (InterruptedException ex) {
                             log.error("request:{}  -> exception:{}", streamMessage, ex.getMessage());
@@ -124,6 +119,21 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
 
     }
 
+    private void handleStreamMessage(StreamP2PWrapper message) throws InterruptedException {
+        StreamP2PWrapper streamResponse = streamRequest.request(executor, message);
+        if (streamResponse != null) {
+            executor.sendResponse(streamResponse);
+        }
+        streamMessage = pollPendingStreamMessage();
+    }
+
+    private StreamP2PWrapper pollPendingStreamMessage() {
+        if (pendingStreamMessages == null || pendingStreamMessages.isEmpty()) {
+            return null;
+        }
+        return pendingStreamMessages.pollFirst();
+    }
+
     /**
      * 新消息到来
      *
@@ -132,7 +142,15 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
     public void onMessage(StreamP2PWrapper streamMessage) {
         lock.lock();
         try {
-            this.streamMessage = streamMessage;
+            if (this.streamMessage == null) {
+                this.streamMessage = streamMessage;
+            } else {
+                if (pendingStreamMessages == null) {
+                    pendingStreamMessages = new ArrayDeque<>();
+                }
+                // 顺序保留已到达但尚未消费的帧，避免后来的流消息覆盖前一帧。
+                pendingStreamMessages.offerLast(streamMessage);
+            }
             awaitCondition.signal();
         } finally {
             lock.unlock();
@@ -204,11 +222,18 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
         }
         this.streamRequest = null;
         this.streamMessage = null;
+        if (pendingStreamMessages != null) {
+            pendingStreamMessages.clear();
+            pendingStreamMessages = null;
+        }
         this.continued = false;
     }
 
     @Override
     public void loadParams(Object... params) {
+        // clone() 是浅拷贝；每次装载任务前都要重建锁与条件变量，避免不同流实例共享同步原语。
+        this.lock = new ReentrantLock();
+        this.awaitCondition = lock.newCondition();
         switch (params.length) {
             case 2: {
                 this.executor = (AbstractSendMesageExecutor) params[0];
@@ -224,6 +249,7 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
                 this.streamRequest = (StreamRequest) this;
                 this.executor = (AbstractSendMesageExecutor) params[1];
                 this.streamMessage = (StreamP2PWrapper) params[2];
+                this.pendingStreamMessages = new ArrayDeque<>();
                 Future f = ExecutorServicePool.P2P_REFERENCED_SERVER_ASYNC_POOLS.submit(this);
                 FUTURE_MAP.put(requestId, f);
                 break;

@@ -11,6 +11,7 @@ import javax.net.p2p.interfaces.P2PChannelAwareCommandHandler;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.model.StreamP2PWrapper;
+import javax.net.p2p.rpc.server.RpcControlSupport;
 import lombok.extern.slf4j.Slf4j;
 import java.util.concurrent.ConcurrentHashMap;
 /**
@@ -59,6 +60,11 @@ public class ServerQuicMessageProcessor extends AbstractQuicMessageProcessor {
                 return;
             }
             sendResponse(ctx, P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "task not found"));
+            return;
+        }
+        if (request.getCommand() == P2PCommand.RPC_CONTROL) {
+            P2PWrapper<byte[]> controlResponse = RpcControlSupport.handleControl((P2PWrapper<byte[]>) request, lastLongTimedRequestAdapterMap, lastStreamRequestAdapterMap);
+            sendResponse(ctx, controlResponse);
             return;
         }
         if (!P2PServiceManager.isEnabled(request.getCommand().getCategory())) {

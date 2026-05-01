@@ -14,6 +14,7 @@ import javax.net.p2p.common.AbstractSendMesageExecutor;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.model.StreamP2PWrapper;
+import javax.net.p2p.rpc.server.RpcControlSupport;
 import lombok.extern.slf4j.Slf4j;
 /**
  * ServerUdpMessageProcessor。
@@ -95,6 +96,14 @@ public class ServerUdpMessageProcessor extends AbstractUdpMessageProcessor {
                 }
             }
             response = P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "task not found");
+            sendResponse(ctx.channel(), datagramPacket.sender(), response, magic);
+            return;
+        }
+        if (request.getCommand() == P2PCommand.RPC_CONTROL) {
+            InetSocketAddress remote = datagramPacket.sender();
+            ConcurrentHashMap<Integer, AbstractLongTimedRequestAdapter> longMap = lastLongTimedRequestAdapterMap.computeIfAbsent(remote, ignored -> new ConcurrentHashMap<>());
+            ConcurrentHashMap<Integer, AbstractStreamRequestAdapter> streamMap = lastStreamRequestAdapterMap.computeIfAbsent(remote, ignored -> new ConcurrentHashMap<>());
+            response = RpcControlSupport.handleControl((P2PWrapper<byte[]>) request, longMap, streamMap);
             sendResponse(ctx.channel(), datagramPacket.sender(), response, magic);
             return;
         }
