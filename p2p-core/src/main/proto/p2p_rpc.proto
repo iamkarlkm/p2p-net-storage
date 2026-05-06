@@ -60,6 +60,8 @@ message RpcMeta {
   map<string, string> headers = 13;
   bool idempotent = 14;
   uint32 method_hash = 15;
+  map<string, string> response_headers = 16;
+  map<string, string> response_trailers = 17;
 }
 
 message RpcStatus {

@@ -417,6 +417,26 @@ public enum P2PCommand {
     DFS_MAP_INT_TABLES_ENABLE_COMMIT(23034, P2PServiceCategory.DS_HASHMAP_DFS),
 
     DFS_MAP_INT_TABLES_ENABLE_ABORT(23035, P2PServiceCategory.DS_HASHMAP_DFS),
+
+    DB_ENTITY_PUT(24000, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ENTITY_PUT(24001, P2PServiceCategory.DS_DB),
+
+    DB_ENTITY_GET(24002, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ENTITY_GET(24003, P2PServiceCategory.DS_DB),
+
+    DB_ENTITY_REMOVE(24004, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ENTITY_REMOVE(24005, P2PServiceCategory.DS_DB),
+
+    DB_ENTITY_EXISTS(24006, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ENTITY_EXISTS(24007, P2PServiceCategory.DS_DB),
+
+    DB_ENTITY_QUERY_IDS(24008, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ENTITY_QUERY_IDS(24009, P2PServiceCategory.DS_DB),
     
     DATA_TRANSFER(21000, P2PServiceCategory.DATA_TRANSFER),
 

@@ -5,6 +5,7 @@ import java.lang.reflect.Method;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.channel.AbstractStreamRequestAdapter;
 import javax.net.p2p.common.AbstractSendMesageExecutor;
+import javax.net.p2p.rpc.api.RpcServerInterceptor;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.model.StreamP2PWrapper;
 import javax.net.p2p.rpc.api.RpcServerStreamInvoker;
@@ -13,6 +14,7 @@ import javax.net.p2p.rpc.model.RpcMethodKey;
 import javax.net.p2p.rpc.model.RpcRequestContext;
 import javax.net.p2p.rpc.proto.RpcCallType;
 import javax.net.p2p.rpc.proto.RpcFrame;
+import javax.net.p2p.rpc.proto.RpcStatus;
 import javax.net.p2p.rpc.proto.RpcStatusCode;
 
 /**
@@ -34,7 +36,19 @@ public class RpcServerStreamHandler extends AbstractStreamRequestAdapter {
             }
             RpcFrame frame = RpcFrame.parseFrom((byte[]) streamRequest.getData());
             RpcRequestContext context = RpcRequestContext.from(request, frame, executor.getChannel());
+            RpcStatus intercepted = beforeHandle(context);
+            if (intercepted != null) {
+                executor.sendResponse(StreamP2PWrapper.buildStream(
+                    streamRequest.getSeq(),
+                    0,
+                    P2PCommand.RPC_STREAM,
+                    RpcFrames.complete(frame, new byte[0], intercepted, true, context).toByteArray(),
+                    true
+                ));
+                return;
+            }
             if (context.isDeadlineExceeded(System.currentTimeMillis())) {
+                afterError(context, RpcStatusCode.DEADLINE_EXCEEDED, "deadline exceeded");
                 sendError(executor, streamRequest, frame, RpcStatusCode.DEADLINE_EXCEEDED, "deadline exceeded");
                 return;
             }
@@ -44,10 +58,12 @@ public class RpcServerStreamHandler extends AbstractStreamRequestAdapter {
                 context.version()
             ));
             if (descriptor == null) {
+                afterError(context, RpcStatusCode.NOT_FOUND, "RPC 方法不存在");
                 sendError(executor, streamRequest, frame, RpcStatusCode.NOT_FOUND, "RPC 方法不存在");
                 return;
             }
             if (descriptor.callType() != RpcCallType.SERVER_STREAM) {
+                afterError(context, RpcStatusCode.METHOD_NOT_ALLOWED, "仅支持 server stream 方法");
                 sendError(executor, streamRequest, frame, RpcStatusCode.METHOD_NOT_ALLOWED, "仅支持 server stream 方法");
                 return;
             }
@@ -61,7 +77,7 @@ public class RpcServerStreamHandler extends AbstractStreamRequestAdapter {
                 frame,
                 null
             );
-            RpcServerResponseObserver observer = new RpcServerResponseObserver(frameSender, frame);
+            RpcServerResponseObserver observer = new RpcServerResponseObserver(frameSender, frame, context);
             invoker.invoke(context, requestMessage, observer);
         } catch (InterruptedException ex) {
             throw ex;
@@ -77,7 +93,7 @@ public class RpcServerStreamHandler extends AbstractStreamRequestAdapter {
         RpcStatusCode code,
         String message
     ) throws InterruptedException {
-        RpcFrame errorFrame = RpcFrames.error(frame, code, message, false);
+        RpcFrame errorFrame = RpcFrames.error(frame, code, message, false, null);
         executor.sendResponse(StreamP2PWrapper.buildStream(
             streamRequest.getSeq(),
             0,
@@ -90,5 +106,21 @@ public class RpcServerStreamHandler extends AbstractStreamRequestAdapter {
     private Message parseMessage(Class<? extends Message> messageType, byte[] payload) throws Exception {
         Method parseFrom = messageType.getMethod("parseFrom", byte[].class);
         return (Message) parseFrom.invoke(null, payload == null ? new byte[0] : payload);
+    }
+
+    private static RpcStatus beforeHandle(RpcRequestContext context) {
+        for (RpcServerInterceptor interceptor : RpcServerInterceptors.all()) {
+            RpcStatus status = interceptor.beforeHandle(context);
+            if (status != null) {
+                return status;
+            }
+        }
+        return null;
+    }
+
+    private static void afterError(RpcRequestContext context, RpcStatusCode code, String message) {
+        for (RpcServerInterceptor interceptor : RpcServerInterceptors.all()) {
+            interceptor.afterError(context, code, message);
+        }
     }
 }

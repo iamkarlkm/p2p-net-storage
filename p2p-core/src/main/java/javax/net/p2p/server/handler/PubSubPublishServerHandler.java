@@ -1,6 +1,8 @@
 package javax.net.p2p.server.handler;
 
 import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.P2PPubSubMessage;
 import javax.net.p2p.model.P2PWrapper;
@@ -17,7 +19,7 @@ public class PubSubPublishServerHandler implements P2PCommandHandler<P2PPubSubMe
     public P2PWrapper process(P2PWrapper<P2PPubSubMessage> request) {
         P2PPubSubMessage msg = request.getData();
         if (msg == null || !PubSubBroker.isTopicAllowed(msg.topic)) {
-            return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "pubsub publish rejected");
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.POLICY_REJECTED, "pubsub publish rejected");
         }
         PubSubBroker.publish(msg);
         return P2PWrapper.build(request.getSeq(), P2PCommand.STD_OK, null);

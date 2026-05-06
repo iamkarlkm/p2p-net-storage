@@ -60,6 +60,8 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.ReadableByteChannel;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.channel.AbstractLongTimedRequestAdapter;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.FileDataModel;
 import javax.net.p2p.model.P2PWrapper;
@@ -143,7 +145,11 @@ public class FilePutServerHandler extends AbstractLongTimedRequestAdapter implem
                 // 重要：验证文件长度记录与实际数据长度的一致性
                 // 这是防止数据篡改的关键安全措施
                 if (payload.length != payload.data.length) {
-                    throw new RuntimeException("文件长度记录不一致:expected length=" + payload.length + ",actual length=" + payload.data.length);
+                    return P2PErrors.stdError(
+                        request.getSeq(),
+                        P2PErrorCode.FILE_LENGTH_MISMATCH,
+                        "文件长度记录不一致:expected length=" + payload.length + ",actual length=" + payload.data.length
+                    );
                 }
                
                 // 使用高效的文件写入方法保存数据
@@ -155,13 +161,13 @@ public class FilePutServerHandler extends AbstractLongTimedRequestAdapter implem
             } else {
                 // 命令类型不匹配，返回内部校验错误
                 // 这种情况通常表示服务器路由配置错误
-                return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "指令内部校验错误！");
+                return P2PErrors.stdError(request.getSeq(), P2PErrorCode.ROUTING_HANDLER_MISMATCH, "指令内部校验错误！");
             }
         } catch (Exception e) {
             // 捕获所有异常，返回错误响应
             // 异常信息包含在响应中，便于客户端诊断问题
             // 注意：生产环境可能需要更详细的错误分类
-            return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, e.toString());
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.FILE_IO_ERROR, e.toString());
         }
     }
 

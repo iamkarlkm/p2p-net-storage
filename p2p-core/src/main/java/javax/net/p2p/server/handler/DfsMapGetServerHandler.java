@@ -4,6 +4,8 @@ import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.dfsmap.DfsMapBackend;
 import javax.net.p2p.dfsmap.DfsMapRegistry;
 import javax.net.p2p.dfsmap.model.DfsMapGetReq;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
 
@@ -17,10 +19,10 @@ public class DfsMapGetServerHandler implements P2PCommandHandler {
     public P2PWrapper process(P2PWrapper request) {
         DfsMapBackend backend = DfsMapRegistry.getBackend();
         if (backend == null) {
-            return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "DFS_MAP backend not registered");
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.SERVICE_BACKEND_NOT_REGISTERED, "DFS_MAP backend not registered");
         }
         if (!(request.getData() instanceof DfsMapGetReq req)) {
-            return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "invalid DFS_MAP_GET payload");
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.INVALID_REQUEST, "invalid DFS_MAP_GET payload");
         }
         return P2PWrapper.build(request.getSeq(), request.getCommand(), backend.handleGet(req));
     }

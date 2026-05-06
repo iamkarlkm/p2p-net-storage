@@ -1,0 +1,21 @@
+---
+updated: "2026-05-04T17:50:39Z"
+---
+# Session
+
+## Verification for ??????????????/?????????
+
+- `mvn -pl p2p-db -Dtest=com.q3lives.ds.database.columnar.ColumnarStoreTest test`
+- `mvn -pl p2p-db test`
+
+## Verification for ?????????????????
+
+- `mvn -pl p2p-db -Dtest=com.q3lives.ds.database.columnar.TableMetaValidationTest test`
+- `mvn -pl p2p-db test`
+
+## Verification for ??????????????????
+
+- `mvn -pl p2p-db -Dtest=com.q3lives.ds.database.columnar.TableMetaValidationTest test`
+- `mvn -pl p2p-db -Dtest=ds.DsHashMapConcurrentTest test`
+- `mvn -pl p2p-db test`
+

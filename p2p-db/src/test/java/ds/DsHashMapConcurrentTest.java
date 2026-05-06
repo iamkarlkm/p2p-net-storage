@@ -107,9 +107,9 @@ public class DsHashMapConcurrentTest {
         }
 
         start.countDown();
-        writersDone.await(30, TimeUnit.SECONDS);
+        assertTrue("writers timed out", writersDone.await(60, TimeUnit.SECONDS));
         pool.shutdown();
-        pool.awaitTermination(30, TimeUnit.SECONDS);
+        assertTrue("thread pool timed out", pool.awaitTermination(60, TimeUnit.SECONDS));
 
         if (err.get() != null) {
             throw new AssertionError(err.get());

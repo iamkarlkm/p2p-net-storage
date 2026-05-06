@@ -9,8 +9,8 @@ import java.util.concurrent.locks.ReentrantLock;
 public  class DsFreeRing implements AutoCloseable {
         private static final byte[] MAGIC = new byte[] {'.', 'F', '-', 'R'};
         private static final int OFF_MAGIC = 0;
-        private static final int OFF_HEAD = 4;
-        private static final int OFF_CAP = 8;        
+         private static final int OFF_CAP = 4;   
+        private static final int OFF_HEAD = 8;
         private static final int OFF_TAIL = 12;
         private static final int OFF_COUNT = 16;
         private static final int HEADER_BYTES = 20;
@@ -18,7 +18,6 @@ public  class DsFreeRing implements AutoCloseable {
 
         private final ReentrantLock lock = new ReentrantLock();
         private final File file;
-        //private final File tmpFile;
         private RandomAccessFile raf;
         private int cap;
         private int head;
@@ -163,7 +162,7 @@ public  class DsFreeRing implements AutoCloseable {
             raf.writeInt(0); // tail
             raf.seek(OFF_COUNT);
             raf.writeInt(0); // count
-            raf.writeInt(0); // reserved @40
+           
             if (raf.length() < OFF_DATA + initialCap * 8L) {
                 raf.setLength(OFF_DATA + initialCap * 8L);
             }
@@ -219,7 +218,6 @@ public  class DsFreeRing implements AutoCloseable {
             raf.writeInt(tail);
             raf.seek(OFF_COUNT);
             raf.writeInt(count);
-            raf.writeInt(0); // reserved @40
         }
 
         private long readAt(long slot) throws IOException {
@@ -235,30 +233,6 @@ public  class DsFreeRing implements AutoCloseable {
         private void expand(int newCap) throws IOException {
             cap = newCap;
             raf.setLength(OFF_DATA + newCap * 8L);
-//            try (RandomAccessFile tmp = new RandomAccessFile(tmpFile, "rw")) {
-//                tmp.setLength(0L);
-//                tmp.seek(0L);
-//                tmp.write(MAGIC);
-//                tmp.seek(OFF_CAP);
-//                tmp.writeLong(newCap);
-//                tmp.writeLong(0L); // head
-//                tmp.writeLong(count); // tail
-//                tmp.writeLong(count); // count
-//                tmp.writeLong(0L); // reserved @40
-//                tmp.setLength(OFF_DATA + newCap * 8L);
-//
-//                for (long i = 0L; i < count; i++) {
-//                    long slot = (head + i) % cap;
-//                    long value = readAt(slot);
-//                    tmp.seek(OFF_DATA + i * 8L);
-//                    tmp.writeLong(value);
-//                }
-//            }
-//
-//            raf.close();
-//            Files.move(tmpFile.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
-//            raf = new RandomAccessFile(file, "rw");
-//            readHeader();
         }
 
     public int capacity() {

@@ -5,6 +5,8 @@ import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.channel.AbstractStreamRequestAdapter;
 import javax.net.p2p.common.AbstractSendMesageExecutor;
 import javax.net.p2p.config.P2PConfig;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.FileDataModel;
 import javax.net.p2p.model.FileSegmentsDataModel;
@@ -76,10 +78,10 @@ public class FileGetStreamServerHandler extends AbstractStreamRequestAdapter imp
                     }
                 }
             } else {
-                executor.sendResponse(P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "指令内部校验错误！"));
+                executor.sendResponse(P2PErrors.stdError(request.getSeq(), P2PErrorCode.ROUTING_HANDLER_MISMATCH, "指令内部校验错误！"));
             }
         } catch (Exception e) {
-            executor.sendResponse(P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, e.toString()));
+            executor.sendResponse(P2PErrors.stdError(request.getSeq(), P2PErrorCode.FILE_IO_ERROR, e.toString()));
         }
     }
 }

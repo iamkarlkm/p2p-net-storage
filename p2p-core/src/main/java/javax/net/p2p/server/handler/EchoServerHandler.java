@@ -2,6 +2,8 @@
 package javax.net.p2p.server.handler;
 
 import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
 
@@ -23,11 +25,11 @@ public class EchoServerHandler implements P2PCommandHandler {
                 System.out.println("request:"+request.toString());
                 return P2PWrapper.build(request.getSeq(),P2PCommand.ECHO, "Server echo -> "+request.getData());
             } else {
-                return P2PWrapper.build(request.getSeq(),P2PCommand.STD_ERROR, "指令内部校验错误！");
+                return P2PErrors.stdError(request.getSeq(), P2PErrorCode.ROUTING_HANDLER_MISMATCH, "指令内部校验错误！");
             }
         } catch (Exception e) {
 			//e.printStackTrace();
-            return P2PWrapper.build(request.getSeq(),P2PCommand.STD_ERROR, e.toString());
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.INTERNAL_ERROR, e.toString());
         }
 
     }

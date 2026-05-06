@@ -7,6 +7,8 @@ import javax.net.p2p.channel.AbstractLongTimedRequestAdapter;
 import javax.net.p2p.channel.AbstractQuicMessageProcessor;
 import javax.net.p2p.channel.AbstractStreamRequestAdapter;
 import javax.net.p2p.common.AbstractSendMesageExecutor;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PChannelAwareCommandHandler;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
@@ -59,7 +61,7 @@ public class ServerQuicMessageProcessor extends AbstractQuicMessageProcessor {
                 sendResponse(ctx, P2PWrapper.build(request.getSeq(), P2PCommand.STD_CANCEL, "canceled"));
                 return;
             }
-            sendResponse(ctx, P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "task not found"));
+            sendResponse(ctx, P2PErrors.stdError(request.getSeq(), P2PErrorCode.TASK_NOT_FOUND));
             return;
         }
         if (request.getCommand() == P2PCommand.RPC_CONTROL) {
@@ -68,7 +70,11 @@ public class ServerQuicMessageProcessor extends AbstractQuicMessageProcessor {
             return;
         }
         if (!P2PServiceManager.isEnabled(request.getCommand().getCategory())) {
-            P2PWrapper unavailable = P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "service unavailable: " + request.getCommand().getCategory());
+            P2PWrapper unavailable = P2PErrors.stdError(
+                request.getSeq(),
+                P2PErrorCode.SERVICE_UNAVAILABLE,
+                "service unavailable: " + request.getCommand().getCategory()
+            );
             sendResponse(ctx, unavailable);
             return;
         }

@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Set;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.api.P2PServiceCategory;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.P2PServiceControlRequest;
 import javax.net.p2p.model.P2PServiceControlResponse;
@@ -22,31 +24,31 @@ public class ServiceControlServerHandler implements P2PCommandHandler {
     public P2PWrapper process(P2PWrapper request) {
         try {
             if (request.getCommand().getValue() != P2PCommand.SERVICE_CONTROL.getValue()) {
-                return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "指令分发内部校验错误！");
+                return P2PErrors.stdError(request.getSeq(), P2PErrorCode.ROUTING_HANDLER_MISMATCH, "指令分发内部校验错误！");
             }
             P2PServiceControlRequest payload = (P2PServiceControlRequest) request.getData();
             if (payload == null || payload.action == null || payload.action.isBlank()) {
-                return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "missing action");
+                return P2PErrors.stdError(request.getSeq(), P2PErrorCode.INVALID_REQUEST, "missing action");
             }
             String action = payload.action.trim().toLowerCase();
             if ("list".equals(action)) {
                 return P2PWrapper.build(request.getSeq(), P2PCommand.STD_OK, snapshot("list"));
             }
             if (!"enable".equals(action) && !"disable".equals(action)) {
-                return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "unknown action: " + payload.action);
+                return P2PErrors.stdError(request.getSeq(), P2PErrorCode.UNSUPPORTED, "unknown action: " + payload.action);
             }
             String cats = payload.categories == null ? "" : payload.categories.trim();
             if (cats.isEmpty()) {
-                return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "missing categories");
+                return P2PErrors.stdError(request.getSeq(), P2PErrorCode.INVALID_REQUEST, "missing categories");
             }
             List<P2PServiceCategory> parsed = parseCategories(cats);
             if (parsed.isEmpty()) {
-                return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "no valid categories");
+                return P2PErrors.stdError(request.getSeq(), P2PErrorCode.INVALID_REQUEST, "no valid categories");
             }
             for (P2PServiceCategory c : parsed) {
                 if ("disable".equals(action)) {
                     if (c == P2PServiceCategory.CORE) {
-                        return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "cannot disable CORE");
+                        return P2PErrors.stdError(request.getSeq(), P2PErrorCode.INVALID_REQUEST, "cannot disable CORE");
                     }
                     P2PServiceManager.disable(c);
                 } else {
@@ -55,7 +57,7 @@ public class ServiceControlServerHandler implements P2PCommandHandler {
             }
             return P2PWrapper.build(request.getSeq(), P2PCommand.STD_OK, snapshot(action));
         } catch (Exception e) {
-            return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, e.toString());
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.INTERNAL_ERROR, e.toString());
         }
     }
 

@@ -1,6 +1,8 @@
 package javax.net.p2p.server.handler;
 
 import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.rpc.proto.HealthCheckRequest;
@@ -22,7 +24,7 @@ public class RpcHealthCommandServerHandler implements P2PCommandHandler<byte[]> 
     public P2PWrapper process(P2PWrapper<byte[]> request) {
         try {
             if (request.getCommand() != P2PCommand.RPC_HEALTH) {
-                return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "指令分发内部校验错误！");
+                return P2PErrors.stdError(request.getSeq(), P2PErrorCode.ROUTING_HANDLER_MISMATCH, "指令分发内部校验错误！");
             }
             RpcFrame frame = RpcFrame.parseFrom(request.getData());
             HealthCheckRequest healthRequest = HealthCheckRequest.parseFrom(frame.getPayload());
@@ -34,7 +36,7 @@ public class RpcHealthCommandServerHandler implements P2PCommandHandler<byte[]> 
             RpcFrame rpcResponse = RpcFrames.ok(frame, response.toByteArray(), true);
             return P2PWrapper.build(request.getSeq(), P2PCommand.RPC_HEALTH, rpcResponse.toByteArray());
         } catch (Exception ex) {
-            return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, ex.toString());
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.INTERNAL_ERROR, ex.toString());
         }
     }
 }

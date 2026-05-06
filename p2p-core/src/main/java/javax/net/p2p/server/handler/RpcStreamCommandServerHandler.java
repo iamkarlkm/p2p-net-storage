@@ -12,6 +12,7 @@ import javax.net.p2p.rpc.api.RpcBidiStreamInvoker;
 import javax.net.p2p.rpc.api.RpcBidiStreamSession;
 import javax.net.p2p.rpc.api.RpcClientStreamInvoker;
 import javax.net.p2p.rpc.api.RpcClientStreamSession;
+import javax.net.p2p.rpc.api.RpcServerInterceptor;
 import javax.net.p2p.rpc.model.RpcMethodDescriptor;
 import javax.net.p2p.rpc.model.RpcMethodKey;
 import javax.net.p2p.rpc.model.RpcRequestContext;
@@ -23,6 +24,7 @@ import javax.net.p2p.rpc.proto.RpcStatusCode;
 import javax.net.p2p.rpc.server.RpcBootstrap;
 import javax.net.p2p.rpc.server.RpcFrames;
 import javax.net.p2p.rpc.server.RpcQueuedFrameSender;
+import javax.net.p2p.rpc.server.RpcServerInterceptors;
 import javax.net.p2p.rpc.server.RpcServerResponseObserver;
 import javax.net.p2p.rpc.server.RpcServerStreamHandler;
 
@@ -31,12 +33,14 @@ import javax.net.p2p.rpc.server.RpcServerStreamHandler;
  */
 public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter implements StreamRequest {
     private StreamSession session;
+    private RpcRequestContext requestContext;
 
     @Override
     public void clear() {
         super.clear();
         // 处理器实例会经对象池复用，必须清掉上一次流会话，避免跨 seq 串状态。
         this.session = null;
+        this.requestContext = null;
     }
 
     @Override
@@ -82,8 +86,22 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
 
     private StreamSession createSession(AbstractSendMesageExecutor executor, StreamP2PWrapper message, RpcFrame frame) throws Exception {
         RpcRequestContext context = RpcRequestContext.from(message, frame, executor.getChannel());
+        this.requestContext = context;
+        RpcStatus intercepted = beforeHandle(context);
+        if (intercepted != null) {
+            continued = false;
+            executor.sendResponse(StreamP2PWrapper.buildStream(
+                message.getSeq(),
+                message.getIndex(),
+                P2PCommand.RPC_STREAM,
+                RpcFrames.complete(frame, new byte[0], intercepted, true, context).toByteArray(),
+                true
+            ));
+            return null;
+        }
         if (context.isDeadlineExceeded(System.currentTimeMillis())) {
             continued = false;
+            afterError(context, RpcStatusCode.DEADLINE_EXCEEDED, "deadline exceeded");
             sendError(executor, message, frame, RpcStatusCode.DEADLINE_EXCEEDED, "deadline exceeded");
             return null;
         }
@@ -99,6 +117,7 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
         ));
         if (descriptor == null) {
             continued = false;
+            afterError(context, RpcStatusCode.NOT_FOUND, "RPC 方法不存在");
             sendError(executor, message, frame, RpcStatusCode.NOT_FOUND, "RPC 方法不存在");
             return null;
         }
@@ -109,6 +128,7 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
             return new BidiStreamSession(executor, message, frame, descriptor, context);
         }
         continued = false;
+        afterError(context, RpcStatusCode.METHOD_NOT_ALLOWED, "unsupported rpc stream call type");
         sendError(executor, message, frame, RpcStatusCode.METHOD_NOT_ALLOWED, "unsupported rpc stream call type");
         return null;
     }
@@ -120,7 +140,13 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
         RpcStatusCode code,
         String errorMessage
     ) throws InterruptedException {
-        RpcFrame frame = RpcFrames.error(requestFrame == null ? RpcFrame.getDefaultInstance() : requestFrame, code, errorMessage, false);
+        RpcFrame frame = RpcFrames.error(
+            requestFrame == null ? RpcFrame.getDefaultInstance() : requestFrame,
+            code,
+            errorMessage,
+            false,
+            requestContext
+        );
         executor.sendResponse(StreamP2PWrapper.buildStream(
             message.getSeq(),
             message.getIndex(),
@@ -154,6 +180,28 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
         return message.isCompleted() || frame.getFrameType() == RpcFrameType.CLOSE || frame.getEndOfStream();
     }
 
+    private static RpcStatus beforeHandle(RpcRequestContext context) {
+        for (RpcServerInterceptor interceptor : RpcServerInterceptors.all()) {
+            RpcStatus status = interceptor.beforeHandle(context);
+            if (status != null) {
+                return status;
+            }
+        }
+        return null;
+    }
+
+    private static void afterError(RpcRequestContext context, RpcStatusCode code, String message) {
+        for (RpcServerInterceptor interceptor : RpcServerInterceptors.all()) {
+            interceptor.afterError(context, code, message);
+        }
+    }
+
+    private static void afterComplete(RpcRequestContext context, RpcStatus status) {
+        for (RpcServerInterceptor interceptor : RpcServerInterceptors.all()) {
+            interceptor.afterComplete(context, status);
+        }
+    }
+
     private interface StreamSession {
         void onFrame(StreamP2PWrapper<?> message, RpcFrame frame) throws Exception;
 
@@ -163,6 +211,7 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
     private final class ClientStreamSession implements StreamSession {
         private final RpcMethodDescriptor descriptor;
         private final RpcFrame requestFrame;
+        private final RpcRequestContext requestContext;
         private final RpcQueuedFrameSender frameSender;
         private final RpcClientStreamSession<Message, Message> invokerSession;
         private final boolean requestFlowControlEnabled;
@@ -180,6 +229,7 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
         ) throws Exception {
             this.descriptor = descriptor;
             this.requestFrame = requestFrame;
+            this.requestContext = context;
             this.frameSender = new RpcQueuedFrameSender(executor, message.getSeq(), P2PCommand.RPC_STREAM, requestFrame, null);
             this.requestFlowControlEnabled = requestFrame.hasFlowControl() && requestFrame.getFlowControl().getPermits() > 0;
             this.requestWindowBatch = requestFlowControlEnabled ? requestFrame.getFlowControl().getPermits() : 0;
@@ -208,8 +258,16 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
             completed = true;
             continued = false;
             Message response = invokerSession.onCompleted();
+            RpcStatus status = resolveResponseStatus(descriptor, response);
+            afterComplete(requestContext, status);
             frameSender.send(
-                RpcFrames.complete(requestFrame, response == null ? new byte[0] : response.toByteArray(), resolveResponseStatus(descriptor, response), true)
+                RpcFrames.complete(
+                    requestFrame,
+                    response == null ? new byte[0] : response.toByteArray(),
+                    status,
+                    true,
+                    requestContext
+                )
                     .toBuilder()
                     .setChunkIndex(0)
                     .setEndOfMessage(true)
@@ -259,7 +317,7 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
             completed = true;
             continued = false;
             frameSender.sendBypassWindow(
-                RpcFrames.error(requestFrame, RpcStatusCode.TOO_MANY_REQUESTS, "request stream window exhausted", false),
+                RpcFrames.error(requestFrame, RpcStatusCode.TOO_MANY_REQUESTS, "request stream window exhausted", false, null),
                 true
             );
         }
@@ -291,7 +349,7 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
             this.remainingRequestPermits = requestFlowControlEnabled ? requestFrame.getFlowControl().getPermits() : Integer.MAX_VALUE;
             @SuppressWarnings("unchecked")
             RpcBidiStreamInvoker<Message, Message> invoker = (RpcBidiStreamInvoker<Message, Message>) descriptor.invoker();
-            this.invokerSession = invoker.open(context, new RpcServerResponseObserver(frameSender, requestFrame));
+            this.invokerSession = invoker.open(context, new RpcServerResponseObserver(frameSender, requestFrame, context));
         }
 
         @Override
@@ -356,7 +414,7 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
             completed = true;
             continued = false;
             frameSender.sendBypassWindow(
-                RpcFrames.error(requestFrame, RpcStatusCode.TOO_MANY_REQUESTS, "request stream window exhausted", false),
+                RpcFrames.error(requestFrame, RpcStatusCode.TOO_MANY_REQUESTS, "request stream window exhausted", false, null),
                 true
             );
         }

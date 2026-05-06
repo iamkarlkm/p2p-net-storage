@@ -9,5 +9,6 @@ public enum P2PServiceCategory {
     CACHE,
     DATA_TRANSFER,
     DS_HASHMAP_DFS,
+    DS_DB,
     RPC
 }

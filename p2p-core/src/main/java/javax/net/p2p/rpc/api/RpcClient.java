@@ -17,6 +17,14 @@ public interface RpcClient {
         RpcCallOptions options
     ) throws Exception;
 
+    <Req extends Message, Resp extends Message> RpcUnaryResult<Resp> unaryDetailed(
+        String service,
+        String method,
+        Req request,
+        Class<Resp> responseType,
+        RpcCallOptions options
+    ) throws Exception;
+
     <Req extends Message, Resp extends Message> CompletableFuture<Resp> unaryAsync(
         String service,
         String method,

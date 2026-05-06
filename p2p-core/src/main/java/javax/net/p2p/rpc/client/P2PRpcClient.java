@@ -19,10 +19,13 @@ import javax.net.p2p.interfaces.P2PMessageService;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.model.StreamP2PWrapper;
 import javax.net.p2p.rpc.api.RpcClient;
+import javax.net.p2p.rpc.api.RpcClientResponseException;
 import javax.net.p2p.rpc.api.RpcClientStreamHandle;
+import javax.net.p2p.rpc.api.RpcClientResponseContext;
 import javax.net.p2p.rpc.api.RpcClientStreamObserver;
 import javax.net.p2p.rpc.api.RpcBidiStreamHandle;
 import javax.net.p2p.rpc.api.RpcStreamSubscription;
+import javax.net.p2p.rpc.api.RpcUnaryResult;
 import javax.net.p2p.rpc.dfsmap.proto.DfsMapGetRequest;
 import javax.net.p2p.rpc.dfsmap.proto.DfsMapGetResponse;
 import javax.net.p2p.rpc.dfsmap.proto.DfsMapPutRequest;
@@ -77,6 +80,17 @@ public final class P2PRpcClient implements RpcClient {
         Class<Resp> responseType,
         RpcCallOptions options
     ) throws Exception {
+        return unaryDetailed(service, method, request, responseType, options).response();
+    }
+
+    @Override
+    public <Req extends Message, Resp extends Message> RpcUnaryResult<Resp> unaryDetailed(
+        String service,
+        String method,
+        Req request,
+        Class<Resp> responseType,
+        RpcCallOptions options
+    ) throws Exception {
         RpcCallOptions callOptions = options == null ? RpcCallOptions.defaultOptions() : options;
         RpcFrame frame = buildUnaryFrame(service, method, request, callOptions);
         P2PWrapper<byte[]> wrapper = P2PWrapper.build(P2PCommand.RPC_UNARY, frame.toByteArray());
@@ -98,7 +112,7 @@ public final class P2PRpcClient implements RpcClient {
                 RpcFrame frame = buildUnaryFrame(service, method, request, callOptions);
                 P2PWrapper<byte[]> wrapper = P2PWrapper.build(P2PCommand.RPC_UNARY, frame.toByteArray());
                 Future<P2PWrapper> future = messageService.asyncExcute(wrapper);
-                return parseUnaryResponse(future.get(), responseType);
+                return parseUnaryResponse(future.get(), responseType).response();
             } catch (Exception ex) {
                 throw new RuntimeException(ex);
             }
@@ -115,7 +129,7 @@ public final class P2PRpcClient implements RpcClient {
             RpcCallType.UNARY
         );
         P2PWrapper<byte[]> response = P2PWrapper.build(P2PCommand.RPC_HEALTH, frame.toByteArray());
-        return parseUnaryResponse(messageService.excute(response), HealthCheckResponse.class);
+        return parseUnaryResponse(messageService.excute(response), HealthCheckResponse.class).response();
     }
 
     public DiscoverResponse discover(String service, boolean includeMethods, RpcCallOptions options) throws Exception {
@@ -131,7 +145,7 @@ public final class P2PRpcClient implements RpcClient {
             RpcCallType.UNARY
         );
         P2PWrapper<byte[]> response = P2PWrapper.build(P2PCommand.RPC_DISCOVER, frame.toByteArray());
-        return parseUnaryResponse(messageService.excute(response), DiscoverResponse.class);
+        return parseUnaryResponse(messageService.excute(response), DiscoverResponse.class).response();
     }
 
     public EchoResponse echo(String message, RpcCallOptions options) throws Exception {
@@ -237,6 +251,30 @@ public final class P2PRpcClient implements RpcClient {
             DfsMapRangeItem.class,
             observer
         );
+    }
+
+    public <Req extends Message, Resp extends Message> void serverStream(
+        String service,
+        String method,
+        Req request,
+        Class<Resp> responseType,
+        RpcCallOptions options,
+        RpcClientStreamObserver<Resp> observer
+    ) throws Exception {
+        RpcCallOptions callOptions = options == null ? RpcCallOptions.defaultOptions() : options;
+        startServerStream(service, method, request, callOptions, responseType, observer);
+    }
+
+    public <Req extends Message, Resp extends Message> RpcStreamSubscription eventStream(
+        String service,
+        String method,
+        Req request,
+        Class<Resp> responseType,
+        RpcCallOptions options,
+        RpcClientStreamObserver<Resp> observer
+    ) throws Exception {
+        RpcCallOptions callOptions = options == null ? RpcCallOptions.defaultOptions() : options;
+        return startEventStream(service, method, request, callOptions, responseType, observer);
     }
 
     public PubSubPublishResponse rpcPublish(String topic, String message, RpcCallOptions options) throws Exception {
@@ -481,6 +519,9 @@ public final class P2PRpcClient implements RpcClient {
             .setCodec("protobuf")
             .setTraceId(options.traceId())
             .setSpanId(options.spanId())
+            .setParentSpanId(options.parentSpanId())
+            .setCallerNodeId(options.callerNodeId())
+            .setCallerUserId(options.callerUserId())
             .putAllHeaders(options.headers())
             .setIdempotent(options.idempotent())
             .build();
@@ -492,7 +533,7 @@ public final class P2PRpcClient implements RpcClient {
             .build();
     }
 
-    private <Resp extends Message> Resp parseUnaryResponse(P2PWrapper<?> wrapper, Class<Resp> responseType) throws Exception {
+    private <Resp extends Message> RpcUnaryResult<Resp> parseUnaryResponse(P2PWrapper<?> wrapper, Class<Resp> responseType) throws Exception {
         if (wrapper == null) {
             throw new IllegalStateException("RPC 响应为空");
         }
@@ -500,17 +541,28 @@ public final class P2PRpcClient implements RpcClient {
             throw new IllegalStateException(String.valueOf(wrapper.getData()));
         }
         RpcFrame responseFrame = RpcFrame.parseFrom((byte[]) wrapper.getData());
+        RpcClientResponseContext responseContext = new RpcClientResponseContext(
+            responseFrame.getMeta(),
+            responseFrame.getStatus(),
+            responseFrame.getFrameType(),
+            responseFrame.getEndOfStream(),
+            responseFrame.getMeta().getResponseHeadersMap(),
+            responseFrame.getMeta().getResponseTrailersMap()
+        );
         if (!responseFrame.hasStatus()) {
             throw new IllegalStateException("RPC 响应缺少状态");
         }
         if (responseFrame.getFrameType() == RpcFrameType.ERROR) {
-            throw new IllegalStateException(responseFrame.getStatus().getMessage());
+            throw new RpcClientResponseException(responseFrame.getStatus().getMessage(), responseContext);
         }
         if (responseFrame.getStatus().getCode() != RpcStatusCode.OK && responseFrame.getPayload().isEmpty()) {
-            throw new IllegalStateException(responseFrame.getStatus().getMessage());
+            throw new RpcClientResponseException(responseFrame.getStatus().getMessage(), responseContext);
         }
         Method parseFrom = responseType.getMethod("parseFrom", byte[].class);
-        return responseType.cast(parseFrom.invoke(null, responseFrame.getPayload().toByteArray()));
+        return new RpcUnaryResult<>(
+            responseType.cast(parseFrom.invoke(null, responseFrame.getPayload().toByteArray())),
+            responseContext
+        );
     }
 
     private <Req extends Message, Resp extends Message> void startServerStream(
@@ -625,6 +677,9 @@ public final class P2PRpcClient implements RpcClient {
             .setCodec("protobuf")
             .setTraceId(options.traceId())
             .setSpanId(options.spanId())
+            .setParentSpanId(options.parentSpanId())
+            .setCallerNodeId(options.callerNodeId())
+            .setCallerUserId(options.callerUserId())
             .putAllHeaders(options.headers())
             .build();
         return RpcFrame.newBuilder()
@@ -735,6 +790,7 @@ public final class P2PRpcClient implements RpcClient {
                 }
                 RpcFrame frame = RpcFrame.parseFrom((byte[]) message.getData());
                 if (frame.getFrameType() == RpcFrameType.ERROR) {
+                    notifyResponseContext(frame);
                     completed = true;
                     closeOutboundWindow(frame.getStatus().getMessage(), true);
                     observer.onError(new IllegalStateException(frame.getStatus().getMessage()));
@@ -746,6 +802,7 @@ public final class P2PRpcClient implements RpcClient {
                     }
                     return;
                 }
+                notifyResponseContext(frame);
                 if (frame.getFrameType() == RpcFrameType.DATA) {
                     handleDataFrame(frame);
                     if (autoWindowUpdate) {
@@ -812,6 +869,17 @@ public final class P2PRpcClient implements RpcClient {
                 return;
             }
             appendChunk(frame);
+        }
+
+        private void notifyResponseContext(RpcFrame frame) throws Exception {
+            observer.onResponseContext(new RpcClientResponseContext(
+                frame.getMeta(),
+                frame.getStatus(),
+                frame.getFrameType(),
+                frame.getEndOfStream(),
+                frame.getMeta().getResponseHeadersMap(),
+                frame.getMeta().getResponseTrailersMap()
+            ));
         }
 
         private void appendChunk(RpcFrame frame) throws Exception {

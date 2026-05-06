@@ -46,6 +46,8 @@ import java.io.File;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.channel.AbstractLongTimedRequestAdapter;
 import javax.net.p2p.config.P2PConfig;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.FileDataModel;
 import javax.net.p2p.model.FileSegmentsDataModel;
@@ -152,12 +154,12 @@ public class FileGetServerHandler extends AbstractLongTimedRequestAdapter implem
             } else {
                 // 命令类型不匹配，返回内部校验错误
                 // 这种情况通常表示服务器路由配置错误
-                return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "指令内部校验错误！");
+                return P2PErrors.stdError(request.getSeq(), P2PErrorCode.ROUTING_HANDLER_MISMATCH, "指令内部校验错误！");
             }
         } catch (Exception e) {
             // 捕获所有异常，返回错误响应
             // 异常信息包含在响应中，便于客户端诊断问题
-            return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, e.toString());
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.FILE_IO_ERROR, e.toString());
         }
     }
 

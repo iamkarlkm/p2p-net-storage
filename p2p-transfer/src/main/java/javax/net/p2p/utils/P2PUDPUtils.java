@@ -19,6 +19,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.channel.AbstractStreamResponseAdapter;
 import javax.net.p2p.client.P2PClientUdp;
 import javax.net.p2p.client.processor.FileSegmentsGetProcessor;
@@ -108,8 +109,10 @@ public class P2PUDPUtils implements P2PFileService {
     }
     
     private RuntimeException runtimeError(P2PWrapper response){
-        if (response.getCommand() == P2PCommand.STD_ERROR||response.getCommand() == P2PCommand.STD_CANCEL||response.getCommand() == P2PCommand.STD_STOP) {
-
+        if (response.getCommand() == P2PCommand.STD_ERROR) {
+            return P2PErrors.asRuntimeException(response);
+        }
+        if (response.getCommand() == P2PCommand.STD_CANCEL||response.getCommand() == P2PCommand.STD_STOP) {
             return new RuntimeException(response.toString());
         }
         return  new RuntimeException("非法回应消息：" + response);

@@ -1,5 +1,6 @@
 package com.q3lives.ds.collections;
 
+import com.q3lives.ds.database.adapter.DsTableAdapter;
 import java.io.File;
 import java.io.IOException;
 import java.util.AbstractCollection;
@@ -21,8 +22,11 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import com.q3lives.ds.bucket.DsFixedBucketStore;
 import com.q3lives.ds.core.DsFreeRing;
 import com.q3lives.ds.core.DsObject;
+import com.q3lives.ds.interfaces.DsTableByteBufferSerializable;
 import com.q3lives.ds.util.DsDataUtil;
-import lombok.extern.slf4j.Slf4j;
+import java.util.Date;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /**
@@ -41,8 +45,8 @@ import lombok.extern.slf4j.Slf4j;
  *   <li>该类实现 {@link Map} 接口（key/value 均为 {@link Long}）。</li>
  * </ul>
  */
-@Slf4j
 public class DsHashMap extends DsObject implements Map<Long, Long> {
+    private static final Logger log = LoggerFactory.getLogger(DsHashMap.class);
     private static final byte[] MAGIC = new byte[] {'.', 'M', 'A', 'P'};
     private static final int HEADER_SIZE = DsFixedBucketStore.HEADER_SIZE;
     private static final int HDR_MAGIC = 0;
@@ -316,6 +320,35 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         } finally {
             opWriteLock.unlock();
         }
+    }
+    
+    public Long putDate(long key, Date value) throws IOException {
+        return putInternal(key, value.getTime(), true);
+    }
+    
+    public Date getDate(long key) {
+        try {
+            return new Date(get(key));
+        } catch (IOException ex) {
+            throw new RuntimeException(ex);
+        }
+    }
+    
+    public Long putTable(long key,DsTableAdapter value) throws IOException {
+        // TODO 存储逻辑: value.getId()==null?新增:更新 调用DsFixedBucketStore -> 存储value.toBytes() 返回64位valueId
+        //return putInternal(key, valueId, true);
+        return null;
+       
+    }
+    
+    public DsTableAdapter getTable(long key) {
+        try {
+            long valueId = get(key);
+            //TODO 调用DsFixedBucketStore -> load(ByteBuffer data)
+        } catch (IOException ex) {
+            throw new RuntimeException(ex);
+        }
+        return null;
     }
     
     

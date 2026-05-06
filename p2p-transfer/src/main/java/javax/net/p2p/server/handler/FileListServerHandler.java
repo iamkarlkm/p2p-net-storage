@@ -7,6 +7,8 @@ import java.util.Comparator;
 import java.util.List;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.channel.AbstractLongTimedRequestAdapter;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.FileListEntry;
 import javax.net.p2p.model.FileListRequest;
@@ -34,12 +36,12 @@ public class FileListServerHandler extends AbstractLongTimedRequestAdapter imple
 
                 File dir = FileUtil.getAndCheckExistsSandboxFile(payload.storeId, payload.path);
                 if (!dir.isDirectory()) {
-                    return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "not a directory");
+                    return P2PErrors.stdError(request.getSeq(), P2PErrorCode.FILE_NOT_A_DIRECTORY, "not a directory");
                 }
 
                 File[] files = dir.listFiles();
                 if (files == null) {
-                    return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "listFiles failed");
+                    return P2PErrors.stdError(request.getSeq(), P2PErrorCode.FILE_OPERATION_FAILED, "listFiles failed");
                 }
                 Arrays.sort(files, Comparator.comparing(File::getName));
 
@@ -64,11 +66,10 @@ public class FileListServerHandler extends AbstractLongTimedRequestAdapter imple
                 FileListResponse resp = new FileListResponse(page, pageSize, total, items);
                 return P2PWrapper.build(request.getSeq(), P2PCommand.STD_OK, resp);
             } else {
-                return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "指令分发内部校验错误！");
+                return P2PErrors.stdError(request.getSeq(), P2PErrorCode.ROUTING_HANDLER_MISMATCH, "指令分发内部校验错误！");
             }
         } catch (Exception e) {
-            return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, e.toString());
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.FILE_IO_ERROR, e.toString());
         }
     }
 }
-

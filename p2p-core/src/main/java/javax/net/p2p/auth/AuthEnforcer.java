@@ -6,6 +6,8 @@ import java.util.Map;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.auth.config.AuthConfig;
 import javax.net.p2p.channel.ChannelUtils;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.model.P2PWrapper;
 
 public final class AuthEnforcer {
@@ -28,7 +30,7 @@ public final class AuthEnforcer {
 
         byte[] key = channel.attr(ChannelUtils.XOR_KEY).get();
         if (key == null || key.length == 0) {
-            return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "handshake required");
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.AUTH_HANDSHAKE_REQUIRED);
         }
 
         Boolean logged = channel.attr(ChannelUtils.AUTH_LOGGED_IN).get();
@@ -37,12 +39,12 @@ public final class AuthEnforcer {
             if (cmd == P2PCommand.LOGIN) {
                 return null;
             }
-            return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "login required");
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.AUTH_LOGIN_REQUIRED);
         }
 
         String userId = channel.attr(ChannelUtils.AUTH_USER_ID).get();
         if (userId == null || userId.isBlank()) {
-            return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "missing userId");
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.AUTH_MISSING_USER_ID);
         }
 
         AuthConfig.Server server = cfg.getServer();
@@ -55,7 +57,7 @@ public final class AuthEnforcer {
         }
         List<String> rules = allow.get(userId);
         if (rules == null || rules.isEmpty()) {
-            return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "permission denied");
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.AUTH_PERMISSION_DENIED);
         }
         String name = cmd.name();
         for (String r : rules) {
@@ -66,7 +68,7 @@ public final class AuthEnforcer {
                 return null;
             }
         }
-        return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "permission denied");
+        return P2PErrors.stdError(request.getSeq(), P2PErrorCode.AUTH_PERMISSION_DENIED);
     }
 
     private static AuthConfig loadConfig() {

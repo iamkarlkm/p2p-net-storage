@@ -9,4 +9,13 @@ client:
 server:
   privateKey: ""
   clientPublicKeys: {}
-  allowCommands: {}
+  allowCommands:
+    example-user-id:
+      - HAND
+      - LOGIN
+      - ECHO
+      - DB_ENTITY_PUT
+      - DB_ENTITY_GET
+      - DB_ENTITY_REMOVE
+      - DB_ENTITY_EXISTS
+      - DB_ENTITY_QUERY_IDS

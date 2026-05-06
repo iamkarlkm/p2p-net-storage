@@ -3,6 +3,8 @@ package javax.net.p2p.server.handler;
 import java.io.File;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.channel.AbstractLongTimedRequestAdapter;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.FileSegmentsDataModel;
 import javax.net.p2p.model.P2PWrapper;
@@ -37,10 +39,10 @@ public class FileSegmentsCompleteServerHandler extends AbstractLongTimedRequestA
 
                 return P2PWrapper.build(request.getSeq(), P2PCommand.STD_OK, null);
             } else {
-                return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "指令内部校验错误！");
+                return P2PErrors.stdError(request.getSeq(), P2PErrorCode.ROUTING_HANDLER_MISMATCH, "指令内部校验错误！");
             }
         } catch (Exception e) {
-            return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, e.toString());
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.FILE_IO_ERROR, e.toString());
         }
 
     }

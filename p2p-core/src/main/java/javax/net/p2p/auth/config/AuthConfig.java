@@ -4,6 +4,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.InputStream;
+import java.io.StringReader;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,6 +62,21 @@ public class AuthConfig {
     }
 
     public static AuthConfig load() {
+        String inlineYaml = System.getProperty("p2p.auth.inlineYaml");
+        if (inlineYaml != null && !inlineYaml.isBlank()) {
+            try {
+                Yaml yaml = new Yaml();
+                AuthConfig cfg = yaml.loadAs(new StringReader(inlineYaml), AuthConfig.class);
+                String baseDir = System.getProperty("p2p.auth.inlineBaseDir");
+                File yamlBaseDir = baseDir == null || baseDir.isBlank()
+                    ? new File(System.getProperty("user.dir", ".")).getAbsoluteFile()
+                    : new File(baseDir).getAbsoluteFile();
+                applyKeyDir(cfg, yamlBaseDir);
+                return cfg == null ? new AuthConfig() : cfg;
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        }
         String path = System.getProperty("p2p.auth.yaml");
         try {
             Yaml yaml = new Yaml();

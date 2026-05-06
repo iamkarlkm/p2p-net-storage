@@ -22,6 +22,7 @@ public final class RpcBootstrap {
         DfsMapRpcServices.registerDefaults();
         RpcPubSubServices.registerDefaults();
         RpcStreamingBuiltinServices.registerDefaults();
+        RpcServerInterceptors.register(new RpcAuditInterceptor());
     }
 
     private RpcBootstrap() {
@@ -33,6 +34,10 @@ public final class RpcBootstrap {
 
     public static RpcDispatcher dispatcher() {
         return DISPATCHER;
+    }
+
+    public static RpcServerInterceptors.Registration registerInterceptor(javax.net.p2p.rpc.api.RpcServerInterceptor interceptor) {
+        return RpcServerInterceptors.register(interceptor);
     }
 
     public static void register(RpcMethodDescriptor descriptor) {

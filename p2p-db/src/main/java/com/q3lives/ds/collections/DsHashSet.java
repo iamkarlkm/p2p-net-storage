@@ -1,5 +1,7 @@
 package com.q3lives.ds.collections;
 
+import com.q3lives.ds.database.adapter.DsTableAdapter;
+import com.q3lives.ds.annotation.DsOneToOne;
 import java.io.File;
 import java.io.IOException;
 import java.util.Arrays;
@@ -11,6 +13,7 @@ import java.util.Set;
 
 import com.q3lives.ds.bucket.DsFixedBucketStore;
 import com.q3lives.ds.core.DsObject;
+import com.q3lives.ds.database.integration.SerializationManager;
 import com.q3lives.ds.util.DsDataUtil;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -18,7 +21,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.function.LongConsumer;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 通用 long->long 映射索引（以 64-bit 哈希值作为 key）。
@@ -41,8 +45,8 @@ import lombok.extern.slf4j.Slf4j;
  * <li>它更接近“固定结构的哈希 trie 索引”，只负责 hashKey -> longValue 的映射。</li>
  * </ul>
  */
-@Slf4j
 public class DsHashSet extends DsObject implements Set<Long> {
+    private static final Logger log = LoggerFactory.getLogger(DsHashSet.class);
 
     private static final byte[] MAGIC = new byte[]{'.', 'S', 'E', 'T'};
     private static final int HEADER_SIZE = DsFixedBucketStore.HEADER_SIZE;
@@ -159,6 +163,14 @@ public class DsHashSet extends DsObject implements Set<Long> {
             return true;
         }
     }
+    
+//    // 创建管理器-对象存储系统oss
+//        SerializationManager manager = new SerializationManager(
+//            1000,  // 缓存大小
+//            100,   // 对象池大小
+//            512,   // 缓冲区大小
+//            true   // 启用验证
+//        );
     
   
     /**
@@ -891,7 +903,7 @@ public class DsHashSet extends DsObject implements Set<Long> {
         byte[] hashes = hashBytes(key);
         FastPutCache fastCache = findFastPutCache(hashes);
         if (fastCache != null) {//缓存命中，快速跳转。
-            return removeInner(fastCache.nodeId, hashes, key, fastCache.path.level());
+            return remove(key, hashes);
         }
         return remove(key, hashes);
     }
@@ -2072,7 +2084,6 @@ public class DsHashSet extends DsObject implements Set<Long> {
         }
     }
 
-    
     
 
 }

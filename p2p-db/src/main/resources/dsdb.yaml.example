@@ -1,0 +1,13 @@
+mode: server
+server:
+  ip: 127.0.0.1
+  port: 6060
+  auth:
+    enabled: true
+    xorKeyLength: 1024
+    keyDir: .
+    client:
+      user: demo
+      userId: ""
+      privateKey: "client_private_key.pem"
+      serverPublicKey: "server_public_key.pem"

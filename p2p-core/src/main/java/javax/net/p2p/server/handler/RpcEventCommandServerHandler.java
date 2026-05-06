@@ -7,8 +7,11 @@ import javax.net.p2p.interfaces.StreamRequest;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.model.StreamP2PWrapper;
 import javax.net.p2p.rpc.pubsub.proto.PubSubSubscribeRequest;
+import javax.net.p2p.rpc.model.RpcRequestContext;
 import javax.net.p2p.rpc.proto.RpcFrame;
+import javax.net.p2p.rpc.proto.RpcStatus;
 import javax.net.p2p.rpc.proto.RpcStatusCode;
+import javax.net.p2p.rpc.server.RpcServerInterceptors;
 import javax.net.p2p.rpc.server.RpcFrames;
 import javax.net.p2p.rpc.server.RpcPubSubBroker;
 import javax.net.p2p.rpc.server.RpcPubSubServices;
@@ -18,6 +21,7 @@ import javax.net.p2p.rpc.server.RpcPubSubServices;
  */
 public class RpcEventCommandServerHandler extends AbstractStreamRequestAdapter implements StreamRequest {
     private String topic;
+    private RpcRequestContext requestContext;
 
     @Override
     public P2PCommand getCommand() {
@@ -29,9 +33,23 @@ public class RpcEventCommandServerHandler extends AbstractStreamRequestAdapter i
         RpcFrame frame = null;
         try {
             frame = RpcFrame.parseFrom((byte[]) message.getData());
+            requestContext = RpcRequestContext.from(message, frame, executor.getChannel());
+            RpcStatus intercepted = beforeHandle(requestContext);
+            if (intercepted != null) {
+                continued = false;
+                executor.sendResponse(StreamP2PWrapper.buildStream(
+                    message.getSeq(),
+                    message.getIndex(),
+                    P2PCommand.RPC_EVENT,
+                    RpcFrames.complete(frame, new byte[0], intercepted, true, requestContext).toByteArray(),
+                    true
+                ));
+                return null;
+            }
             if (!RpcPubSubServices.SERVICE.equals(frame.getMeta().getService())
                 || !RpcPubSubServices.METHOD_SUBSCRIBE.equals(frame.getMeta().getMethod())) {
                 continued = false;
+                afterError(RpcStatusCode.METHOD_NOT_ALLOWED, "unsupported RPC_EVENT method");
                 sendErrorResponse(executor, message, frame, RpcStatusCode.METHOD_NOT_ALLOWED, "unsupported RPC_EVENT method");
                 return null;
             }
@@ -41,12 +59,14 @@ public class RpcEventCommandServerHandler extends AbstractStreamRequestAdapter i
                 boolean subscribed = RpcPubSubBroker.subscribe(topic, message.getSeq(), executor, frame);
                 if (!subscribed) {
                     continued = false;
+                    afterError(RpcStatusCode.BAD_REQUEST, "rpc event subscribe rejected");
                     sendErrorResponse(executor, message, frame, RpcStatusCode.BAD_REQUEST, "rpc event subscribe rejected");
                 }
             }
             return null;
         } catch (Exception ex) {
             continued = false;
+            afterError(RpcStatusCode.INTERNAL_ERROR, ex.toString());
             try {
                 sendErrorResponse(executor, message, frame, RpcStatusCode.INTERNAL_ERROR, ex.toString());
             } catch (InterruptedException ignored) {
@@ -82,5 +102,24 @@ public class RpcEventCommandServerHandler extends AbstractStreamRequestAdapter i
             frame.toByteArray(),
             true
         ));
+    }
+
+    private RpcStatus beforeHandle(RpcRequestContext context) {
+        for (javax.net.p2p.rpc.api.RpcServerInterceptor interceptor : RpcServerInterceptors.all()) {
+            RpcStatus status = interceptor.beforeHandle(context);
+            if (status != null) {
+                return status;
+            }
+        }
+        return null;
+    }
+
+    private void afterError(RpcStatusCode code, String message) {
+        if (requestContext == null) {
+            return;
+        }
+        for (javax.net.p2p.rpc.api.RpcServerInterceptor interceptor : RpcServerInterceptors.all()) {
+            interceptor.afterError(requestContext, code, message);
+        }
     }
 }

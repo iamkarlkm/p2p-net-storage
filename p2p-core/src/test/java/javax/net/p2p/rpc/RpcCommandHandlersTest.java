@@ -4,10 +4,12 @@ import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.channel.AbstractStreamRequestAdapter;
@@ -40,8 +42,12 @@ import javax.net.p2p.interfaces.P2PMessageService;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.model.StreamP2PWrapper;
 import javax.net.p2p.rpc.api.RpcClientStreamObserver;
+import javax.net.p2p.rpc.api.RpcClientResponseException;
+import javax.net.p2p.rpc.api.RpcClientResponseContext;
 import javax.net.p2p.rpc.api.RpcClientStreamHandle;
 import javax.net.p2p.rpc.api.RpcBidiStreamHandle;
+import javax.net.p2p.rpc.api.RpcServerInterceptor;
+import javax.net.p2p.rpc.api.RpcUnaryResult;
 import javax.net.p2p.rpc.api.RpcStreamSubscription;
 import javax.net.p2p.rpc.client.P2PRpcClient;
 import javax.net.p2p.rpc.dfsmap.proto.DfsMapGetRequest;
@@ -64,10 +70,14 @@ import javax.net.p2p.rpc.proto.HealthCheckRequest;
 import javax.net.p2p.rpc.proto.HealthCheckResponse;
 import javax.net.p2p.rpc.proto.MethodDescriptor;
 import javax.net.p2p.rpc.proto.RpcCallType;
+import javax.net.p2p.rpc.proto.RpcFlowControl;
 import javax.net.p2p.rpc.proto.RpcFrame;
 import javax.net.p2p.rpc.proto.RpcFrameType;
+import javax.net.p2p.rpc.proto.RpcMeta;
+import javax.net.p2p.rpc.proto.RpcStatus;
 import javax.net.p2p.rpc.proto.RpcStatusCode;
 import javax.net.p2p.rpc.model.RpcCallOptions;
+import javax.net.p2p.rpc.model.RpcRequestContext;
 import javax.net.p2p.rpc.server.DfsMapRpcServices;
 import javax.net.p2p.rpc.server.RpcBuiltinServices;
 import javax.net.p2p.rpc.server.RpcControlSupport;
@@ -179,6 +189,46 @@ public class RpcCommandHandlersTest {
         RpcFrame discoverResponseFrame = RpcFrame.parseFrom(discoverResponseWrapper.getData());
         DiscoverResponse discoverResponse = DiscoverResponse.parseFrom(discoverResponseFrame.getPayload());
         Assertions.assertFalse(discoverResponse.getServicesList().isEmpty());
+    }
+
+    @Test
+    public void discoverInterceptorCanShortCircuitAndExposeGovernanceFields() throws Exception {
+        RpcDiscoverCommandServerHandler discoverHandler = new RpcDiscoverCommandServerHandler();
+        RpcFrame discoverFrame = RpcFrame.newBuilder()
+            .setMeta(RpcFrame.getDefaultInstance().getMeta().toBuilder()
+                .setRequestId(43L)
+                .setService("rpc.discover")
+                .setMethod("List")
+                .setServiceVersion("v1")
+                .setCallType(RpcCallType.UNARY)
+                .build())
+            .setFrameType(RpcFrameType.OPEN)
+            .setPayload(DiscoverRequest.newBuilder().setIncludeMethods(true).build().toByteString())
+            .setEndOfStream(true)
+            .build();
+
+        try (var ignored = RpcBootstrap.registerInterceptor(new RpcServerInterceptor() {
+            @Override
+            public RpcStatus beforeHandle(RpcRequestContext context) {
+                if ("rpc.discover".equals(context.service()) && "List".equals(context.method())) {
+                    return RpcStatus.newBuilder()
+                        .setCode(RpcStatusCode.FORBIDDEN)
+                        .setMessage("discover-blocked")
+                        .setRetriable(false)
+                        .build();
+                }
+                return null;
+            }
+        })) {
+            P2PWrapper<byte[]> responseWrapper = discoverHandler.process(P2PWrapper.build(43, P2PCommand.RPC_DISCOVER, discoverFrame.toByteArray()));
+            RpcFrame responseFrame = RpcFrame.parseFrom(responseWrapper.getData());
+            Assertions.assertEquals(RpcStatusCode.FORBIDDEN, responseFrame.getStatus().getCode());
+            Assertions.assertEquals("discover-blocked", responseFrame.getStatus().getMessage());
+            Assertions.assertTrue(responseFrame.getPayload().isEmpty());
+            Assertions.assertEquals("rpc.discover", responseFrame.getMeta().getResponseHeadersMap().get("x-rpc-service"));
+            Assertions.assertEquals("List", responseFrame.getMeta().getResponseHeadersMap().get("x-rpc-method"));
+            Assertions.assertEquals("FORBIDDEN", responseFrame.getMeta().getResponseTrailersMap().get("x-rpc-status"));
+        }
     }
 
     @Test
@@ -629,6 +679,258 @@ public class RpcCommandHandlersTest {
     }
 
     @Test
+    public void unaryClientPropagatesExtendedMetadataToRequestContext() throws Exception {
+        String service = "test.rpc.v1.UnaryMetadataService." + System.nanoTime();
+        AtomicReference<RpcRequestContext> capturedContext = new AtomicReference<>();
+        RpcBootstrap.registerUnary(
+            service,
+            "EchoMeta",
+            "meta-v2",
+            true,
+            EchoRequest.class,
+            EchoResponse.class,
+            (context, request) -> {
+                capturedContext.set(context);
+                return EchoResponse.newBuilder()
+                    .setMessage(context.parentSpanId() + "|" + context.callerNodeId() + "|" + context.callerUserId() + "|" + context.headers().get("tenant"))
+                    .build();
+            }
+        );
+
+        RpcUnaryCommandServerHandler handler = new RpcUnaryCommandServerHandler();
+        P2PMessageService messageService = (P2PMessageService) Proxy.newProxyInstance(
+            P2PMessageService.class.getClassLoader(),
+            new Class<?>[]{P2PMessageService.class},
+            (proxy, method, args) -> {
+                if ("excute".equals(method.getName()) && args != null && args.length >= 1 && args[0] instanceof P2PWrapper<?> wrapper) {
+                    return handler.process((P2PWrapper<byte[]>) wrapper);
+                }
+                throw new UnsupportedOperationException(method.getName());
+            }
+        );
+
+        P2PRpcClient client = new P2PRpcClient(messageService);
+        EchoResponse response = client.unary(
+            service,
+            "EchoMeta",
+            EchoRequest.newBuilder().setMessage("hello").build(),
+            EchoResponse.class,
+            metadataOptions().withServiceVersion("meta-v2").withIdempotent(true)
+        );
+
+        assertRpcContextMetadata(capturedContext.get(), "meta-v2");
+        Assertions.assertEquals("parent-1|node-1|user-1|tenant-a", response.getMessage());
+    }
+
+    @Test
+    public void unaryDetailedReturnsResponseContext() throws Exception {
+        String service = "test.rpc.v1.UnaryDetailedService." + System.nanoTime();
+        RpcBootstrap.registerUnary(
+            service,
+            "EchoDetailed",
+            "meta-v2",
+            true,
+            EchoRequest.class,
+            EchoResponse.class,
+            (context, request) -> {
+                context.putResponseHeader("x-rpc-stage", "unary");
+                context.putResponseTrailer("x-rpc-finish", "done");
+                context.putResponseStatusDetail("result", "ok");
+                return EchoResponse.newBuilder().setMessage("detailed:" + request.getMessage()).build();
+            }
+        );
+
+        RpcUnaryCommandServerHandler handler = new RpcUnaryCommandServerHandler();
+        P2PMessageService messageService = (P2PMessageService) Proxy.newProxyInstance(
+            P2PMessageService.class.getClassLoader(),
+            new Class<?>[]{P2PMessageService.class},
+            (proxy, method, args) -> {
+                if ("excute".equals(method.getName()) && args != null && args.length >= 1 && args[0] instanceof P2PWrapper<?> wrapper) {
+                    return handler.process((P2PWrapper<byte[]>) wrapper);
+                }
+                throw new UnsupportedOperationException(method.getName());
+            }
+        );
+
+        P2PRpcClient client = new P2PRpcClient(messageService);
+        RpcUnaryResult<EchoResponse> result = client.unaryDetailed(
+            service,
+            "EchoDetailed",
+            EchoRequest.newBuilder().setMessage("hello").build(),
+            EchoResponse.class,
+            metadataOptions().withServiceVersion("meta-v2").withIdempotent(true)
+        );
+
+        Assertions.assertEquals("detailed:hello", result.response().getMessage());
+        assertRpcMetaMetadata(result.context().meta(), "meta-v2", true);
+        Assertions.assertEquals(RpcFrameType.CLOSE, result.context().frameType());
+        Assertions.assertEquals(RpcStatusCode.OK, result.context().status().getCode());
+        Assertions.assertEquals("ok", result.context().status().getDetailsMap().get("result"));
+        Assertions.assertEquals("unary", result.context().responseHeaders().get("x-rpc-stage"));
+        Assertions.assertEquals("done", result.context().responseTrailers().get("x-rpc-finish"));
+        Assertions.assertTrue(result.context().endOfStream());
+    }
+
+    @Test
+    public void unaryDetailedErrorThrowsResponseExceptionWithContext() throws Exception {
+        String service = "test.rpc.v1.UnaryDetailedErrorService." + System.nanoTime();
+        RpcBootstrap.registerUnary(
+            service,
+            "EchoDetailedError",
+            "meta-v2",
+            false,
+            EchoRequest.class,
+            EchoResponse.class,
+            (context, request) -> {
+                context.putResponseHeader("x-rpc-stage", "unary-error");
+                context.putResponseTrailer("x-rpc-finish", "failed");
+                context.putResponseStatusDetail("reason", "boom");
+                throw new IllegalStateException("unary-detailed-boom");
+            }
+        );
+
+        RpcUnaryCommandServerHandler handler = new RpcUnaryCommandServerHandler();
+        P2PMessageService messageService = (P2PMessageService) Proxy.newProxyInstance(
+            P2PMessageService.class.getClassLoader(),
+            new Class<?>[]{P2PMessageService.class},
+            (proxy, method, args) -> {
+                if ("excute".equals(method.getName()) && args != null && args.length >= 1 && args[0] instanceof P2PWrapper<?> wrapper) {
+                    return handler.process((P2PWrapper<byte[]>) wrapper);
+                }
+                throw new UnsupportedOperationException(method.getName());
+            }
+        );
+
+        P2PRpcClient client = new P2PRpcClient(messageService);
+        RpcClientResponseException exception = Assertions.assertThrows(RpcClientResponseException.class, () ->
+            client.unaryDetailed(
+                service,
+                "EchoDetailedError",
+                EchoRequest.newBuilder().setMessage("hello").build(),
+                EchoResponse.class,
+                metadataOptions().withServiceVersion("meta-v2")
+            )
+        );
+
+        Assertions.assertEquals("unary-detailed-boom", exception.getMessage());
+        Assertions.assertNotNull(exception.context());
+        Assertions.assertEquals(RpcFrameType.ERROR, exception.context().frameType());
+        Assertions.assertEquals(RpcStatusCode.INTERNAL_ERROR, exception.context().status().getCode());
+        Assertions.assertEquals("unary-detailed-boom", exception.context().status().getMessage());
+        Assertions.assertEquals("boom", exception.context().status().getDetailsMap().get("reason"));
+        Assertions.assertEquals("unary-error", exception.context().responseHeaders().get("x-rpc-stage"));
+        Assertions.assertEquals("failed", exception.context().responseTrailers().get("x-rpc-finish"));
+        Assertions.assertTrue(exception.context().endOfStream());
+    }
+
+    @Test
+    public void unaryDetailedIncludesAuditGovernanceFields() throws Exception {
+        String service = "test.rpc.v1.UnaryAuditService." + System.nanoTime();
+        RpcBootstrap.registerUnary(
+            service,
+            "EchoAudit",
+            "meta-v2",
+            true,
+            EchoRequest.class,
+            EchoResponse.class,
+            (context, request) -> EchoResponse.newBuilder().setMessage("audit:" + request.getMessage()).build()
+        );
+
+        RpcUnaryCommandServerHandler handler = new RpcUnaryCommandServerHandler();
+        P2PMessageService messageService = (P2PMessageService) Proxy.newProxyInstance(
+            P2PMessageService.class.getClassLoader(),
+            new Class<?>[]{P2PMessageService.class},
+            (proxy, method, args) -> {
+                if ("excute".equals(method.getName()) && args != null && args.length >= 1 && args[0] instanceof P2PWrapper<?> wrapper) {
+                    return handler.process((P2PWrapper<byte[]>) wrapper);
+                }
+                throw new UnsupportedOperationException(method.getName());
+            }
+        );
+
+        P2PRpcClient client = new P2PRpcClient(messageService);
+        RpcUnaryResult<EchoResponse> result = client.unaryDetailed(
+            service,
+            "EchoAudit",
+            EchoRequest.newBuilder().setMessage("hello").build(),
+            EchoResponse.class,
+            metadataOptions().withServiceVersion("meta-v2").withIdempotent(true)
+        );
+
+        Assertions.assertEquals("audit:hello", result.response().getMessage());
+        Assertions.assertEquals(service, result.context().responseHeaders().get("x-rpc-service"));
+        Assertions.assertEquals("EchoAudit", result.context().responseHeaders().get("x-rpc-method"));
+        Assertions.assertEquals("OK", result.context().responseTrailers().get("x-rpc-status"));
+        Assertions.assertNotNull(result.context().responseTrailers().get("x-rpc-duration-ms"));
+        Assertions.assertEquals(service, result.context().status().getDetailsMap().get("audit.service"));
+        Assertions.assertEquals("EchoAudit", result.context().status().getDetailsMap().get("audit.method"));
+        Assertions.assertEquals("trace-1", result.context().status().getDetailsMap().get("audit.trace_id"));
+        Assertions.assertEquals("user-1", result.context().status().getDetailsMap().get("audit.caller_user_id"));
+    }
+
+    @Test
+    public void unaryInterceptorCanShortCircuitBeforeInvoker() throws Exception {
+        String service = "test.rpc.v1.UnaryGovernanceBlockService." + System.nanoTime();
+        AtomicBoolean invoked = new AtomicBoolean(false);
+        RpcBootstrap.registerUnary(
+            service,
+            "Blocked",
+            "meta-v2",
+            false,
+            EchoRequest.class,
+            EchoResponse.class,
+            (context, request) -> {
+                invoked.set(true);
+                return EchoResponse.newBuilder().setMessage("should-not-run").build();
+            }
+        );
+
+        RpcUnaryCommandServerHandler handler = new RpcUnaryCommandServerHandler();
+        P2PMessageService messageService = (P2PMessageService) Proxy.newProxyInstance(
+            P2PMessageService.class.getClassLoader(),
+            new Class<?>[]{P2PMessageService.class},
+            (proxy, method, args) -> {
+                if ("excute".equals(method.getName()) && args != null && args.length >= 1 && args[0] instanceof P2PWrapper<?> wrapper) {
+                    return handler.process((P2PWrapper<byte[]>) wrapper);
+                }
+                throw new UnsupportedOperationException(method.getName());
+            }
+        );
+
+        try (var ignored = RpcBootstrap.registerInterceptor(new RpcServerInterceptor() {
+            @Override
+            public RpcStatus beforeHandle(RpcRequestContext context) {
+                if (service.equals(context.service()) && "Blocked".equals(context.method())) {
+                    return RpcStatus.newBuilder()
+                        .setCode(RpcStatusCode.FORBIDDEN)
+                        .setMessage("blocked-by-interceptor")
+                        .setRetriable(false)
+                        .build();
+                }
+                return null;
+            }
+        })) {
+            P2PRpcClient client = new P2PRpcClient(messageService);
+            RpcClientResponseException exception = Assertions.assertThrows(RpcClientResponseException.class, () ->
+                client.unaryDetailed(
+                    service,
+                    "Blocked",
+                    EchoRequest.newBuilder().setMessage("hello").build(),
+                    EchoResponse.class,
+                    metadataOptions().withServiceVersion("meta-v2")
+                )
+            );
+
+            Assertions.assertFalse(invoked.get());
+            Assertions.assertEquals(RpcStatusCode.FORBIDDEN, exception.context().status().getCode());
+            Assertions.assertEquals("blocked-by-interceptor", exception.getMessage());
+            Assertions.assertEquals(service, exception.context().responseHeaders().get("x-rpc-service"));
+            Assertions.assertEquals("Blocked", exception.context().responseHeaders().get("x-rpc-method"));
+            Assertions.assertEquals("FORBIDDEN", exception.context().responseTrailers().get("x-rpc-status"));
+        }
+    }
+
+    @Test
     public void dfsMapGetRpcCanBeDispatchedAndCalled() throws Exception {
         DfsMapRegistry.setBackend(new InMemoryDfsMapBackend(1234L, true));
         try {
@@ -936,6 +1238,127 @@ public class RpcCommandHandlersTest {
     }
 
     @Test
+    public void serverStreamClientPropagatesExtendedMetadataToRequestContext() throws Exception {
+        String service = "test.rpc.v1.ServerMetadataService." + System.nanoTime();
+        AtomicReference<RpcRequestContext> capturedContext = new AtomicReference<>();
+        RpcBootstrap.registerServerStream(
+            service,
+            "Watch",
+            "meta-v2",
+            true,
+            HealthCheckRequest.class,
+            HealthCheckResponse.class,
+            (context, request, observer) -> {
+                capturedContext.set(context);
+                observer.onNext(HealthCheckResponse.newBuilder()
+                    .setHealthy(true)
+                    .setReady(true)
+                    .setMessage(context.traceId() + "|" + context.parentSpanId())
+                    .build());
+                observer.onCompleted();
+            }
+        );
+
+        RpcTestRpcStreamMessageService messageService = new RpcTestRpcStreamMessageService(new RpcStreamCommandServerHandler());
+        P2PRpcClient client = new P2PRpcClient(messageService);
+        List<String> messages = new ArrayList<>();
+        List<String> signals = new ArrayList<>();
+        client.serverStream(
+            service,
+            "Watch",
+            HealthCheckRequest.newBuilder().setService("watch").build(),
+            HealthCheckResponse.class,
+            metadataOptions().withServiceVersion("meta-v2").withIdempotent(true),
+            new RpcClientStreamObserver<>() {
+                @Override
+                public void onNext(HealthCheckResponse response) {
+                    messages.add(response.getMessage());
+                }
+
+                @Override
+                public void onCompleted() {
+                    signals.add("completed");
+                }
+
+                @Override
+                public void onError(Exception exception) {
+                    signals.add("error:" + exception.getMessage());
+                }
+            }
+        );
+
+        assertRpcContextMetadata(capturedContext.get(), "meta-v2");
+        Assertions.assertEquals(List.of("trace-1|parent-1"), messages);
+        Assertions.assertEquals(List.of("completed"), signals);
+    }
+
+    @Test
+    public void serverStreamObserverReceivesResponseContextFrames() throws Exception {
+        String service = "test.rpc.v1.ServerResponseContextService." + System.nanoTime();
+        RpcBootstrap.registerServerStream(
+            service,
+            "Watch",
+            "meta-v2",
+            true,
+            HealthCheckRequest.class,
+            HealthCheckResponse.class,
+            (context, request, observer) -> {
+                context.putResponseHeader("x-rpc-stage", "server-stream");
+                observer.onNext(HealthCheckResponse.newBuilder().setHealthy(true).setReady(true).setMessage("watch-ok").build());
+                context.putResponseTrailer("x-rpc-finish", "stream-done");
+                context.putResponseStatusDetail("stream", "ok");
+                observer.onCompleted();
+            }
+        );
+
+        RpcTestRpcStreamMessageService messageService = new RpcTestRpcStreamMessageService(new RpcStreamCommandServerHandler());
+        P2PRpcClient client = new P2PRpcClient(messageService);
+        List<RpcClientResponseContext> contexts = new ArrayList<>();
+        List<String> signals = new ArrayList<>();
+        client.serverStream(
+            service,
+            "Watch",
+            HealthCheckRequest.newBuilder().setService("watch").build(),
+            HealthCheckResponse.class,
+            metadataOptions().withServiceVersion("meta-v2"),
+            new RpcClientStreamObserver<>() {
+                @Override
+                public void onResponseContext(RpcClientResponseContext context) {
+                    contexts.add(context);
+                }
+
+                @Override
+                public void onNext(HealthCheckResponse response) {
+                    signals.add(response.getMessage());
+                }
+
+                @Override
+                public void onCompleted() {
+                    signals.add("completed");
+                }
+
+                @Override
+                public void onError(Exception exception) {
+                    signals.add("error:" + exception.getMessage());
+                }
+            }
+        );
+
+        Assertions.assertEquals(List.of("watch-ok", "completed"), signals);
+        Assertions.assertEquals(2, contexts.size());
+        Assertions.assertEquals(RpcFrameType.DATA, contexts.get(0).frameType());
+        Assertions.assertEquals("meta-v2", contexts.get(0).meta().getServiceVersion());
+        Assertions.assertEquals("trace-1", contexts.get(0).meta().getTraceId());
+        Assertions.assertEquals("server-stream", contexts.get(0).responseHeaders().get("x-rpc-stage"));
+        Assertions.assertFalse(contexts.get(0).endOfStream());
+        Assertions.assertEquals(RpcFrameType.CLOSE, contexts.get(1).frameType());
+        Assertions.assertEquals(RpcStatusCode.OK, contexts.get(1).status().getCode());
+        Assertions.assertEquals("ok", contexts.get(1).status().getDetailsMap().get("stream"));
+        Assertions.assertEquals("stream-done", contexts.get(1).responseTrailers().get("x-rpc-finish"));
+        Assertions.assertTrue(contexts.get(1).endOfStream());
+    }
+
+    @Test
     public void dfsMapRangeStreamingAutoWindowUpdateSendsControlAndKeepsItemsFlowing() throws Exception {
         DfsMapRegistry.setBackend(new InMemoryDfsMapBackend(4000L, true));
         try {
@@ -1018,6 +1441,58 @@ public class RpcCommandHandlersTest {
     }
 
     @Test
+    public void clientStreamPropagatesExtendedMetadataToRequestContext() throws Exception {
+        String service = "test.rpc.v1.ClientMetadataService." + System.nanoTime();
+        AtomicReference<RpcRequestContext> capturedContext = new AtomicReference<>();
+        RpcBootstrap.registerClientStream(
+            service,
+            "Collect",
+            "meta-v2",
+            true,
+            javax.net.p2p.rpc.stream.proto.StreamCollectRequest.class,
+            StreamCollectResponse.class,
+            context -> {
+                capturedContext.set(context);
+                List<String> messages = new ArrayList<>();
+                return new javax.net.p2p.rpc.api.RpcClientStreamSession<>() {
+                    @Override
+                    public void onNext(javax.net.p2p.rpc.stream.proto.StreamCollectRequest request) {
+                        messages.add(request.getMessage());
+                    }
+
+                    @Override
+                    public StreamCollectResponse onCompleted() {
+                        return StreamCollectResponse.newBuilder()
+                            .setCount(messages.size())
+                            .setJoined(context.callerNodeId() + "|" + context.callerUserId() + "|" + context.headers().get("tenant"))
+                            .addAllMessages(messages)
+                            .build();
+                    }
+                };
+            },
+            null
+        );
+
+        RpcTestRpcStreamMessageService messageService = new RpcTestRpcStreamMessageService(new RpcStreamCommandServerHandler());
+        P2PRpcClient client = new P2PRpcClient(messageService);
+        StreamCollectResponse response = client.clientStream(
+            service,
+            "Collect",
+            List.of(
+                javax.net.p2p.rpc.stream.proto.StreamCollectRequest.newBuilder().setMessage("m1").build(),
+                javax.net.p2p.rpc.stream.proto.StreamCollectRequest.newBuilder().setMessage("m2").build()
+            ),
+            StreamCollectResponse.class,
+            metadataOptions().withServiceVersion("meta-v2").withIdempotent(true)
+        );
+
+        assertRpcContextMetadata(capturedContext.get(), "meta-v2");
+        Assertions.assertEquals(2, response.getCount());
+        Assertions.assertEquals("node-1|user-1|tenant-a", response.getJoined());
+        Assertions.assertEquals(List.of("m1", "m2"), response.getMessagesList());
+    }
+
+    @Test
     public void clientStreamHandleCanSendIncrementallyAndAwait() throws Exception {
         RpcTestRpcStreamMessageService messageService = new RpcTestRpcStreamMessageService(new RpcStreamCommandServerHandler());
         P2PRpcClient client = new P2PRpcClient(messageService);
@@ -1062,6 +1537,142 @@ public class RpcCommandHandlersTest {
         Assertions.assertEquals(2, responses.get(1).getIndex());
         Assertions.assertEquals("ack:beta", responses.get(1).getMessage());
         Assertions.assertEquals(List.of("completed"), signals);
+    }
+
+    @Test
+    public void bidiStreamPropagatesExtendedMetadataToRequestContext() throws Exception {
+        String service = "test.rpc.v1.BidiMetadataService." + System.nanoTime();
+        AtomicReference<RpcRequestContext> capturedContext = new AtomicReference<>();
+        RpcBootstrap.registerBidiStream(
+            service,
+            "Chat",
+            "meta-v2",
+            true,
+            javax.net.p2p.rpc.stream.proto.StreamChatRequest.class,
+            StreamChatResponse.class,
+            (context, observer) -> {
+                capturedContext.set(context);
+                return new javax.net.p2p.rpc.api.RpcBidiStreamSession<>() {
+                    private int index;
+
+                    @Override
+                    public void onNext(javax.net.p2p.rpc.stream.proto.StreamChatRequest request) throws Exception {
+                        index++;
+                        observer.onNext(StreamChatResponse.newBuilder()
+                            .setIndex(index)
+                            .setMessage(context.traceId() + "|" + context.callerNodeId() + "|" + request.getMessage())
+                            .build());
+                    }
+
+                    @Override
+                    public void onCompleted() throws Exception {
+                        observer.onCompleted();
+                    }
+                };
+            }
+        );
+
+        RpcTestRpcStreamMessageService messageService = new RpcTestRpcStreamMessageService(new RpcStreamCommandServerHandler());
+        P2PRpcClient client = new P2PRpcClient(messageService);
+        List<String> signals = new ArrayList<>();
+        client.bidiStream(
+            service,
+            "Chat",
+            List.of(
+                javax.net.p2p.rpc.stream.proto.StreamChatRequest.newBuilder().setMessage("a").build(),
+                javax.net.p2p.rpc.stream.proto.StreamChatRequest.newBuilder().setMessage("b").build()
+            ),
+            StreamChatResponse.class,
+            metadataOptions().withServiceVersion("meta-v2").withIdempotent(true),
+            new RpcClientStreamObserver<>() {
+                @Override
+                public void onNext(StreamChatResponse response) {
+                    signals.add(response.getMessage());
+                }
+
+                @Override
+                public void onCompleted() {
+                    signals.add("completed");
+                }
+
+                @Override
+                public void onError(Exception exception) {
+                    signals.add("error:" + exception.getMessage());
+                }
+            }
+        );
+
+        assertRpcContextMetadata(capturedContext.get(), "meta-v2");
+        Assertions.assertEquals(List.of("trace-1|node-1|a", "trace-1|node-1|b", "completed"), signals);
+    }
+
+    @Test
+    public void bidiObserverReceivesErrorResponseContext() throws Exception {
+        String service = "test.rpc.v1.BidiErrorContextService." + System.nanoTime();
+        RpcBootstrap.registerBidiStream(
+            service,
+            "Chat",
+            "meta-v2",
+            true,
+            javax.net.p2p.rpc.stream.proto.StreamChatRequest.class,
+            StreamChatResponse.class,
+            (context, observer) -> new javax.net.p2p.rpc.api.RpcBidiStreamSession<>() {
+                @Override
+                public void onNext(javax.net.p2p.rpc.stream.proto.StreamChatRequest request) {
+                    context.putResponseHeader("x-rpc-stage", "bidi-error");
+                    context.putResponseTrailer("x-rpc-finish", "bidi-failed");
+                    context.putResponseStatusDetail("bidi", "error");
+                    throw new IllegalStateException("bidi-context-boom");
+                }
+
+                @Override
+                public void onCompleted() {
+                }
+            }
+        );
+
+        RpcTestRpcStreamMessageService messageService = new RpcTestRpcStreamMessageService(new RpcStreamCommandServerHandler());
+        P2PRpcClient client = new P2PRpcClient(messageService);
+        List<RpcClientResponseContext> contexts = new ArrayList<>();
+        List<String> signals = new ArrayList<>();
+        client.bidiStream(
+            service,
+            "Chat",
+            List.of(javax.net.p2p.rpc.stream.proto.StreamChatRequest.newBuilder().setMessage("a").build()),
+            StreamChatResponse.class,
+            metadataOptions().withServiceVersion("meta-v2"),
+            new RpcClientStreamObserver<>() {
+                @Override
+                public void onResponseContext(RpcClientResponseContext context) {
+                    contexts.add(context);
+                }
+
+                @Override
+                public void onNext(StreamChatResponse response) {
+                    signals.add(response.getMessage());
+                }
+
+                @Override
+                public void onCompleted() {
+                    signals.add("completed");
+                }
+
+                @Override
+                public void onError(Exception exception) {
+                    signals.add("error:" + exception.getMessage());
+                }
+            }
+        );
+
+        Assertions.assertEquals(List.of("error:bidi-context-boom"), signals);
+        Assertions.assertEquals(1, contexts.size());
+        Assertions.assertEquals(RpcFrameType.ERROR, contexts.get(0).frameType());
+        Assertions.assertEquals(RpcStatusCode.INTERNAL_ERROR, contexts.get(0).status().getCode());
+        Assertions.assertEquals("bidi-context-boom", contexts.get(0).status().getMessage());
+        Assertions.assertEquals("error", contexts.get(0).status().getDetailsMap().get("bidi"));
+        Assertions.assertEquals("bidi-error", contexts.get(0).responseHeaders().get("x-rpc-stage"));
+        Assertions.assertEquals("bidi-failed", contexts.get(0).responseTrailers().get("x-rpc-finish"));
+        Assertions.assertTrue(contexts.get(0).endOfStream());
     }
 
     @Test
@@ -1821,6 +2432,54 @@ public class RpcCommandHandlersTest {
     }
 
     @Test
+    public void rpcControlRejectsUnsupportedFrameType() throws Exception {
+        RpcFrame responseFrame = handleControl(controlFrame(RpcFrameType.OPEN, 779L, null), 94);
+
+        Assertions.assertEquals(RpcStatusCode.METHOD_NOT_ALLOWED, responseFrame.getStatus().getCode());
+        Assertions.assertEquals("only cancel, heartbeat, and window_update are supported", responseFrame.getStatus().getMessage());
+    }
+
+    @Test
+    public void rpcControlRejectsInvalidTargetRequestId() throws Exception {
+        RpcFrame responseFrame = handleControl(controlFrame(RpcFrameType.CANCEL, 0L, null), 95);
+
+        Assertions.assertEquals(RpcStatusCode.BAD_REQUEST, responseFrame.getStatus().getCode());
+        Assertions.assertEquals("invalid target request id", responseFrame.getStatus().getMessage());
+    }
+
+    @Test
+    public void rpcControlRejectsWindowUpdateWithoutFlowControl() throws Exception {
+        RpcFrame responseFrame = handleControl(controlFrame(RpcFrameType.WINDOW_UPDATE, 780L, null), 96);
+
+        Assertions.assertEquals(RpcStatusCode.BAD_REQUEST, responseFrame.getStatus().getCode());
+        Assertions.assertEquals("missing flow control", responseFrame.getStatus().getMessage());
+    }
+
+    @Test
+    public void rpcControlRejectsEmptyWindowUpdateFlowControl() throws Exception {
+        RpcFrame responseFrame = handleControl(
+            controlFrame(RpcFrameType.WINDOW_UPDATE, 781L, RpcFlowControl.newBuilder().build()),
+            97
+        );
+
+        Assertions.assertEquals(RpcStatusCode.BAD_REQUEST, responseFrame.getStatus().getCode());
+        Assertions.assertEquals("empty flow control", responseFrame.getStatus().getMessage());
+    }
+
+    @Test
+    public void controlFramesPropagateExtendedMetadata() throws Exception {
+        CapturingControlMessageService messageService = new CapturingControlMessageService(new RpcEventCommandServerHandler());
+        P2PRpcClient client = new P2PRpcClient(messageService);
+
+        boolean alive = client.heartbeatStream(782, metadataOptions().withServiceVersion("meta-v2"));
+
+        Assertions.assertTrue(alive);
+        Assertions.assertNotNull(messageService.lastControlRequest);
+        RpcFrame requestFrame = RpcFrame.parseFrom(messageService.lastControlRequest.getData());
+        assertRpcMetaMetadata(requestFrame.getMeta(), "meta-v2", false);
+    }
+
+    @Test
     public void rpcSubscribeHandleCanCancelAndStopEvents() throws Exception {
         RpcEventCommandServerHandler eventHandler = new RpcEventCommandServerHandler();
         RpcUnaryCommandServerHandler unaryHandler = new RpcUnaryCommandServerHandler();
@@ -2548,6 +3207,63 @@ public class RpcCommandHandlersTest {
             public void recycle() {
             }
         }
+    }
+
+    private static RpcFrame controlFrame(RpcFrameType frameType, long requestId, RpcFlowControl flowControl) {
+        RpcFrame.Builder builder = RpcFrame.newBuilder()
+            .setMeta(RpcFrame.getDefaultInstance().getMeta().toBuilder()
+                .setRequestId(requestId)
+                .setService("rpc.control")
+                .setMethod(frameType.name())
+                .setServiceVersion("v1")
+                .setCallType(RpcCallType.UNARY)
+                .build())
+            .setFrameType(frameType)
+            .setEndOfStream(true);
+        if (flowControl != null) {
+            builder.setFlowControl(flowControl);
+        }
+        return builder.build();
+    }
+
+    private static RpcFrame handleControl(RpcFrame requestFrame, int seq) throws Exception {
+        P2PWrapper<byte[]> responseWrapper = RpcControlSupport.handleControl(
+            P2PWrapper.build(seq, P2PCommand.RPC_CONTROL, requestFrame.toByteArray()),
+            new java.util.concurrent.ConcurrentHashMap<>(),
+            new java.util.concurrent.ConcurrentHashMap<>()
+        );
+        return RpcFrame.parseFrom(responseWrapper.getData());
+    }
+
+    private static RpcCallOptions metadataOptions() {
+        return RpcCallOptions.defaultOptions()
+            .withTracing("trace-1", "span-1", "parent-1")
+            .withCaller("node-1", "user-1")
+            .withHeaders(Map.of("tenant", "tenant-a", "scope", "internal"));
+    }
+
+    private static void assertRpcContextMetadata(RpcRequestContext context, String version) {
+        Assertions.assertNotNull(context);
+        Assertions.assertEquals(version, context.version());
+        Assertions.assertEquals("trace-1", context.traceId());
+        Assertions.assertEquals("span-1", context.spanId());
+        Assertions.assertEquals("parent-1", context.parentSpanId());
+        Assertions.assertEquals("node-1", context.callerNodeId());
+        Assertions.assertEquals("user-1", context.callerUserId());
+        Assertions.assertEquals("tenant-a", context.headers().get("tenant"));
+        Assertions.assertEquals("internal", context.headers().get("scope"));
+    }
+
+    private static void assertRpcMetaMetadata(RpcMeta meta, String version, boolean idempotent) {
+        Assertions.assertEquals(version, meta.getServiceVersion());
+        Assertions.assertEquals("trace-1", meta.getTraceId());
+        Assertions.assertEquals("span-1", meta.getSpanId());
+        Assertions.assertEquals("parent-1", meta.getParentSpanId());
+        Assertions.assertEquals("node-1", meta.getCallerNodeId());
+        Assertions.assertEquals("user-1", meta.getCallerUserId());
+        Assertions.assertEquals("tenant-a", meta.getHeadersMap().get("tenant"));
+        Assertions.assertEquals("internal", meta.getHeadersMap().get("scope"));
+        Assertions.assertEquals(idempotent, meta.getIdempotent());
     }
 
     private static final class CapturingControlMessageService implements P2PMessageService {

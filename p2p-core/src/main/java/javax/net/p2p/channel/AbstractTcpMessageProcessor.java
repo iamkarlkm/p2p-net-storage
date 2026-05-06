@@ -95,9 +95,10 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import java.io.File;
 import java.net.JarURLConnection;
 import java.net.URL;
-import java.util.ArrayList;
 import java.util.Enumeration;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.net.p2p.api.P2PCommand;
@@ -114,7 +115,7 @@ public abstract class AbstractTcpMessageProcessor extends SimpleChannelInboundHa
     protected static final ConcurrentHashMap<P2PCommand, P2PCommandHandler> ALL_HANDLER_MAP = new ConcurrentHashMap<>();
     protected static final ConcurrentHashMap<P2PServiceCategory, ConcurrentHashMap<P2PCommand, P2PCommandHandler>> CATEGORY_HANDLER_MAP = new ConcurrentHashMap<>();
 
-    private static final List<String> CLASS_CACHE = new ArrayList<>();
+    private static final Set<String> CLASS_CACHE = new LinkedHashSet<>();
 
     static {
         //注册命令处理器
@@ -153,47 +154,48 @@ public abstract class AbstractTcpMessageProcessor extends SimpleChannelInboundHa
     }
 
     private static void scannerClass(String packageName) throws Exception {
-        URL url = AbstractTcpMessageProcessor.class.getClassLoader().getResource(packageName.replaceAll("\\.", "/"));
-        System.out.println("scan processors -> " + url.getFile());
-        if (url.getFile().contains(".jar!")) {
-
-            JarURLConnection urlConnection = (JarURLConnection) url.openConnection();
-            // 从此jar包 得到一个枚举类
-            Enumeration<JarEntry> entries = urlConnection.getJarFile().entries();
-            // 遍历jar
-            while (entries.hasMoreElements()) {
-                // 获取jar里的一个实体 可以是目录 和一些jar包里的其他文件 如META-INF等文件
-                JarEntry entry = entries.nextElement();
-                //得到该jar文件下面的类实体
-                if (entry.getName().startsWith(packageName.replaceAll("\\.", "/")) && entry.getName().endsWith(".class")) {
-                    System.out.println(entry.getName());
-                    // 因为scan 就是/  ， 所有把 file的 / 转成  \   统一都是：  /
-                    String fPath = entry.getName().replaceAll("\\\\", "/");
-                    // 把 包路径 前面的 盘符等 去掉
-                    String packName = fPath;
-                    int m = fPath.indexOf(":");
-                    if (m > 0) {
-                        packName = fPath.substring(m);
-                    }
-                    // 去掉后缀.class ，并且把 / 替换成 .    这样就是  com.hadluo.A 格式了 ， 就可以用Class.forName加载了
-                    packName = packName.replace(".class", "").replaceAll("/", ".");
-                    // 根据名称加载类
-                    CLASS_CACHE.add(packName);
-                }
+        Enumeration<URL> urls = AbstractTcpMessageProcessor.class.getClassLoader().getResources(packageName.replaceAll("\\.", "/"));
+        if (urls == null) {
+            return;
+        }
+        while (urls.hasMoreElements()) {
+            URL url = urls.nextElement();
+            if (url == null) {
+                continue;
             }
-        } else {
-            File dir = new File(url.getFile());
-            for (File file : dir.listFiles()) {
-                //System.out.println(file);
-                //如果是一个文件夹，继续递归
-                if (file.isDirectory()) {
-                    scannerClass(packageName + "." + file.getName());
-                } else {
-                    CLASS_CACHE.add(packageName + "." + file.getName().replace(".class", "").trim());
+            System.out.println("scan processors -> " + url.getFile());
+            if (url.getFile().contains(".jar!")) {
+                JarURLConnection urlConnection = (JarURLConnection) url.openConnection();
+                Enumeration<JarEntry> entries = urlConnection.getJarFile().entries();
+                while (entries.hasMoreElements()) {
+                    JarEntry entry = entries.nextElement();
+                    if (entry.getName().startsWith(packageName.replaceAll("\\.", "/")) && entry.getName().endsWith(".class")) {
+                        System.out.println(entry.getName());
+                        String fPath = entry.getName().replaceAll("\\\\", "/");
+                        String packName = fPath;
+                        int m = fPath.indexOf(":");
+                        if (m > 0) {
+                            packName = fPath.substring(m);
+                        }
+                        packName = packName.replace(".class", "").replaceAll("/", ".");
+                        CLASS_CACHE.add(packName);
+                    }
+                }
+            } else {
+                File dir = new File(url.getFile());
+                File[] files = dir.listFiles();
+                if (files == null) {
+                    continue;
+                }
+                for (File file : files) {
+                    if (file.isDirectory()) {
+                        scannerClass(packageName + "." + file.getName());
+                    } else {
+                        CLASS_CACHE.add(packageName + "." + file.getName().replace(".class", "").trim());
+                    }
                 }
             }
         }
-
     }
 
     private static void doRegister() {

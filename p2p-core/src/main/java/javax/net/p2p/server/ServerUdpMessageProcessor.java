@@ -11,6 +11,8 @@ import javax.net.p2p.channel.AbstractLongTimedRequestAdapter;
 import javax.net.p2p.channel.AbstractStreamRequestAdapter;
 import javax.net.p2p.channel.AbstractUdpMessageProcessor;
 import javax.net.p2p.common.AbstractSendMesageExecutor;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.model.StreamP2PWrapper;
@@ -95,7 +97,7 @@ public class ServerUdpMessageProcessor extends AbstractUdpMessageProcessor {
                     return;
                 }
             }
-            response = P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "task not found");
+            response = P2PErrors.stdError(request.getSeq(), P2PErrorCode.TASK_NOT_FOUND);
             sendResponse(ctx.channel(), datagramPacket.sender(), response, magic);
             return;
         }
@@ -108,7 +110,11 @@ public class ServerUdpMessageProcessor extends AbstractUdpMessageProcessor {
             return;
         }
         if (!P2PServiceManager.isEnabled(request.getCommand().getCategory())) {
-            response = P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "service unavailable: " + request.getCommand().getCategory());
+            response = P2PErrors.stdError(
+                request.getSeq(),
+                P2PErrorCode.SERVICE_UNAVAILABLE,
+                "service unavailable: " + request.getCommand().getCategory()
+            );
             sendResponse(ctx.channel(), datagramPacket.sender(), response, magic);
             return;
         }
@@ -172,7 +178,7 @@ public class ServerUdpMessageProcessor extends AbstractUdpMessageProcessor {
                     retrieveLastResponse(ctx, datagramPacket.sender());
                     return;
                 default:
-                    response = P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "消息处理器不存在或未注册：" + request);
+                    response = P2PErrors.stdError(request.getSeq(), P2PErrorCode.ROUTING_UNKNOWN_COMMAND, "消息处理器不存在或未注册：" + request);
                     break;
             }
             

@@ -17,9 +17,10 @@ import java.io.RandomAccessFile;
 import java.net.InetSocketAddress;
 import java.net.JarURLConnection;
 import java.net.URL;
-import java.util.ArrayList;
 import java.util.Enumeration;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.concurrent.ConcurrentHashMap;
@@ -46,7 +47,7 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
     protected static final ConcurrentHashMap<P2PCommand, P2PCommandHandler> ALL_HANDLER_MAP = new ConcurrentHashMap<>();
     protected static final ConcurrentHashMap<P2PServiceCategory, ConcurrentHashMap<P2PCommand, P2PCommandHandler>> CATEGORY_HANDLER_MAP = new ConcurrentHashMap<>();
 
-    private static final List<String> CLASS_CACHE = new ArrayList<>();
+    private static final Set<String> CLASS_CACHE = new LinkedHashSet<>();
 
     static {
         //注册命令处理器
@@ -363,40 +364,37 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
     }
 
     private static void scannerClass(String packageName) throws Exception {
-        URL url = AbstractUdpMessageProcessor.class.getClassLoader().getResource(packageName.replaceAll("\\.", "/"));
-        if (url == null) {
-            log.warn("Package not found: {}", packageName);
+        Enumeration<URL> urls = AbstractUdpMessageProcessor.class.getClassLoader().getResources(packageName.replaceAll("\\.", "/"));
+        if (urls == null) {
             return;
         }
-        System.out.println("scan processors -> " + url.getFile());
-        if ("jar".equals(url.getProtocol())) {
-            //file:/D:/dev/scala_pro/test/src/jedis-2.8.0.jar!/redis
-            JarURLConnection urlConnection = (JarURLConnection) url.openConnection();
-            // 从此jar包 得到一个枚举类
-            Enumeration<JarEntry> entries = urlConnection.getJarFile().entries();
-            // 遍历jar
-            while (entries.hasMoreElements()) {
-                // 获取jar里的一个实体 可以是目录 和一些jar包里的其他文件 如META-INF等文件
-                JarEntry entry = entries.nextElement();
-                String entryName = entry.getName();
-                //得到该jar文件下面的类实体
-                if (entryName.startsWith(packageName.replaceAll("\\.", "/")) && entryName.endsWith(".class")) {
-                    System.out.println(entryName);
-                    // 因为scan 就是/  ， 所有把 file的 / 转成  \   统一都是：  /
-                    String className = entryName.replace("/", ".").replace(".class", "");
-                    // 根据名称加载类
-                    CLASS_CACHE.add(className);
+        while (urls.hasMoreElements()) {
+            URL url = urls.nextElement();
+            if (url == null) {
+                continue;
+            }
+            System.out.println("scan processors -> " + url.getFile());
+            if ("jar".equals(url.getProtocol())) {
+                JarURLConnection urlConnection = (JarURLConnection) url.openConnection();
+                Enumeration<JarEntry> entries = urlConnection.getJarFile().entries();
+                while (entries.hasMoreElements()) {
+                    JarEntry entry = entries.nextElement();
+                    String entryName = entry.getName();
+                    if (entryName.startsWith(packageName.replaceAll("\\.", "/")) && entryName.endsWith(".class")) {
+                        System.out.println(entryName);
+                        String className = entryName.replace("/", ".").replace(".class", "");
+                        CLASS_CACHE.add(className);
+                    }
                 }
+            } else {
+                File dir = new File(url.getFile());
+                if (!dir.exists()) {
+                    log.warn("Directory not found: {}", dir.getAbsolutePath());
+                    continue;
+                }
+                scanDir(dir, packageName);
             }
-        } else {
-            File dir = new File(url.getFile());
-            if (!dir.exists()) {
-                 log.warn("Directory not found: {}", dir.getAbsolutePath());
-                 return;
-            }
-            scanDir(dir, packageName);
         }
-
     }
     
     private static void scanDir(File dir, String packageName) {

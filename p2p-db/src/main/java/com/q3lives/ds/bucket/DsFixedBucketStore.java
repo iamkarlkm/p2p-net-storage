@@ -1100,12 +1100,9 @@ public class DsFixedBucketStore {
             int len = Math.min(unitSize, data.length);//定长截断
             if (bufferOffset + unitSize <= BLOCK_SIZE) {
                 buffer.put(bufferOffset, data, 0, len);
-                //目前实现为了性能考虑,不处理残留旧数据
-//                if (len < unitSize) {//剩余部分补 0，否则会残留旧数据
-//                    for (int i = bufferOffset + len; i < bufferOffset + unitSize; i++) {
-//                        buffer.put(i, (byte) 0);
-//                    }
-//                }
+                // if (len < unitSize) {
+                //     zeroFillUnitTail(baseId, len, unitSize - len);
+                // }
                 dirty(bufferIndex);
                 return;
             }
@@ -1124,10 +1121,9 @@ public class DsFixedBucketStore {
                 bi++;
                 off = 0;
             }
-             //目前实现为了性能考虑,不处理残留旧数据
-//            if (len < unitSize) {//剩余部分补 0，否则会残留旧数据
-//                zeroFillUnitTail(baseId, len, unitSize - len);
-//            }
+            // if (len < unitSize) {
+            //     zeroFillUnitTail(baseId, len, unitSize - len);
+            // }
         }
         /**
          * 入口数据部分写入
@@ -1143,12 +1139,9 @@ public class DsFixedBucketStore {
             int len = Math.min(unitSize, count);//定长截断
             if (bufferOffset + unitSize <= BLOCK_SIZE) {
                 buffer.put(bufferOffset, data, offsetIn, len);
-                 //目前实现为了性能考虑,不处理残留旧数据
-//                if (len < unitSize) {//剩余部分补 0，否则会残留旧数据
-//                    for (int i = bufferOffset + len; i < bufferOffset + unitSize; i++) {
-//                        buffer.put(i, (byte) 0);
-//                    }
-//                }
+                if (len < unitSize) {
+                    zeroFillUnitTail(baseId, len, unitSize - len);
+                }
                 dirty(bufferIndex);
                 return;
             }
@@ -1167,10 +1160,9 @@ public class DsFixedBucketStore {
                 bi++;
                 off = 0;
             }
-             //目前实现为了性能考虑,不处理残留旧数据
-//            if (len < unitSize) {//剩余部分补 0，否则会残留旧数据
-//                zeroFillUnitTail(baseId, len, unitSize - len);
-//            }
+            if (len < unitSize) {
+                zeroFillUnitTail(baseId, len, unitSize - len);
+            }
         }
 
         private void zeroFillUnitTail(long baseId, int offsetInUnit, int length) throws IOException {

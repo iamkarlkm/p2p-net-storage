@@ -46,6 +46,8 @@ import javax.net.p2p.channel.AbstractLongTimedRequestAdapter;
 import javax.net.p2p.channel.AbstractStreamRequestAdapter;
 import javax.net.p2p.channel.AbstractTcpMessageProcessor;
 import javax.net.p2p.common.AbstractSendMesageExecutor;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.interfaces.P2PChannelAwareCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
@@ -144,7 +146,7 @@ public class ServerMessageProcessor extends AbstractTcpMessageProcessor {
                 ctx.channel().writeAndFlush(P2PWrapper.build(msg.getSeq(), P2PCommand.STD_CANCEL, "canceled"));
                 return;
             }
-            ctx.channel().writeAndFlush(P2PWrapper.build(msg.getSeq(), P2PCommand.STD_ERROR, "task not found"));
+            ctx.channel().writeAndFlush(P2PErrors.stdError(msg.getSeq(), P2PErrorCode.TASK_NOT_FOUND));
             return;
         }
         if (msg.getCommand() == P2PCommand.RPC_CONTROL) {
@@ -154,7 +156,11 @@ public class ServerMessageProcessor extends AbstractTcpMessageProcessor {
         }
 
         if (!P2PServiceManager.isEnabled(msg.getCommand().getCategory())) {
-            P2PWrapper unavailable = P2PWrapper.build(msg.getSeq(), P2PCommand.STD_ERROR, "service unavailable: " + msg.getCommand().getCategory());
+            P2PWrapper unavailable = P2PErrors.stdError(
+                msg.getSeq(),
+                P2PErrorCode.SERVICE_UNAVAILABLE,
+                "service unavailable: " + msg.getCommand().getCategory()
+            );
             ctx.channel().writeAndFlush(unavailable);
             return;
         }
@@ -200,7 +206,7 @@ public class ServerMessageProcessor extends AbstractTcpMessageProcessor {
         } else {
             // 未知命令类型，返回错误响应
             // 保持原消息序列号，便于客户端匹配请求响应
-            p2p = P2PWrapper.build(msg.getSeq(), P2PCommand.STD_ERROR, "未知消息类型：" + msg);
+            p2p = P2PErrors.stdError(msg.getSeq(), P2PErrorCode.ROUTING_UNKNOWN_COMMAND, "未知消息类型：" + msg);
         }
 
         try {

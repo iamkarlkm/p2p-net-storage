@@ -95,6 +95,9 @@ public class DsData {
      * 写入 valueBytes 并返回 indexId。
      *
      * <p>如果 value 已存在，会把对应 indexId 的 refCount++ 并返回旧 id；否则创建新 valueId+indexId（refCount=1）。</p>
+     * @param valueBytes
+     * @return 
+     * @throws java.io.IOException
      */
     public long put(byte[] valueBytes) throws IOException {
         if (valueBytes == null) {

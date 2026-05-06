@@ -6,6 +6,7 @@ import io.netty.channel.embedded.EmbeddedChannel;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import javax.net.p2p.api.P2PCommand;
@@ -15,14 +16,18 @@ import javax.net.p2p.common.AbstractSendMesageExecutor;
 import javax.net.p2p.common.ExecutorServicePool;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.model.StreamP2PWrapper;
+import javax.net.p2p.rpc.echo.proto.EchoRequest;
+import javax.net.p2p.rpc.echo.proto.EchoResponse;
 import javax.net.p2p.rpc.proto.RpcCallType;
 import javax.net.p2p.rpc.proto.RpcFrame;
 import javax.net.p2p.rpc.proto.RpcFrameType;
+import javax.net.p2p.rpc.server.RpcBootstrap;
 import javax.net.p2p.rpc.stream.proto.StreamChatRequest;
 import javax.net.p2p.rpc.stream.proto.StreamChatResponse;
 import javax.net.p2p.rpc.stream.proto.StreamCollectRequest;
 import javax.net.p2p.rpc.stream.proto.StreamCollectResponse;
 import javax.net.p2p.rpc.server.RpcStreamingBuiltinServices;
+import javax.net.p2p.server.handler.RpcUnaryCommandServerHandler;
 import javax.net.p2p.server.handler.RpcStreamCommandServerHandler;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assertions;
@@ -107,6 +112,61 @@ public class ServerQuicMessageProcessorTest {
     }
 
     @Test
+    public void rpcUnaryMetadataAndResponseContextFlowThroughQuicProcessor() throws Exception {
+        registerQuicHandler(P2PCommand.RPC_UNARY, new RpcUnaryCommandServerHandler());
+        String service = "test.rpc.v1.QuicUnaryMetadataService." + System.nanoTime();
+        RpcBootstrap.registerUnary(
+            service,
+            "EchoMeta",
+            "meta-v2",
+            true,
+            EchoRequest.class,
+            EchoResponse.class,
+            (context, request) -> {
+                context.putResponseHeader("x-rpc-stage", "quic-unary");
+                context.putResponseTrailer("x-rpc-finish", "quic-done");
+                context.putResponseStatusDetail("quic", "ok");
+                return EchoResponse.newBuilder()
+                    .setMessage(
+                        context.traceId() + "|" + context.parentSpanId() + "|" + context.callerNodeId() + "|" + context.callerUserId()
+                            + "|" + context.headers().get("tenant") + "|" + request.getMessage()
+                    )
+                    .build();
+            }
+        );
+
+        TestProcessor p = new TestProcessor(0x1234, 16);
+        EmbeddedChannel ch = new EmbeddedChannel();
+        ch.pipeline().addLast(p);
+        ChannelHandlerContext ctx = ch.pipeline().context(p);
+
+        int seq = 141;
+        RpcFrame requestFrame = withMetadata(buildRpcFrame(
+            141L,
+            service,
+            "EchoMeta",
+            RpcCallType.UNARY,
+            RpcFrameType.OPEN,
+            EchoRequest.newBuilder().setMessage("hello").build(),
+            true
+        ));
+        p.processMessage(ctx, P2PWrapper.build(seq, P2PCommand.RPC_UNARY, requestFrame.toByteArray()));
+
+        P2PWrapper<?> responseWrapper = waitFor(p, seq, P2PCommand.RPC_UNARY);
+        RpcFrame responseFrame = RpcFrame.parseFrom((byte[]) responseWrapper.getData());
+        EchoResponse response = EchoResponse.parseFrom(responseFrame.getPayload());
+
+        Assertions.assertEquals("trace-1|parent-1|node-1|user-1|tenant-a|hello", response.getMessage());
+        assertRpcMetaMetadata(responseFrame, "meta-v2", true);
+        Assertions.assertEquals("ok", responseFrame.getStatus().getDetailsMap().get("quic"));
+        Assertions.assertEquals("quic-unary", responseFrame.getMeta().getResponseHeadersMap().get("x-rpc-stage"));
+        Assertions.assertEquals("quic-done", responseFrame.getMeta().getResponseTrailersMap().get("x-rpc-finish"));
+        Assertions.assertEquals(RpcFrameType.CLOSE, responseFrame.getFrameType());
+        Assertions.assertTrue(responseFrame.getEndOfStream());
+        ch.finishAndReleaseAll();
+    }
+
+    @Test
     public void rpcClientStreamCanFlowThroughQuicProcessor() throws Exception {
         registerQuicHandler(P2PCommand.RPC_STREAM, new RpcStreamCommandServerHandler());
 
@@ -150,6 +210,91 @@ public class ServerQuicMessageProcessorTest {
         Assertions.assertEquals(2, response.getCount());
         Assertions.assertEquals("a,b", response.getJoined());
         Assertions.assertEquals(List.of("a", "b"), response.getMessagesList());
+        ch.finishAndReleaseAll();
+    }
+
+    @Test
+    public void rpcClientStreamMetadataAndResponseContextFlowThroughQuicProcessor() throws Exception {
+        registerQuicHandler(P2PCommand.RPC_STREAM, new RpcStreamCommandServerHandler());
+        String service = "test.rpc.v1.QuicClientMetadataService." + System.nanoTime();
+        RpcBootstrap.registerClientStream(
+            service,
+            "CollectMeta",
+            "meta-v2",
+            true,
+            StreamCollectRequest.class,
+            StreamCollectResponse.class,
+            context -> {
+                List<String> messages = new ArrayList<>();
+                return new javax.net.p2p.rpc.api.RpcClientStreamSession<>() {
+                    @Override
+                    public void onNext(StreamCollectRequest request) {
+                        context.putResponseHeader("x-rpc-stage", "quic-client-stream");
+                        messages.add(request.getMessage());
+                    }
+
+                    @Override
+                    public StreamCollectResponse onCompleted() {
+                        context.putResponseTrailer("x-rpc-finish", "quic-stream-done");
+                        context.putResponseStatusDetail("quic-stream", "ok");
+                        return StreamCollectResponse.newBuilder()
+                            .setCount(messages.size())
+                            .setJoined(
+                                context.traceId() + "|" + context.parentSpanId() + "|" + context.callerNodeId() + "|" + context.callerUserId()
+                                    + "|" + context.headers().get("tenant")
+                            )
+                            .addAllMessages(messages)
+                            .build();
+                    }
+                };
+            },
+            null
+        );
+
+        TestProcessor p = new TestProcessor(0x1234, 16);
+        EmbeddedChannel ch = new EmbeddedChannel();
+        ch.pipeline().addLast(p);
+        ChannelHandlerContext ctx = ch.pipeline().context(p);
+
+        int seq = 142;
+        p.processMessage(ctx, buildRpcStreamMessage(
+            seq,
+            0,
+            withMetadata(buildRpcFrame(142L, service, "CollectMeta", RpcCallType.CLIENT_STREAM, RpcFrameType.OPEN, null, false)),
+            false
+        ));
+        Assertions.assertNotNull(waitFor(p, seq, P2PCommand.STREAM_ACK));
+
+        p.processMessage(ctx, buildRpcStreamMessage(
+            seq,
+            1,
+            withMetadata(buildRpcFrame(142L, service, "CollectMeta", RpcCallType.CLIENT_STREAM, RpcFrameType.DATA,
+                StreamCollectRequest.newBuilder().setMessage("x").build(), false)),
+            false
+        ));
+        p.processMessage(ctx, buildRpcStreamMessage(
+            seq,
+            2,
+            withMetadata(buildRpcFrame(142L, service, "CollectMeta", RpcCallType.CLIENT_STREAM, RpcFrameType.DATA,
+                StreamCollectRequest.newBuilder().setMessage("y").build(), false)),
+            false
+        ));
+        p.processMessage(ctx, buildRpcStreamMessage(
+            seq,
+            3,
+            withMetadata(buildRpcFrame(142L, service, "CollectMeta", RpcCallType.CLIENT_STREAM, RpcFrameType.CLOSE, null, true)),
+            true
+        ));
+
+        RpcFrame responseFrame = waitForRpcFrame(p, seq, RpcFrameType.CLOSE);
+        StreamCollectResponse response = StreamCollectResponse.parseFrom(responseFrame.getPayload());
+        Assertions.assertEquals(2, response.getCount());
+        Assertions.assertEquals("trace-1|parent-1|node-1|user-1|tenant-a", response.getJoined());
+        Assertions.assertEquals(List.of("x", "y"), response.getMessagesList());
+        assertRpcMetaMetadata(responseFrame, "meta-v2", true);
+        Assertions.assertEquals("ok", responseFrame.getStatus().getDetailsMap().get("quic-stream"));
+        Assertions.assertEquals("quic-client-stream", responseFrame.getMeta().getResponseHeadersMap().get("x-rpc-stage"));
+        Assertions.assertEquals("quic-stream-done", responseFrame.getMeta().getResponseTrailersMap().get("x-rpc-finish"));
         ch.finishAndReleaseAll();
     }
 
@@ -976,6 +1121,33 @@ public class ServerQuicMessageProcessorTest {
             builder.setPayload(payload.toByteString());
         }
         return builder.build();
+    }
+
+    private static RpcFrame withMetadata(RpcFrame frame) {
+        return frame.toBuilder()
+            .setMeta(frame.getMeta().toBuilder()
+                .setServiceVersion("meta-v2")
+                .setTraceId("trace-1")
+                .setSpanId("span-1")
+                .setParentSpanId("parent-1")
+                .setCallerNodeId("node-1")
+                .setCallerUserId("user-1")
+                .putAllHeaders(Map.of("tenant", "tenant-a", "scope", "internal"))
+                .setIdempotent(true)
+                .build())
+            .build();
+    }
+
+    private static void assertRpcMetaMetadata(RpcFrame frame, String version, boolean idempotent) {
+        Assertions.assertEquals(version, frame.getMeta().getServiceVersion());
+        Assertions.assertEquals("trace-1", frame.getMeta().getTraceId());
+        Assertions.assertEquals("span-1", frame.getMeta().getSpanId());
+        Assertions.assertEquals("parent-1", frame.getMeta().getParentSpanId());
+        Assertions.assertEquals("node-1", frame.getMeta().getCallerNodeId());
+        Assertions.assertEquals("user-1", frame.getMeta().getCallerUserId());
+        Assertions.assertEquals("tenant-a", frame.getMeta().getHeadersMap().get("tenant"));
+        Assertions.assertEquals("internal", frame.getMeta().getHeadersMap().get("scope"));
+        Assertions.assertEquals(idempotent, frame.getMeta().getIdempotent());
     }
 
     private static StreamP2PWrapper<byte[]> buildRpcStreamMessage(int seq, int index, RpcFrame frame, boolean completed) {

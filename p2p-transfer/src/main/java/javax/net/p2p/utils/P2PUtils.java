@@ -18,6 +18,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.client.P2PClientTcp;
 import javax.net.p2p.client.processor.FileSegmentsGetProcessor;
 import javax.net.p2p.client.processor.FileSegmentsPutProcessor;
@@ -190,7 +191,7 @@ public class P2PUtils  implements P2PFileService{
 
 			log.error(response.toString());
 			//FileUtils.writeStringToFile(new File("e:/test/error.log"), response.getData().toString());
-			throw new RuntimeException(response.getData().toString());
+			throw P2PErrors.asRuntimeException(response);
 		}
 		//}
 		throw new RuntimeException("未知回应消息：" + response);
@@ -217,7 +218,7 @@ public class P2PUtils  implements P2PFileService{
 					return payload;
 				}
 			}
-			throw new RuntimeException(response.getData().toString());
+			throw P2PErrors.asRuntimeException(response);
 		}
 		//}
 		throw new RuntimeException("未知回应消息：" + response);
@@ -443,7 +444,7 @@ public class P2PUtils  implements P2PFileService{
 
 			System.out.println(response);
 			//FileUtils.writeStringToFile(new File("e:/test/error.log"), response.getData().toString());
-			throw new RuntimeException(response.getData().toString());
+			throw P2PErrors.asRuntimeException(response);
 		}
 		//}
 		throw new RuntimeException("未知回应消息：" + response);
@@ -467,7 +468,7 @@ public class P2PUtils  implements P2PFileService{
 
 			System.out.println(response);
 			//FileUtils.writeStringToFile(new File("e:/test/error.log"), response.getData().toString());
-			throw new RuntimeException(response.getData().toString());
+			throw P2PErrors.asRuntimeException(response);
 		}
 		//}
 		throw new RuntimeException("未知回应消息：" + response);
@@ -487,7 +488,7 @@ public class P2PUtils  implements P2PFileService{
 
 				System.out.println(response);
 				//FileUtils.writeStringToFile(new File("e:/test/error.log"), response.getData().toString());
-				throw new RuntimeException(response.getData().toString());
+				throw P2PErrors.asRuntimeException(response);
 			}
 			//}
 			throw new RuntimeException("未知回应消息：" + response);
@@ -519,7 +520,7 @@ public class P2PUtils  implements P2PFileService{
 
 						System.out.println(response);
 						//FileUtils.writeStringToFile(new File("e:/test/error.log"), response.getData().toString());
-						throw new RuntimeException(response.getData().toString());
+						throw P2PErrors.asRuntimeException(response);
 					}
 					//log.info("主线程执行完成");
 					return;
@@ -580,7 +581,7 @@ public class P2PUtils  implements P2PFileService{
 
 				System.out.println(response);
 				//FileUtils.writeStringToFile(new File("e:/test/error.log"), response.getData().toString());
-				throw new RuntimeException(response.getData().toString());
+				throw P2PErrors.asRuntimeException(response);
 			}
 			log.info("主线程执行完成");
 
@@ -604,7 +605,7 @@ public class P2PUtils  implements P2PFileService{
 
 				System.out.println(response);
 				//FileUtils.writeStringToFile(new File("e:/test/error.log"), response.getData().toString());
-				throw new RuntimeException(response.getData().toString());
+				throw P2PErrors.asRuntimeException(response);
 			}
 			//}
 			throw new RuntimeException("未知回应消息：" + response);
@@ -638,7 +639,7 @@ public class P2PUtils  implements P2PFileService{
 
 						System.out.println(response);
 						//FileUtils.writeStringToFile(new File("e:/test/error.log"), response.getData().toString());
-						throw new RuntimeException(response.getData().toString());
+						throw P2PErrors.asRuntimeException(response);
 					}
 					//log.info("主线程执行完成");
 					return;
@@ -702,7 +703,7 @@ public class P2PUtils  implements P2PFileService{
 
 				System.out.println(response);
 				//FileUtils.writeStringToFile(new File("e:/test/error.log"), response.getData().toString());
-				throw new RuntimeException(response.getData().toString());
+				throw P2PErrors.asRuntimeException(response);
 			}
 			log.info("主线程执行完成");
 
@@ -732,7 +733,7 @@ public class P2PUtils  implements P2PFileService{
 
 			System.out.println(response);
 			//FileUtils.writeStringToFile(new File("e:/test/error.log"), response.getData().toString());
-			throw new RuntimeException(response.getData().toString());
+			throw P2PErrors.asRuntimeException(response);
 		}
 		//}
 		throw new RuntimeException("未知回应消息：" + response);
@@ -749,7 +750,7 @@ public class P2PUtils  implements P2PFileService{
 
 			System.out.println(response);
 
-			throw new RuntimeException(response.getData().toString());
+			throw P2PErrors.asRuntimeException(response);
 		}
 		throw new RuntimeException("未知回应消息：" + response);
 	}

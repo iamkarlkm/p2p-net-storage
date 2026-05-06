@@ -3,6 +3,8 @@ package javax.net.p2p.server.handler;
 import java.io.File;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.channel.AbstractLongTimedRequestAdapter;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.FileDataModel;
 import javax.net.p2p.model.P2PWrapper;
@@ -28,20 +30,28 @@ public class FileCheckServerHandler extends AbstractLongTimedRequestAdapter impl
 
                 File file = FileUtil.getAndCheckExistsSandboxFile(payload.storeId, payload.path);
                 if (file.length() != payload.length) {
-                    return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, String.format("文件长度不一致 %s <> %s", payload.length, file.length()));
+                    return P2PErrors.stdError(
+                        request.getSeq(),
+                        P2PErrorCode.FILE_LENGTH_MISMATCH,
+                        String.format("文件长度不一致 %s <> %s", payload.length, file.length())
+                    );
                 } else if (payload.md5 != null) {
                     String md5 = SecurityUtils.getFileMD5String(file);
                     if (!md5.equals(payload.md5)) {
-                        return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, String.format("MD5校验错误 %s <> %s", payload.md5, md5));
+                        return P2PErrors.stdError(
+                            request.getSeq(),
+                            P2PErrorCode.FILE_MD5_MISMATCH,
+                            String.format("MD5校验错误 %s <> %s", payload.md5, md5)
+                        );
                     }
                 }
 
                 return P2PWrapper.build(request.getSeq(), P2PCommand.STD_OK, null);
             } else {
-                return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "指令分发内部校验错误！");
+                return P2PErrors.stdError(request.getSeq(), P2PErrorCode.ROUTING_HANDLER_MISMATCH, "指令分发内部校验错误！");
             }
         } catch (Exception e) {
-            return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, e.toString());
+            return P2PErrors.stdError(request.getSeq(), P2PErrorCode.FILE_IO_ERROR, e.toString());
         }
 
     }

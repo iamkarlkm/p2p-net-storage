@@ -3,6 +3,8 @@ package javax.net.p2p.server.handler;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.channel.AbstractStreamRequestAdapter;
 import javax.net.p2p.common.AbstractSendMesageExecutor;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.StreamRequest;
 import javax.net.p2p.model.P2PPubSubMessage;
 import javax.net.p2p.model.P2PWrapper;
@@ -27,7 +29,7 @@ public class PubSubStreamServerHandler extends AbstractStreamRequestAdapter impl
                 if (!ok) {
                     continued = false;
                     try {
-                        executor.sendResponse(P2PWrapper.build(message.getSeq(), P2PCommand.STD_ERROR, "pubsub subscribe rejected"));
+                        executor.sendResponse(P2PErrors.stdError(message.getSeq(), P2PErrorCode.POLICY_REJECTED, "pubsub subscribe rejected"));
                     } catch (Exception ignored) {
                     }
                 }
