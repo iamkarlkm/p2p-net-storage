@@ -28,6 +28,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import javax.net.p2p.model.DbColumnSchema;
+import javax.net.p2p.model.DbCompositeGroupSchema;
+import javax.net.p2p.model.DbCompositeItemSchema;
+import javax.net.p2p.model.DbTableSchema;
 import org.yaml.snakeyaml.Yaml;
 
 public final class TableMetaStore {
@@ -37,6 +41,20 @@ public final class TableMetaStore {
     public TableMetaStore(File dbRoot) {
         this.dbRoot = Objects.requireNonNull(dbRoot, "dbRoot cannot be null");
         this.columnRegistry = new ColumnRegistry(dbRoot);
+    }
+
+    public TableMeta getMeta(String entityClassName) {
+        if (entityClassName == null || entityClassName.isBlank()) {
+            throw new IllegalArgumentException("entityClassName is blank");
+        }
+        File metaFile = metaFile(entityClassName);
+        try {
+            return load(metaFile);
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new MetaStoreException("failed to read table meta: entityClass=" + entityClassName, e);
+        }
     }
 
     public <T extends DsTableAdapter> TableMeta ensureMeta(Class<T> entityClass) {
@@ -57,6 +75,33 @@ public final class TableMetaStore {
             throw e;
         } catch (Exception e) {
             throw new MetaStoreException("failed to ensure table meta: entityClass=" + entityClass.getName(), e);
+        }
+    }
+
+    public TableMeta ensureMeta(String entityClassName, DbTableSchema schema, boolean overwrite) {
+        if (entityClassName == null || entityClassName.isBlank()) {
+            throw new IllegalArgumentException("entityClassName is blank");
+        }
+        Objects.requireNonNull(schema, "schema cannot be null");
+
+        File metaFile = metaFile(entityClassName);
+        File lockFile = new File(metaFile.getParentFile(), "table.meta.lock");
+        try (FileChannel ch = new FileOutputStream(lockFile, true).getChannel();
+            FileLock ignored = ch.lock()) {
+            TableMeta meta = load(metaFile);
+            if (!overwrite && meta.signature != null && !meta.signature.isBlank()) {
+                return meta;
+            }
+            TableMeta fresh = build(entityClassName, schema);
+            if (overwrite || !Objects.equals(meta.signature, fresh.signature)) {
+                save(metaFile, fresh);
+                return fresh;
+            }
+            return meta;
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new MetaStoreException("failed to ensure table meta: entityClass=" + entityClassName, e);
         }
     }
 
@@ -130,6 +175,94 @@ public final class TableMetaStore {
         return meta;
     }
 
+    private TableMeta build(String entityClassName, DbTableSchema schema) {
+        TableMeta meta = new TableMeta();
+        meta.entityClassName = entityClassName;
+        meta.columns = new ArrayList<>();
+        meta.compositeGroups = new LinkedHashMap<>();
+        Map<String, ColumnDef> uniqueColumnsByName = new HashMap<>();
+
+        if (schema.columns != null) {
+            for (DbColumnSchema in : schema.columns) {
+                if (in == null) {
+                    continue;
+                }
+                String logicalName = in.name;
+                if (logicalName == null || logicalName.isBlank()) {
+                    throw new MetaSchemaException("column name is blank: entityClass=" + entityClassName);
+                }
+                String javaType = in.javaType;
+                if (javaType == null || javaType.isBlank()) {
+                    throw new MetaSchemaException("column javaType is blank: entityClass=" + entityClassName + ", name=" + logicalName);
+                }
+                String colKey = entityClassName + "#" + logicalName;
+                long colId = columnRegistry.getOrCreateColId(entityClassName, colKey);
+
+                ColumnDef c = new ColumnDef();
+                c.colId = colId;
+                c.colKey = colKey;
+                c.name = logicalName;
+                c.javaType = javaType;
+                c.length = in.length;
+                c.precision = in.precision;
+                c.scale = in.scale;
+
+                ColumnDef old = uniqueColumnsByName.get(logicalName);
+                if (old == null) {
+                    uniqueColumnsByName.put(logicalName, c);
+                    meta.columns.add(c);
+                } else {
+                    if (!Objects.equals(old.javaType, c.javaType) || old.length != c.length || old.precision != c.precision || old.scale != c.scale) {
+                        throw new MetaDuplicateColumnDefinitionException("duplicate column name with mismatch: name=" + logicalName);
+                    }
+                }
+            }
+        }
+
+        if (schema.compositeGroups != null) {
+            for (DbCompositeGroupSchema in : schema.compositeGroups.values()) {
+                if (in == null) {
+                    continue;
+                }
+                if (in.group == null || in.group.isBlank()) {
+                    throw new MetaSchemaException("composite group is blank: entityClass=" + entityClassName);
+                }
+                if (in.length <= 0) {
+                    throw new MetaSchemaException("composite group length must be > 0: group=" + in.group);
+                }
+                CompositeGroup g = meta.compositeGroups.computeIfAbsent(in.group, k -> new CompositeGroup());
+                g.group = in.group;
+                if (g.length == 0) {
+                    g.length = in.length;
+                } else if (g.length != in.length) {
+                    throw new MetaCompositeGroupLengthMismatchException("composite group length mismatch: group=" + in.group + ", " + g.length + " vs " + in.length);
+                }
+                if (in.items != null) {
+                    for (DbCompositeItemSchema itemIn : in.items) {
+                        if (itemIn == null) {
+                            continue;
+                        }
+                        CompositeItem item = new CompositeItem();
+                        item.name = itemIn.name;
+                        item.startBits = itemIn.startBits;
+                        item.endBits = itemIn.endBits;
+                        validateAndAddCompositeItem(g, item);
+                    }
+                }
+            }
+        }
+
+        for (CompositeGroup g : meta.compositeGroups.values()) {
+            String colKey = entityClassName + "#@composite:" + g.group;
+            long colId = columnRegistry.getOrCreateColId(entityClassName, colKey);
+            g.colId = colId;
+            g.colKey = colKey;
+        }
+
+        meta.signature = computeSignature(meta);
+        return meta;
+    }
+
     private static void validateAndAddCompositeItem(CompositeGroup g, CompositeItem item) {
         if (item.name == null || item.name.isBlank()) {
             throw new MetaSchemaException("composite item name is blank: group=" + g.group);
@@ -188,7 +321,11 @@ public final class TableMetaStore {
     }
 
     private File metaFile(Class<? extends DsTableAdapter> entityClass) {
-        String spacePath = DsPathUtil.dottedToLinuxPath(entityClass.getName(), "entityClass");
+        return metaFile(entityClass.getName());
+    }
+
+    private File metaFile(String entityClassName) {
+        String spacePath = DsPathUtil.dottedToLinuxPath(entityClassName, "entityClass");
         File dir = new File(dbRoot, "indexes/" + spacePath);
         if (!dir.exists()) {
             dir.mkdirs();

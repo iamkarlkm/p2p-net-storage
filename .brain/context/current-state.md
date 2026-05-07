@@ -1,5 +1,5 @@
 ---
-updated: "2026-05-04T17:50:52Z"
+updated: "2026-05-06T23:06:00Z"
 ---
 # Current State
 
@@ -22,14 +22,17 @@ This file is a deterministic snapshot of the repository state at the last refres
 
 ## Work Notes
 
-- `p2p-db` 新增 columnar（零行头）存储与表/复合列元数据落盘（见 `.brain/resources/changes/dsdb-columnar-store.md`）。
-- 复合列组（`@DsCompositeField.group`）也作为“列”注册：每个 group 绑定一个 colId（colKey=`<entity>#@composite:<group>`），并可按列读写该 group 的 packed bytes。
-- 验证：`mvn -pl p2p-db test`。
-- Gotcha：Windows 下 YAML 元数据文件需用独立 `*.lock` 文件做串行化更新，避免自锁读失败（已修复并回归）。
-- Gotcha：复合列组读取固定 `group.length` 字节，因此首次分配 valueId 时必须按 `group.length` 申请 bucket（避免 “data overflow bucket unit”）。
-- Resolved：复合列 group 写入现使用 `colKey=<entity>#@composite:<group>` 注册并分配 colId；首次写入按 `group.length` 分配 valueId，读写回归通过。
-- Resolved：元数据校验增强：拒绝重复 `@DsField` 同名但类型/长度不一致；拒绝 `@DsCompositeField` 同 group 但 length 不一致；拒绝复合位段越界/重叠/同名 item。
-<!-- brain:end context-current-state -->
+- `p2p-db` DS_DB 已支持“无类”模式的 DDL/CRUD/QUERY：`DB_META_GET/PUT`、`DB_ROW_*`、`DB_COL_*`、`DB_ROW_PUT/GET`、`DB_ROW_QUERY_IDS`，底层为稀疏列存（每列一个 `DsHashMap(rowId->valueId)`，value 落 `DsFixedBucketStore` 的 `type=col_<colId>`）。
+- 复合列组按逻辑列 `@composite:<group>` 注册稳定 `colId/colKey`，以 group.length 作为 packed bytes 长度写入/读取。
+- 新增等值二级索引：`DB_INDEX_CREATE` 创建/重建 `<logicalName>.eq.idx.yaml` 元数据 + `eq_<colId>.map`，并全表回填；查询端 `DB_ROW_QUERY_IDS` 会在存在 EQ 条件且索引存在时先走索引候选集再做完整过滤/排序/分页。
+- `DB_INDEX_DROP` 支持删除等值索引：会释放索引节点并清空 `eq_<colId>.map`，同时删除 `<logicalName>.eq.idx.yaml` 元数据；删除后查询会自动回退到全表扫描。
+- 新增索引元信息查询：`DB_INDEX_LIST` 列出表上的索引（当前仅 EQ），`DB_INDEX_INFO` 查询单个索引（返回 exists + {logicalName,colId,type}）。
+- 写入一致性：`DB_COL_PUT/REMOVE`、`DB_ROW_PUT`、`DB_ROW_REMOVE` 会对已存在的 EQ 索引做增量维护（先移除旧值再写入新值/或删除）。
+- String 定长列一致性：动态列写入会对 `valueBytes` 做零填充到列定义长度；查询解码时会 trim 尾部 0 字节，避免 `"bob\\0\\0..."` 影响 EQ 判断与索引匹配。
+- Gotcha：开发时若本机 `p2p-core` 依赖 jar 落后，会导致 `p2p-db` 编译缺少新 model 类；需先 `mvn -pl p2p-core -DskipTests=true install`。
+- Boundaries touched: `.brain/`, `p2p-core/`, `p2p-db/`。
+- High-signal changed files: `p2p-db` 的 ColumnarStore 与 DS_DB handlers（Row/Col/Query/Index），以及 `DbEntityP2PHandlersTest` 的索引回归用例；`.brain/context/current-state.md`、`.brain/resources/changes/dsdb.md`。
+
 
 ## Local Notes
 
@@ -49,13 +52,8 @@ This file is a deterministic snapshot of the repository state at the last refres
 - Remote DS_DB commands now also cover `DB_ENTITY_EXISTS/REMOVE/QUERY_IDS`, and server handlers maintain the same per-entity `ids.set` index so exists/query works after remote PUT/REMOVE.
 - `p2p-db` adds a `GenericManager<T extends DsTableAdapter>` query+CRUD service: per-entity `DsHashSet` id index under `indexes/<entityClassPath>/ids.set` (legacy) or `ids_<schemaId>.set` (schema isolation), scan+filter via `QueryWrapper`, sort via wrapper orders, and range slicing for pagination.
 - Schema isolation: if legacy `ids.set` does not exist, per-entity indexes and row buckets use `ids_<schemaId>.set` + row type `rows_<schemaId>` so column-store field changes can be introduced without corrupting old fixed-size rows.
-- `p2p-db` 新增稀疏列存储（零行头）基础设施：每个 colId 一张 `DsHashMap(rowId->valueId)`，value 使用 `DsFixedBucketStore`，并按列隔离为 `type=col_<colId>`；表/复合列元数据落盘为 `table.meta.yaml/columns.meta.yaml`。
-- `p2p-db` 元数据异常已细分为独立的运行时异常（`com.q3lives.ds.exception.meta.*`），替代 `IllegalStateException/RuntimeException` 一把梭；写入已删除列会抛 `MetaDeletedColumnException`。
-- Boundaries touched: `p2p-db`（columnar 存储 + 元数据落盘）、`.brain`（durable notes）、`p2p-core`（同一工作区仍包含此前 DS_DB/RPC/STD_ERROR 相关变更）。
-- Gotcha: `DsHashSet.remove(long)` fast-path previously returned true without actually deleting; removal now always goes through the full remove path.
-- Gotcha: Windows 下对同一 YAML 文件加锁后再读同一文件可能失败（文件共享模式冲突）；元数据写入用独立 `*.lock` 文件做串行化，避免 self-lock 读失败。
-- Resolved: `ColumnarStoreTest` 初次运行因 YAML meta 文件自锁读失败而报错；已改为 lock-file 方案后通过回归。
-- `p2p-core` TCP/UDP handler scanning now enumerates all classpath resources under `javax.net.p2p.server.handler` (previously only one), so handlers from extension modules can be discovered reliably.
+- `p2p-db` ??????????????????????????????colId ????`DsHashMap(rowId->valueId)`??alue ??? `DsFixedBucketStore`???????????`type=col_<colId>`???/??????????????`table.meta.yaml/columns.meta.yaml`??- `p2p-db` ???????????????????????????`com.q3lives.ds.exception.meta.*`?????? `IllegalStateException/RuntimeException` ???????????????????`MetaDeletedColumnException`??- Boundaries touched: `p2p-db`??olumnar ??? + ???????????.brain`??urable notes????p2p-core`????????????????? DS_DB/RPC/STD_ERROR ??????????- Gotcha: `DsHashSet.remove(long)` fast-path previously returned true without actually deleting; removal now always goes through the full remove path.
+- Gotcha: Windows ?????? YAML ????????????????????????????????????????????????????`*.lock` ??????????????self-lock ???????- Resolved: `ColumnarStoreTest` ????????YAML meta ??????????????????????lock-file ?????????????- `p2p-core` TCP/UDP handler scanning now enumerates all classpath resources under `javax.net.p2p.server.handler` (previously only one), so handlers from extension modules can be discovered reliably.
 - Boundaries touched: `p2p-db` (local ORM implementation + relations), `.brain` (durable notes).
 - Note: the current worktree also includes earlier `p2p-core` governance changes (RPC + `STD_ERROR` structured errors) from prior tasks/sessions.
 - Follow-up: consider adding delete APIs and relation cleanup (free old var-bytes when removing mappings) if the ORM is used for long-running databases.
@@ -65,7 +63,8 @@ This file is a deterministic snapshot of the repository state at the last refres
 - Resolved: `mvn -pl p2p-db -Dtest=com .q3lives.ds.collections.DsTableAdapterTest test` fails due to PowerShell tokenization; pass `"-Dtest=com.q3lives.ds.collections.DsTableAdapterTest"` instead.
 - Gotcha: `p2p-db` full test suite is not assumed green; verify changes with targeted tests where appropriate.
 - Progress: `mvn -pl p2p-db test` is green again after restoring `DsField(min)` validation coverage and zero-filling bucket tails on overwrite.
-- Gotcha: `DsHashMapConcurrentTest` 原先未检查 writers latch 的 await 结果，可能在超时后提前进入断言导致偶发 missing key；现已改为强制 assert await 成功，提升稳定性。
+- Gotcha: `DsHashMapConcurrentTest` ????????writers latch ??await ????????????????????????????? missing key???????????assert await ???????????????
+- Note: `DB_META_GET` ?????????????? entityClassName ?????????? meta yaml?????????ensureFresh=true??????????????????best-effort ???? ensureMeta?
 - High-signal regression currently passes with `mvn -pl p2p-core -DskipTests=false -Dtest=RpcCommandHandlersTest,ServerQuicMessageProcessorTest test`.
 - Real processor-path regression in `ServerQuicMessageProcessorTest` now covers queued-stream race handling, client-stream and bidi-stream transport flow, upload `WINDOW_UPDATE`, concurrent seq isolation, cancel isolation, minimal fairness, request metadata propagation, and response-context visibility through `ServerQuicMessageProcessor`.
 - Client upload flow control now fails closed instead of hanging: missing `WINDOW_UPDATE` reaches permit timeout, remote `ERROR/CLOSE/cancel` closes the local `OutboundWindow`, and later blocked `send()` exits immediately with the remote reason.

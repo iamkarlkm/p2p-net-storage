@@ -1402,15 +1402,18 @@ public class DsObject {
      * @throws IOException IO异常
      */
     protected short loadShortOffset(long position) throws IOException {
-        Long bufferIndex = position / BLOCK_SIZE;
-        int offset = (int) (position % BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
-        try {
-            return buffer.getShort(offset);
-        } finally {
-            unlockBufferForRead(bufferIndex);
+        long bufferIndex = bufferIndexFromPosition(position);
+        int offset = bufferOffsetFromPosition(position);
+        if (!willCrossBoundary(offset, 2)) {
+            MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+            try {
+                return buffer.getShort(offset);
+            } finally {
+                unlockBufferForRead(bufferIndex);
+            }
         }
-
+        int v = loadU16ByOffset(position);
+        return (short) v;
     }
 
     /**
@@ -1898,15 +1901,18 @@ public class DsObject {
      * @throws IOException IO异常
      */
     protected int loadIntOffset(long position) throws IOException {
-        long bufferIndex = position / BLOCK_SIZE;
-        int offset = (int) (position % BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
-        try {
-            return buffer.getInt(offset);
-        } finally {
-            unlockBufferForRead(bufferIndex);
+        long bufferIndex = bufferIndexFromPosition(position);
+        int offset = bufferOffsetFromPosition(position);
+        if (!willCrossBoundary(offset, 4)) {
+            MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+            try {
+                return buffer.getInt(offset);
+            } finally {
+                unlockBufferForRead(bufferIndex);
+            }
         }
-
+        long v = loadU32ByOffset(position);
+        return (int) v;
     }
 
 
