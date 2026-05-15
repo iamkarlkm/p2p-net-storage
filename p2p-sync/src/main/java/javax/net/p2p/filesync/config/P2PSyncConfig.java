@@ -1,0 +1,225 @@
+package javax.net.p2p.filesync.config;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.io.StringReader;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import javax.net.p2p.auth.config.AuthConfig;
+import org.yaml.snakeyaml.Yaml;
+
+public class P2PSyncConfig {
+
+    private long taskId;
+    private int storeId;
+    private int listenPort;
+    private int monitorPort;
+    private List<String> remoteEndpoints = new ArrayList<>();
+    private String localDir;
+    private String dsHome;
+    private Map<String, String> userInfo;
+    private Map<String, String> loginInfo;
+    private AuthConfig auth;
+    private String authYaml;
+
+    public P2PSyncConfig() {
+    }
+
+    public long getTaskId() {
+        return taskId;
+    }
+
+    public void setTaskId(long taskId) {
+        this.taskId = taskId;
+    }
+
+    public int getStoreId() {
+        return storeId;
+    }
+
+    public void setStoreId(int storeId) {
+        this.storeId = storeId;
+    }
+
+    public int getListenPort() {
+        return listenPort;
+    }
+
+    public void setListenPort(int listenPort) {
+        this.listenPort = listenPort;
+    }
+
+    public int getMonitorPort() {
+        return monitorPort;
+    }
+
+    public void setMonitorPort(int monitorPort) {
+        this.monitorPort = monitorPort;
+    }
+
+    public List<String> getRemoteEndpoints() {
+        return remoteEndpoints;
+    }
+
+    public void setRemoteEndpoints(List<String> remoteEndpoints) {
+        this.remoteEndpoints = remoteEndpoints;
+    }
+
+    public String getLocalDir() {
+        return localDir;
+    }
+
+    public void setLocalDir(String localDir) {
+        this.localDir = localDir;
+    }
+
+    public String getDsHome() {
+        return dsHome;
+    }
+
+    public void setDsHome(String dsHome) {
+        this.dsHome = dsHome;
+    }
+
+    public Map<String, String> getUserInfo() {
+        return userInfo;
+    }
+
+    public void setUserInfo(Map<String, String> userInfo) {
+        this.userInfo = userInfo;
+    }
+
+    public Map<String, String> getLoginInfo() {
+        return loginInfo;
+    }
+
+    public void setLoginInfo(Map<String, String> loginInfo) {
+        this.loginInfo = loginInfo;
+    }
+
+    public AuthConfig getAuth() {
+        return auth;
+    }
+
+    public void setAuth(AuthConfig auth) {
+        this.auth = auth;
+    }
+
+    public String getAuthYaml() {
+        return authYaml;
+    }
+
+    public void setAuthYaml(String authYaml) {
+        this.authYaml = authYaml;
+    }
+
+    public static P2PSyncConfig load() {
+        String inlineYaml = System.getProperty("p2p.sync.inlineYaml");
+        if (inlineYaml != null && !inlineYaml.isBlank()) {
+            Yaml yaml = new Yaml();
+            P2PSyncConfig cfg = yaml.loadAs(new StringReader(inlineYaml), P2PSyncConfig.class);
+            String baseDir = System.getProperty("p2p.sync.inlineBaseDir");
+            File yamlBaseDir = baseDir == null || baseDir.isBlank()
+                ? new File(System.getProperty("user.dir", ".")).getAbsoluteFile()
+                : new File(baseDir).getAbsoluteFile();
+            return resolveAndValidate(cfg, yamlBaseDir);
+        }
+
+        String path = System.getProperty("p2p.sync.yaml");
+        try {
+            Yaml yaml = new Yaml();
+            if (path != null && !path.isBlank()) {
+                try (InputStream in = new FileInputStream(path)) {
+                    P2PSyncConfig cfg = yaml.loadAs(in, P2PSyncConfig.class);
+                    return resolveAndValidate(cfg, new File(path).getParentFile());
+                }
+            }
+            File local = new File(System.getProperty("user.dir", "."), "p2p-sync.yaml").getAbsoluteFile();
+            if (!local.exists() || !local.isFile()) {
+                return new P2PSyncConfig();
+            }
+            try (InputStream in = new FileInputStream(local)) {
+                P2PSyncConfig cfg = yaml.loadAs(in, P2PSyncConfig.class);
+                return resolveAndValidate(cfg, local.getParentFile());
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static P2PSyncConfig resolveAndValidate(P2PSyncConfig cfg, File yamlBaseDir) {
+        if (cfg == null) {
+            return new P2PSyncConfig();
+        }
+
+        if (cfg.remoteEndpoints == null) {
+            cfg.remoteEndpoints = new ArrayList<>();
+        }
+
+        if (cfg.localDir != null && !cfg.localDir.isBlank()) {
+            Path dir = Path.of(cfg.localDir);
+            if (!dir.isAbsolute()) {
+                cfg.localDir = new File(yamlBaseDir, cfg.localDir).getAbsolutePath();
+            }
+        }
+
+        if (cfg.dsHome != null && !cfg.dsHome.isBlank()) {
+            Path dir = Path.of(cfg.dsHome);
+            if (!dir.isAbsolute()) {
+                cfg.dsHome = new File(yamlBaseDir, cfg.dsHome).getAbsolutePath();
+            }
+        }
+
+        applyAuthOverrides(cfg, yamlBaseDir);
+
+        if (cfg.taskId == 0L) {
+            throw new IllegalArgumentException("taskId is required");
+        }
+        if (cfg.localDir == null || cfg.localDir.isBlank()) {
+            throw new IllegalArgumentException("localDir is required");
+        }
+        if (cfg.storeId == 0) {
+            cfg.storeId = deriveStoreId(cfg.taskId);
+        }
+        if (cfg.listenPort == 0) {
+            cfg.listenPort = 6060;
+        }
+        if (cfg.monitorPort == 0) {
+            cfg.monitorPort = 8090;
+        }
+        return cfg;
+    }
+
+    private static void applyAuthOverrides(P2PSyncConfig cfg, File yamlBaseDir) {
+        if (cfg.auth != null && cfg.authYaml != null && !cfg.authYaml.isBlank()) {
+            throw new IllegalArgumentException("auth and authYaml cannot both be set");
+        }
+        if (cfg.auth != null) {
+            Yaml yaml = new Yaml();
+            String inline = yaml.dumpAsMap(cfg.auth);
+            System.setProperty("p2p.auth.inlineYaml", inline);
+            System.setProperty("p2p.auth.inlineBaseDir", yamlBaseDir.getAbsolutePath());
+            System.clearProperty("p2p.auth.yaml");
+            return;
+        }
+        if (cfg.authYaml != null && !cfg.authYaml.isBlank()) {
+            Path p = Path.of(cfg.authYaml);
+            if (!p.isAbsolute()) {
+                p = yamlBaseDir.toPath().toAbsolutePath().normalize().resolve(cfg.authYaml).normalize();
+                cfg.authYaml = p.toString();
+            }
+            System.setProperty("p2p.auth.yaml", p.toString());
+            System.clearProperty("p2p.auth.inlineYaml");
+            System.clearProperty("p2p.auth.inlineBaseDir");
+        }
+    }
+
+    private static int deriveStoreId(long taskId) {
+        long mixed = taskId ^ (taskId >>> 32);
+        int positive = (int) (mixed & 0x7FFFFFFF);
+        return positive == 0 ? 1 : positive;
+    }
+}

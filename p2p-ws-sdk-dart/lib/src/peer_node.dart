@@ -366,7 +366,12 @@ class PeerNode {
 
       final done = Completer<void>();
 
-      await center0.handshake(privateKey: _privateKey, clientPubkeySpkiDer: _pubDer, clientId: config.userId);
+      await center0.handshake(
+        privateKey: _privateKey,
+        clientPubkeySpkiDer: _pubDer,
+        clientId: config.userId,
+        cryptoMode: config.cryptoMode,
+      );
 
       final eps0 = config.reportedEndpoints;
       final cachedObserved = _loadPresenceCacheObservedAddr(config.presenceCachePath);
@@ -994,7 +999,14 @@ class PeerNode {
         await s.close();
         return false;
       }
-      await s.handshake(privateKey: _privateKey, clientPubkeySpkiDer: _pubDer, clientId: config.userId).timeout(Duration(milliseconds: timeoutMs));
+      await s
+          .handshake(
+            privateKey: _privateKey,
+            clientPubkeySpkiDer: _pubDer,
+            clientId: config.userId,
+            cryptoMode: config.cryptoMode,
+          )
+          .timeout(Duration(milliseconds: timeoutMs));
 
       if (_stopped || runId != _dialRunId) {
         await s.close();

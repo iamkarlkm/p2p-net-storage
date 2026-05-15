@@ -5,6 +5,7 @@ import "dart:typed_data";
 import "package:pointycastle/asymmetric/api.dart";
 
 import "commands.dart";
+import "crypto.dart";
 import "frame.dart";
 import "handshake.dart";
 import "keyfile.dart";
@@ -34,6 +35,7 @@ class HandshakeState {
   final int offset;
   final int maxFramePayload;
   final int headerPolicyId;
+  final String cryptoMode;
 
   const HandshakeState({
     required this.sessionId,
@@ -41,16 +43,20 @@ class HandshakeState {
     required this.offset,
     required this.maxFramePayload,
     required this.headerPolicyId,
+    required this.cryptoMode,
   });
 }
 
 class P2PSession {
   final WebSocket _ws;
   final P2PSessionConfig _cfg;
-  final KeyFileReader _keyfile;
+  final KeyFileReader? _keyfile;
 
   int _seq = 1;
+  bool _handshaked = false;
+  String _cryptoMode = P2PCryptoMode.keyfileXorRsaOaep;
   int? _offset;
+  Uint8List? _repeatKey;
 
   final _incoming = StreamController<P2PWrapper>.broadcast();
   final _pending = <int, Completer<P2PWrapper>>{};
@@ -62,7 +68,7 @@ class P2PSession {
   static Future<P2PSession> connect({
     required String wsUrl,
     required P2PSessionConfig config,
-    required KeyFileReader keyfile,
+    KeyFileReader? keyfile,
     Map<String, dynamic>? headers,
   }) async {
     final ws = await WebSocket.connect(wsUrl, headers: headers);
@@ -77,13 +83,26 @@ class P2PSession {
     required RSAPrivateKey privateKey,
     required Uint8List clientPubkeySpkiDer,
     required String clientId,
+    String cryptoMode = P2PCryptoMode.keyfileXorRsaOaep,
+    int randomKeyBytes = 32,
   }) async {
+    final requestedMode = cryptoMode.trim().isEmpty ? P2PCryptoMode.keyfileXorRsaOaep : cryptoMode.trim().toUpperCase();
+    Uint8List clientRandomKey = Uint8List(0);
+    if (requestedMode == P2PCryptoMode.clientRandomXorRsaOaep) {
+      clientRandomKey = secureRandomBytes(randomKeyBytes);
+    }
+    if (requestedMode == P2PCryptoMode.keyfileXorRsaOaep && _keyfile == null) {
+      throw StateError("keyfile is required for KEYFILE_XOR_RSA_OAEP");
+    }
+
     final wrap = buildHandWrapper(
       seq: nextSeq(),
       clientPubkeySpkiDer: clientPubkeySpkiDer,
-      keyIds: [_keyfile.keyId],
+      keyIds: _keyfile == null ? const <Uint8List>[] : <Uint8List>[_keyfile.keyId],
       maxFramePayload: _cfg.maxFramePayload,
       clientId: clientId,
+      cryptoMode: requestedMode,
+      clientRandomKey: clientRandomKey,
     );
     await _sendWrapperPlain(wrap);
 
@@ -91,20 +110,38 @@ class P2PSession {
       final w = await incoming.firstWhere((e) => e.command == P2PCommand.handAck);
       final plain = rsaOaepSha256Decrypt(privateKey, w.data);
       final ack = decodeHandAckPlain(plain);
-      _offset = ack.offset;
+      final ackMode = ack.cryptoMode.trim().isEmpty ? requestedMode : ack.cryptoMode.trim().toUpperCase();
+      _cryptoMode = ackMode;
+      _handshaked = true;
+      if (P2PCryptoMode.isPlain(ackMode)) {
+        _offset = null;
+        _repeatKey = null;
+      } else if (ackMode == P2PCryptoMode.keyfileXorRsaOaep) {
+        _offset = ack.offset;
+        _repeatKey = null;
+      } else if (ackMode == P2PCryptoMode.clientRandomXorRsaOaep) {
+        _offset = null;
+        _repeatKey = clientRandomKey;
+      } else if (ackMode == P2PCryptoMode.serverRandomXorRsaOaep) {
+        _offset = null;
+        _repeatKey = ack.serverRandomKey;
+      } else {
+        throw StateError("unsupported crypto_mode=$ackMode");
+      }
       return HandshakeState(
         sessionId: ack.sessionId,
         selectedKeyId: ack.selectedKeyId,
         offset: ack.offset,
         maxFramePayload: ack.maxFramePayload,
         headerPolicyId: ack.headerPolicyId,
+        cryptoMode: ackMode,
       );
     }
   }
 
   Future<void> close() async {
     await _incoming.close();
-    await _keyfile.close();
+    await _keyfile?.close();
     await _ws.close();
   }
 
@@ -117,7 +154,7 @@ class P2PSession {
     final seq = nextSeq();
     final c = Completer<P2PWrapper>();
     _pending[seq] = c;
-    await _sendWrapperEncrypted(P2PWrapper(seq: seq, command: command, data: data, headers: headers));
+    await _sendWrapper(P2PWrapper(seq: seq, command: command, data: data, headers: headers));
     final w = await c.future;
     if (w.command != expectedCommand) {
       throw StateError("unexpected response command=${w.command} expected=$expectedCommand");
@@ -133,11 +170,11 @@ class P2PSession {
     final seq = nextSeq();
     final c = Completer<P2PWrapper>();
     _pending[seq] = c;
-    await _sendWrapperEncrypted(P2PWrapper(seq: seq, command: command, data: data, headers: headers));
+    await _sendWrapper(P2PWrapper(seq: seq, command: command, data: data, headers: headers));
     return c.future;
   }
 
-  Future<void> sendEncrypted(P2PWrapper w) => _sendWrapperEncrypted(w);
+  Future<void> sendEncrypted(P2PWrapper w) => _sendWrapper(w);
 
   Future<void> _sendWrapperPlain(P2PWrapper w) async {
     final plain = encodeWrapper(w);
@@ -145,15 +182,56 @@ class P2PSession {
     _ws.add(frame);
   }
 
-  Future<void> _sendWrapperEncrypted(P2PWrapper w) async {
-    final off = _offset;
-    if (off == null) {
-      throw StateError("not encrypted yet");
+  Future<Uint8List> _decrypt(Uint8List cipher) async {
+    final mode = _cryptoMode;
+    if (P2PCryptoMode.isPlain(mode)) {
+      throw StateError("received encrypted frame in PLAIN mode");
+    }
+    if (mode == P2PCryptoMode.keyfileXorRsaOaep) {
+      final off = _offset;
+      final keyf = _keyfile;
+      if (off == null || keyf == null) {
+        throw StateError("keyfile offset/keyfile missing");
+      }
+      final slice = await keyf.readSlice(off, cipher.length);
+      return xorNoWrap(cipher, slice, 0);
+    }
+    final key = _repeatKey;
+    if (key == null || key.isEmpty) {
+      throw StateError("repeat key missing");
+    }
+    return xorRepeat(cipher, key);
+  }
+
+  Future<Uint8List> _encrypt(Uint8List plain) async {
+    final mode = _cryptoMode;
+    if (P2PCryptoMode.isPlain(mode)) {
+      return plain;
+    }
+    if (mode == P2PCryptoMode.keyfileXorRsaOaep) {
+      final off = _offset;
+      final keyf = _keyfile;
+      if (off == null || keyf == null) {
+        throw StateError("keyfile offset/keyfile missing");
+      }
+      final slice = await keyf.readSlice(off, plain.length);
+      return xorNoWrap(plain, slice, 0);
+    }
+    final key = _repeatKey;
+    if (key == null || key.isEmpty) {
+      throw StateError("repeat key missing");
+    }
+    return xorRepeat(plain, key);
+  }
+
+  Future<void> _sendWrapper(P2PWrapper w) async {
+    if (!_handshaked) {
+      throw StateError("handshake not completed");
     }
     final plain = encodeWrapper(w);
-    final slice = await _keyfile.readSlice(off, plain.length);
-    final cipher = xorNoWrap(plain, slice, 0);
-    final frame = encodeFrame(WireHeader(cipher.length, _cfg.magic, _cfg.version, _cfg.flagsEncrypted), cipher);
+    final cipherOrPlain = await _encrypt(plain);
+    final flags = P2PCryptoMode.isPlain(_cryptoMode) ? _cfg.flagsPlain : _cfg.flagsEncrypted;
+    final frame = encodeFrame(WireHeader(cipherOrPlain.length, _cfg.magic, _cfg.version, flags), cipherOrPlain);
     _ws.add(frame);
   }
 
@@ -166,12 +244,10 @@ class P2PSession {
         final f = decodeFrame(Uint8List.fromList(msg));
         final cipher = f.cipherPayload;
         Uint8List plain;
-        final off = _offset;
-        if (off == null) {
-          plain = Uint8List.fromList(cipher);
+        if (f.header.flags == _cfg.flagsEncrypted) {
+          plain = await _decrypt(Uint8List.fromList(cipher));
         } else {
-          final slice = await _keyfile.readSlice(off, cipher.length);
-          plain = xorNoWrap(Uint8List.fromList(cipher), slice, 0);
+          plain = Uint8List.fromList(cipher);
         }
         final w = decodeWrapper(plain);
         final c = _pending.remove(w.seq);

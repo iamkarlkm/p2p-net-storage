@@ -24,6 +24,7 @@ import javax.net.p2p.client.processor.FileSegmentsGetProcessor;
 import javax.net.p2p.client.processor.FileSegmentsPutProcessor;
 import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.interfaces.P2PFileService;
+import javax.net.p2p.interfaces.P2PMessageService;
 import javax.net.p2p.model.FileSegmentsDataModel;
 import javax.net.p2p.model.FileListEntry;
 import javax.net.p2p.model.FileListRequest;
@@ -47,13 +48,17 @@ public class P2PUtils  implements P2PFileService{
 
 	
 
-	private final P2PClientTcp node;
+	private final P2PMessageService node;
 
-	public P2PClientTcp getNode() {
+	public P2PMessageService getNode() {
 		return node;
 	}
 
 	public P2PUtils(P2PClientTcp node) {
+		this((P2PMessageService) node);
+	}
+        
+	public P2PUtils(P2PMessageService node) {
 		this.node = node;
 	}
         

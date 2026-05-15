@@ -1,7 +1,10 @@
 package javax.net.p2p.server.handler;
 
+import java.util.concurrent.ThreadLocalRandom;
 import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.auth.AuthClientPublicKeyResolver;
 import javax.net.p2p.auth.config.AuthConfig;
+import javax.net.p2p.auth.model.HandshakeCryptoMode;
 import javax.net.p2p.auth.model.HandshakeRequest;
 import javax.net.p2p.auth.model.HandshakeResponse;
 import javax.net.p2p.auth.utils.AuthCrypto;
@@ -50,14 +53,19 @@ public class HandServerHandler implements P2PChannelAwareCommandHandler {
                 resp.setError("missing userId");
                 return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, resp);
             }
-            String clientPubKey = cfg.getServer().getClientPublicKeys().get(req.getUserId());
+            String clientPubKey = AuthClientPublicKeyResolver.resolve(cfg.getServer(), req.getUserId());
             if (clientPubKey == null || clientPubKey.isBlank()) {
                 resp.setOk(false);
                 resp.setError("unknown userId");
                 return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, resp);
             }
 
-            byte[] reqSigPayload = HandshakePayloads.requestSigPayload(req);
+            boolean v2 = req.getSigVersion() >= 2;
+            int mode = req.getCryptoMode();
+            if (!v2 && mode != HandshakeCryptoMode.CLIENT_RANDOM) {
+                v2 = true;
+            }
+            byte[] reqSigPayload = v2 ? HandshakePayloads.requestSigPayloadV2(req) : HandshakePayloads.requestSigPayload(req);
             if (!AuthCrypto.verifySha256Rsa(reqSigPayload, clientPubKey, req.getSignature())) {
                 resp.setOk(false);
                 resp.setError("bad signature");
@@ -68,16 +76,51 @@ public class HandServerHandler implements P2PChannelAwareCommandHandler {
             if (keyLen <= 0) {
                 keyLen = 4096;
             }
-
-            if (req.getEncryptedXorKey() == null || req.getEncryptedXorKey().length == 0) {
+            Integer xorOffset = null;
+            byte[] xorKey = null;
+            if (mode == HandshakeCryptoMode.CLIENT_RANDOM) {
+                if (req.getEncryptedXorKey() == null || req.getEncryptedXorKey().length == 0) {
+                    resp.setOk(false);
+                    resp.setError("missing encryptedXorKey");
+                    return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, resp);
+                }
+                xorKey = AuthCrypto.rsaDecryptLargeWithPublic(req.getEncryptedXorKey(), clientPubKey);
+                if (xorKey.length != keyLen) {
+                    resp.setOk(false);
+                    resp.setError("xorKeyLength mismatch");
+                    return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, resp);
+                }
+            } else if (mode == HandshakeCryptoMode.SERVER_RANDOM) {
+                if (cfg.getServer().getPrivateKey() == null || cfg.getServer().getPrivateKey().isBlank()) {
+                    resp.setOk(false);
+                    resp.setError("missing server privateKey");
+                    return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, resp);
+                }
+                xorKey = AuthCrypto.randomBytes(keyLen);
+                resp.setEncryptedSeed(AuthCrypto.rsaEncryptLargeWithPrivate(xorKey, cfg.getServer().getPrivateKey()));
+            } else if (mode == HandshakeCryptoMode.KEYFILE) {
+                if (cfg.getXorKeyFile() == null || cfg.getXorKeyFile().isBlank()) {
+                    resp.setOk(false);
+                    resp.setError("missing xorKeyFile");
+                    return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, resp);
+                }
+                byte[] fileBytes = AuthCrypto.readKeyFileBytes(cfg.getXorKeyFile());
+                String fileId = AuthCrypto.sha256Hex(fileBytes);
+                if (req.getKeyFileId() != null && !req.getKeyFileId().isBlank() && !req.getKeyFileId().equals(fileId)) {
+                    resp.setOk(false);
+                    resp.setError("keyFileId mismatch");
+                    return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, resp);
+                }
+                int off = ThreadLocalRandom.current().nextInt(fileBytes.length);
+                xorKey = fileBytes;
+                xorOffset = off;
+                resp.setKeyFileId(fileId);
+                resp.setKeyFileOffset(off);
+            } else if (mode == HandshakeCryptoMode.PLAIN) {
+                xorKey = null;
+            } else {
                 resp.setOk(false);
-                resp.setError("missing encryptedXorKey");
-                return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, resp);
-            }
-            byte[] xorKey = AuthCrypto.rsaDecryptLargeWithPublic(req.getEncryptedXorKey(), clientPubKey);
-            if (xorKey.length != keyLen) {
-                resp.setOk(false);
-                resp.setError("xorKeyLength mismatch");
+                resp.setError("unknown cryptoMode");
                 return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, resp);
             }
 
@@ -86,14 +129,24 @@ public class HandServerHandler implements P2PChannelAwareCommandHandler {
             resp.setServerTime(System.currentTimeMillis());
             resp.setNonce(req.getNonce());
             resp.setXorKeyLength(keyLen);
+            resp.setSigVersion(v2 ? 2 : 0);
+            resp.setCryptoMode(mode);
 
-            byte[] respSigPayload = HandshakePayloads.responseSigPayload(resp);
+            byte[] respSigPayload = v2 ? HandshakePayloads.responseSigPayloadV2(resp) : HandshakePayloads.responseSigPayload(resp);
             if (cfg.getServer().getPrivateKey() != null && !cfg.getServer().getPrivateKey().isBlank()) {
                 resp.setSignature(AuthCrypto.signSha256Rsa(respSigPayload, cfg.getServer().getPrivateKey()));
             }
 
             ctx.channel().attr(ChannelUtils.AUTH_USER_ID).set(req.getUserId());
-            ctx.channel().attr(ChannelUtils.XOR_KEY).set(xorKey);
+            ctx.channel().attr(ChannelUtils.AUTH_HANDSHAKE_DONE).set(true);
+            ctx.channel().attr(ChannelUtils.AUTH_CRYPTO_MODE).set(mode);
+            if (xorKey != null && xorKey.length > 0) {
+                ctx.channel().attr(ChannelUtils.XOR_KEY).set(xorKey);
+                ctx.channel().attr(ChannelUtils.XOR_OFFSET).set(xorOffset == null ? 0 : xorOffset);
+            } else {
+                ctx.channel().attr(ChannelUtils.XOR_KEY).set(null);
+                ctx.channel().attr(ChannelUtils.XOR_OFFSET).set(null);
+            }
             ctx.channel().attr(ChannelUtils.AUTH_LOGGED_IN).set(false);
             if (plaintextResp) {
                 ctx.channel().attr(ChannelUtils.HANDSHAKE_PLAINTEXT_RESP).set(true);

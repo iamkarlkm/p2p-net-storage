@@ -1,5 +1,3 @@
-import jdk.internal.access.SharedSecrets;
-
 /** @author qiuyi.l
  * @date 2022/7/13 14:24
  *<p>解决JDK module UNNAMED
@@ -12,11 +10,18 @@ public class AccessModuleUtil {
      *开放所有模块(放到启动的main方法第一行调用。测过运行时调用不会生效)
      */
     public static void exportAll(){
-        for (Module module : ModuleLayer.boot().modules()) {
-            for (String pkgName : module.getPackages()){
-                SharedSecrets.getJavaLangAccess().addOpensToAllUnnamed(module,pkgName);
-                SharedSecrets.getJavaLangAccess().addExportsToAllUnnamed(module,pkgName);
+        try {
+            Class<?> sharedSecrets = Class.forName("jdk.internal.access.SharedSecrets");
+            Object javaLangAccess = sharedSecrets.getMethod("getJavaLangAccess").invoke(null);
+            var addOpens = javaLangAccess.getClass().getMethod("addOpensToAllUnnamed", Module.class, String.class);
+            var addExports = javaLangAccess.getClass().getMethod("addExportsToAllUnnamed", Module.class, String.class);
+            for (Module module : ModuleLayer.boot().modules()) {
+                for (String pkgName : module.getPackages()){
+                    addOpens.invoke(javaLangAccess, module, pkgName);
+                    addExports.invoke(javaLangAccess, module, pkgName);
+                }
             }
+        } catch (Throwable ignored) {
         }
     }
 }

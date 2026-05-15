@@ -6,6 +6,9 @@ import java.net.DatagramSocket;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.error.P2PErrorCode;
+import javax.net.p2p.error.P2PErrors;
+import javax.net.p2p.error.P2PStdError;
 import javax.net.p2p.client.P2PClientQuic;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.server.P2PServerQuic;
@@ -97,6 +100,11 @@ public class AuthHandshakeQuicTest {
         assertEquals(P2PCommand.STD_ERROR, r0.getCommand());
 
         client.handshake();
+
+        P2PWrapper cancel0 = client.excute(P2PWrapper.build(999, P2PCommand.STD_CANCEL, null), 15, TimeUnit.SECONDS);
+        assertEquals(P2PCommand.STD_ERROR, cancel0.getCommand());
+        P2PStdError cancel0Err = P2PErrors.asStdError(cancel0.getData());
+        assertEquals(P2PErrorCode.TASK_NOT_FOUND.key(), cancel0Err.getKey());
 
         P2PWrapper r1 = client.excute(P2PWrapper.build(P2PCommand.ECHO, "hello"), 15, TimeUnit.SECONDS);
         assertEquals(P2PCommand.STD_ERROR, r1.getCommand());

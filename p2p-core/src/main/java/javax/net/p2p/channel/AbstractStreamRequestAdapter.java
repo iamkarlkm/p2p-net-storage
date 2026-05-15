@@ -120,11 +120,17 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
     }
 
     private void handleStreamMessage(StreamP2PWrapper message) throws InterruptedException {
-        StreamP2PWrapper streamResponse = streamRequest.request(executor, message);
-        if (streamResponse != null) {
-            executor.sendResponse(streamResponse);
+        try {
+            StreamP2PWrapper streamResponse = streamRequest.request(executor, message);
+            if (streamResponse != null) {
+                executor.sendResponse(streamResponse);
+            }
+            streamMessage = pollPendingStreamMessage();
+        } finally {
+            if (message != null) {
+                message.recycle();
+            }
         }
-        streamMessage = pollPendingStreamMessage();
     }
 
     private StreamP2PWrapper pollPendingStreamMessage() {
@@ -160,9 +166,8 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
     public AbstractStreamRequestAdapter asyncProcess(AbstractSendMesageExecutor executor, AbstractStreamRequestAdapter handler, P2PWrapper request) {
         try {
             if (handler instanceof StreamRequest) {//(文件上传/发布)流消息请求处理,异步回调
-                StreamP2PWrapper streamMessage0 = (StreamP2PWrapper) request;
-
-                AbstractStreamRequestAdapter handlerNew = TASK_POOL.pollParamsOrClone(handler, request.getSeq(), executor, streamMessage0);
+                StreamP2PWrapper stable = cloneStreamMessage((StreamP2PWrapper) request);
+                AbstractStreamRequestAdapter handlerNew = TASK_POOL.pollParamsOrClone(handler, request.getSeq(), executor, stable);
                 return handlerNew;
             }
 
@@ -179,8 +184,8 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
     public void asyncProcess(AbstractStreamRequestAdapter handler, P2PWrapper request) {
         try {
             if (handler instanceof StreamRequest) {//(文件上传/发布)流消息请求处理,异步回调
-                StreamP2PWrapper streamMessage0 = (StreamP2PWrapper) request;
-                handler.onMessage(streamMessage0);
+                StreamP2PWrapper stable = cloneStreamMessage((StreamP2PWrapper) request);
+                handler.onMessage(stable);
                 return;
             }
 //            log.info("AbstractLongTimedRequestAdapter:{} \n -> request:{}", handler, request);
@@ -221,12 +226,35 @@ public abstract class AbstractStreamRequestAdapter extends ClonePooledableAdapte
             this.requestId = null;
         }
         this.streamRequest = null;
+        if (streamMessage != null) {
+            streamMessage.recycle();
+        }
         this.streamMessage = null;
         if (pendingStreamMessages != null) {
+            StreamP2PWrapper next;
+            while ((next = pendingStreamMessages.pollFirst()) != null) {
+                next.recycle();
+            }
             pendingStreamMessages.clear();
             pendingStreamMessages = null;
         }
         this.continued = false;
+    }
+
+    private static StreamP2PWrapper cloneStreamMessage(StreamP2PWrapper message) {
+        if (message == null) {
+            return null;
+        }
+        if (message.isCanceled()) {
+            return StreamP2PWrapper.buildStream(message.getSeq(), true);
+        }
+        return StreamP2PWrapper.buildStream(
+            message.getSeq(),
+            message.getIndex(),
+            message.getCommand(),
+            message.getData(),
+            message.isCompleted()
+        );
     }
 
     @Override

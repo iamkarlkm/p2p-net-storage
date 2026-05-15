@@ -11,9 +11,12 @@ add_library(p2pws_c
   src/p2pws_pb.c
   src/p2pws_ws.c
   src/p2pws_crypto.c
+  src/p2pws_cipher.c
   src/p2pws_yaml.c
   src/p2pws_messages.c
   src/p2pws_fs.c
+  src/p2pws_core_compat.c
+  src/p2pws_core_rpc.c
 )
 
 target_include_directories(p2pws_c PUBLIC include)
@@ -33,3 +36,6 @@ target_link_libraries(p2pws_relay_echo PRIVATE p2pws_c)
 
 add_executable(p2pws_peer_node demo/peer_node.c)
 target_link_libraries(p2pws_peer_node PRIVATE p2pws_c)
+
+add_executable(p2pws_core_ws_rpc_discover_echo demo/core_ws_rpc_discover_echo.c)
+target_link_libraries(p2pws_core_ws_rpc_discover_echo PRIVATE p2pws_c)

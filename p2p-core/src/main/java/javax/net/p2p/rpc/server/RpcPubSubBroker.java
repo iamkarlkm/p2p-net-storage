@@ -10,10 +10,12 @@ import javax.net.p2p.common.AbstractSendMesageExecutor;
 import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.rpc.pubsub.proto.PubSubEvent;
 import javax.net.p2p.rpc.proto.RpcFrame;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * RPC 事件订阅 broker。
  */
+@Slf4j
 public final class RpcPubSubBroker {
     private static final ConcurrentMap<String, ConcurrentMap<Long, Subscriber>> TOPIC_SUBS = new ConcurrentHashMap<>();
     private static final ConcurrentMap<Integer, AtomicInteger> EXECUTOR_SUB_COUNT = new ConcurrentHashMap<>();
@@ -26,10 +28,12 @@ public final class RpcPubSubBroker {
             return false;
         }
         if (!isTopicAllowed(topic)) {
+            log.info("rpc.pubsub subscribe rejected topic={} reason=topic_not_allowed", topic);
             return false;
         }
         ConcurrentMap<Long, Subscriber> subs = TOPIC_SUBS.computeIfAbsent(topic, ignored -> new ConcurrentHashMap<>());
         if (subs.size() >= maxSubscribersPerTopic()) {
+            log.info("rpc.pubsub subscribe rejected topic={} reason=max_subscribers", topic);
             return false;
         }
         int executorId = System.identityHashCode(executor);
@@ -38,6 +42,7 @@ public final class RpcPubSubBroker {
         if (now > maxSubscriptionsPerExecutor()) {
             count.decrementAndGet();
             cleanupExecutorCount(executorId, count);
+            log.info("rpc.pubsub subscribe rejected topic={} seq={} reason=max_subscriptions", topic, seq);
             return false;
         }
         long key = subscriberKey(executorId, seq);
@@ -45,8 +50,10 @@ public final class RpcPubSubBroker {
         if (previous != null) {
             count.decrementAndGet();
             cleanupExecutorCount(executorId, count);
+            log.info("rpc.pubsub subscribe rejected topic={} seq={} reason=duplicate", topic, seq);
             return false;
         }
+        log.info("rpc.pubsub subscribed topic={} seq={}", topic, seq);
         return true;
     }
 
@@ -223,6 +230,7 @@ public final class RpcPubSubBroker {
             } catch (InterruptedException ex) {
                 throw ex;
             } catch (Exception ex) {
+                log.warn("rpc.pubsub publish failed topic={} seq={} error={}", topic, seq, ex.toString());
                 return false;
             }
         }

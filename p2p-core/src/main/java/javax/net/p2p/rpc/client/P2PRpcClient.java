@@ -14,6 +14,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import javax.net.p2p.channel.AbstractStreamResponseAdapter;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.common.AbstractSendMesageExecutor;
+import javax.net.p2p.error.P2PErrors;
+import javax.net.p2p.error.P2PStdError;
 import javax.net.p2p.interfaces.BoundStreamMessageService;
 import javax.net.p2p.interfaces.P2PMessageService;
 import javax.net.p2p.model.P2PWrapper;
@@ -537,6 +539,19 @@ public final class P2PRpcClient implements RpcClient {
         if (wrapper == null) {
             throw new IllegalStateException("RPC 响应为空");
         }
+        if (wrapper.getCommand() == P2PCommand.STD_ERROR) {
+            P2PStdError stdError = P2PErrors.asStdError(wrapper.getData());
+            javax.net.p2p.rpc.proto.RpcStatus status = mapStdErrorToRpcStatus(stdError);
+            RpcClientResponseContext responseContext = new RpcClientResponseContext(
+                javax.net.p2p.rpc.proto.RpcMeta.getDefaultInstance(),
+                status,
+                RpcFrameType.ERROR,
+                true,
+                java.util.Collections.emptyMap(),
+                java.util.Collections.emptyMap()
+            );
+            throw new RpcClientResponseException(status.getMessage(), responseContext);
+        }
         if (wrapper.getCommand() != P2PCommand.RPC_UNARY && wrapper.getCommand() != P2PCommand.RPC_HEALTH && wrapper.getCommand() != P2PCommand.RPC_DISCOVER) {
             throw new IllegalStateException(String.valueOf(wrapper.getData()));
         }
@@ -563,6 +578,47 @@ public final class P2PRpcClient implements RpcClient {
             responseType.cast(parseFrom.invoke(null, responseFrame.getPayload().toByteArray())),
             responseContext
         );
+    }
+
+    private static javax.net.p2p.rpc.proto.RpcStatus mapStdErrorToRpcStatus(P2PStdError stdError) {
+        if (stdError == null) {
+            return javax.net.p2p.rpc.proto.RpcStatus.newBuilder()
+                .setCode(RpcStatusCode.INTERNAL_ERROR)
+                .setMessage("unknown error")
+                .setRetriable(false)
+                .build();
+        }
+        String key = stdError.getKey() == null ? "" : stdError.getKey();
+        RpcStatusCode code;
+        if ("auth.handshake_required".equals(key) || "auth.login_required".equals(key) || "auth.missing_user_id".equals(key)) {
+            code = RpcStatusCode.UNAUTHORIZED;
+        } else if ("auth.permission_denied".equals(key)) {
+            code = RpcStatusCode.FORBIDDEN;
+        } else if ("common.invalid_request".equals(key)) {
+            code = RpcStatusCode.BAD_REQUEST;
+        } else if ("common.deadline_exceeded".equals(key)) {
+            code = RpcStatusCode.DEADLINE_EXCEEDED;
+        } else if ("common.not_found".equals(key)) {
+            code = RpcStatusCode.NOT_FOUND;
+        } else if ("service.unavailable".equals(key) || "service.backend_not_registered".equals(key)) {
+            code = RpcStatusCode.SERVICE_UNAVAILABLE;
+        } else {
+            code = RpcStatusCode.INTERNAL_ERROR;
+        }
+        javax.net.p2p.rpc.proto.RpcStatus.Builder builder = javax.net.p2p.rpc.proto.RpcStatus.newBuilder()
+            .setCode(code)
+            .setMessage(stdError.getMessage() == null ? "" : stdError.getMessage())
+            .setRetriable(stdError.isRetriable());
+        if (stdError.getDetails() != null && !stdError.getDetails().isEmpty()) {
+            builder.putAllDetails(stdError.getDetails());
+        }
+        if (!builder.getDetailsMap().containsKey("p2p.std_error_key")) {
+            builder.putDetails("p2p.std_error_key", key);
+        }
+        if (!builder.getDetailsMap().containsKey("p2p.std_error_code")) {
+            builder.putDetails("p2p.std_error_code", String.valueOf(stdError.getCode()));
+        }
+        return builder.build();
     }
 
     private <Req extends Message, Resp extends Message> void startServerStream(
@@ -788,12 +844,37 @@ public final class P2PRpcClient implements RpcClient {
                 if (completed) {
                     return;
                 }
+                if (message.getCommand() == P2PCommand.STD_ERROR) {
+                    P2PStdError stdError = P2PErrors.asStdError(message.getData());
+                    javax.net.p2p.rpc.proto.RpcStatus status = mapStdErrorToRpcStatus(stdError);
+                    RpcClientResponseContext responseContext = new RpcClientResponseContext(
+                        javax.net.p2p.rpc.proto.RpcMeta.getDefaultInstance(),
+                        status,
+                        RpcFrameType.ERROR,
+                        true,
+                        java.util.Collections.emptyMap(),
+                        java.util.Collections.emptyMap()
+                    );
+                    observer.onResponseContext(responseContext);
+                    completed = true;
+                    closeOutboundWindow(status.getMessage(), true);
+                    observer.onError(new RpcClientResponseException(status.getMessage(), responseContext));
+                    return;
+                }
                 RpcFrame frame = RpcFrame.parseFrom((byte[]) message.getData());
                 if (frame.getFrameType() == RpcFrameType.ERROR) {
-                    notifyResponseContext(frame);
+                    RpcClientResponseContext responseContext = new RpcClientResponseContext(
+                        frame.getMeta(),
+                        frame.getStatus(),
+                        frame.getFrameType(),
+                        frame.getEndOfStream(),
+                        frame.getMeta().getResponseHeadersMap(),
+                        frame.getMeta().getResponseTrailersMap()
+                    );
+                    observer.onResponseContext(responseContext);
                     completed = true;
                     closeOutboundWindow(frame.getStatus().getMessage(), true);
-                    observer.onError(new IllegalStateException(frame.getStatus().getMessage()));
+                    observer.onError(new RpcClientResponseException(frame.getStatus().getMessage(), responseContext));
                     return;
                 }
                 if (frame.getFrameType() == RpcFrameType.WINDOW_UPDATE) {
@@ -835,7 +916,20 @@ public final class P2PRpcClient implements RpcClient {
             completed = true;
             closeOutboundWindow("RPC stream canceled", true);
             try {
-                observer.onError(new IllegalStateException("RPC stream canceled"));
+                RpcClientResponseContext responseContext = new RpcClientResponseContext(
+                    javax.net.p2p.rpc.proto.RpcMeta.getDefaultInstance(),
+                    javax.net.p2p.rpc.proto.RpcStatus.newBuilder()
+                        .setCode(RpcStatusCode.CANCELED)
+                        .setMessage("RPC stream canceled")
+                        .setRetriable(false)
+                        .build(),
+                    RpcFrameType.ERROR,
+                    true,
+                    java.util.Collections.emptyMap(),
+                    java.util.Collections.emptyMap()
+                );
+                observer.onResponseContext(responseContext);
+                observer.onError(new RpcClientResponseException("RPC stream canceled", responseContext));
             } catch (Exception ignored) {
             }
         }
@@ -1099,15 +1193,38 @@ public final class P2PRpcClient implements RpcClient {
             if (closed.get()) {
                 throw new IllegalStateException("RPC request stream already closed");
             }
-            outboundWindow.awaitPermit(options.deadlineEpochMs());
-            if (closed.get()) {
-                throw new IllegalStateException("RPC request stream already closed");
+            byte[] payload = (request == null ? com.google.protobuf.Empty.getDefaultInstance() : request).toByteArray();
+            int maxFrameBytes = options.initialMaxFrameBytes();
+            if (maxFrameBytes <= 0 || payload.length <= maxFrameBytes) {
+                outboundWindow.awaitPermit(options.deadlineEpochMs());
+                if (closed.get()) {
+                    throw new IllegalStateException("RPC request stream already closed");
+                }
+                RpcFrame dataFrame = RpcFrame.newBuilder()
+                    .setFrameType(RpcFrameType.DATA)
+                    .setPayload(ByteString.copyFrom(payload))
+                    .setChunkIndex(0)
+                    .setEndOfMessage(true)
+                    .build();
+                client.sendClientStreamFrame(boundExecutor, requestId, nextFrameIndex++, dataFrame, false, options);
+                return;
             }
-            RpcFrame dataFrame = RpcFrame.newBuilder()
-                .setFrameType(RpcFrameType.DATA)
-                .setPayload(ByteString.copyFrom((request == null ? com.google.protobuf.Empty.getDefaultInstance() : request).toByteArray()))
-                .build();
-            client.sendClientStreamFrame(boundExecutor, requestId, nextFrameIndex++, dataFrame, false, options);
+            int chunkIndex = 0;
+            for (int offset = 0; offset < payload.length; offset += maxFrameBytes) {
+                outboundWindow.awaitPermit(options.deadlineEpochMs());
+                if (closed.get()) {
+                    throw new IllegalStateException("RPC request stream already closed");
+                }
+                int length = Math.min(maxFrameBytes, payload.length - offset);
+                boolean endOfMessage = offset + length >= payload.length;
+                RpcFrame dataFrame = RpcFrame.newBuilder()
+                    .setFrameType(RpcFrameType.DATA)
+                    .setPayload(ByteString.copyFrom(payload, offset, length))
+                    .setChunkIndex(chunkIndex++)
+                    .setEndOfMessage(endOfMessage)
+                    .build();
+                client.sendClientStreamFrame(boundExecutor, requestId, nextFrameIndex++, dataFrame, false, options);
+            }
         }
 
         private void halfClose() throws Exception {

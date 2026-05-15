@@ -1,6 +1,7 @@
 package javax.net.p2p.server.handler;
 
 import com.google.protobuf.Message;
+import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Method;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.channel.AbstractStreamRequestAdapter;
@@ -219,6 +220,7 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
         private int remainingRequestPermits;
         private int consumedSinceWindowUpdate;
         private boolean completed;
+        private final RequestChunkAssembler requestChunkAssembler;
 
         private ClientStreamSession(
             AbstractSendMesageExecutor executor,
@@ -234,6 +236,7 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
             this.requestFlowControlEnabled = requestFrame.hasFlowControl() && requestFrame.getFlowControl().getPermits() > 0;
             this.requestWindowBatch = requestFlowControlEnabled ? requestFrame.getFlowControl().getPermits() : 0;
             this.remainingRequestPermits = requestFlowControlEnabled ? requestFrame.getFlowControl().getPermits() : Integer.MAX_VALUE;
+            this.requestChunkAssembler = new RequestChunkAssembler(requestFrame);
             @SuppressWarnings("unchecked")
             RpcClientStreamInvoker<Message, Message> invoker = (RpcClientStreamInvoker<Message, Message>) descriptor.invoker();
             this.invokerSession = invoker.open(context);
@@ -249,8 +252,11 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
                     completeWithRequestBackpressureError();
                     return;
                 }
-                invokerSession.onNext(parseMessage(descriptor.requestType(), frame.getPayload().toByteArray()));
-                maybeSendRequestWindowUpdate();
+                byte[] messagePayload = requestChunkAssembler.tryAssemble(frame);
+                if (messagePayload != null) {
+                    invokerSession.onNext(parseMessage(descriptor.requestType(), messagePayload));
+                    maybeSendRequestWindowUpdate();
+                }
             }
             if (!isInputCompleted(message, frame)) {
                 return;
@@ -333,6 +339,7 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
         private int remainingRequestPermits;
         private int consumedSinceWindowUpdate;
         private boolean completed;
+        private final RequestChunkAssembler requestChunkAssembler;
 
         private BidiStreamSession(
             AbstractSendMesageExecutor executor,
@@ -347,6 +354,7 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
             this.requestFlowControlEnabled = requestFrame.hasFlowControl() && requestFrame.getFlowControl().getPermits() > 0;
             this.requestWindowBatch = requestFlowControlEnabled ? requestFrame.getFlowControl().getPermits() : 0;
             this.remainingRequestPermits = requestFlowControlEnabled ? requestFrame.getFlowControl().getPermits() : Integer.MAX_VALUE;
+            this.requestChunkAssembler = new RequestChunkAssembler(requestFrame);
             @SuppressWarnings("unchecked")
             RpcBidiStreamInvoker<Message, Message> invoker = (RpcBidiStreamInvoker<Message, Message>) descriptor.invoker();
             this.invokerSession = invoker.open(context, new RpcServerResponseObserver(frameSender, requestFrame, context));
@@ -362,8 +370,11 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
                     completeWithRequestBackpressureError();
                     return;
                 }
-                invokerSession.onNext(parseMessage(descriptor.requestType(), frame.getPayload().toByteArray()));
-                maybeSendRequestWindowUpdate();
+                byte[] messagePayload = requestChunkAssembler.tryAssemble(frame);
+                if (messagePayload != null) {
+                    invokerSession.onNext(parseMessage(descriptor.requestType(), messagePayload));
+                    maybeSendRequestWindowUpdate();
+                }
             }
             if (!isInputCompleted(message, frame)) {
                 return;
@@ -417,6 +428,63 @@ public class RpcStreamCommandServerHandler extends AbstractStreamRequestAdapter 
                 RpcFrames.error(requestFrame, RpcStatusCode.TOO_MANY_REQUESTS, "request stream window exhausted", false, null),
                 true
             );
+        }
+    }
+
+    private static final class RequestChunkAssembler {
+        private final boolean enabled;
+        private final int maxFrameBytes;
+        private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        private int expectedChunkIndex;
+
+        private RequestChunkAssembler(RpcFrame requestFrame) {
+            if (requestFrame == null || !requestFrame.hasFlowControl()) {
+                this.enabled = false;
+                this.maxFrameBytes = 0;
+                return;
+            }
+            int v = requestFrame.getFlowControl().getMaxFrameBytes();
+            this.maxFrameBytes = v;
+            this.enabled = v > 0;
+        }
+
+        private byte[] tryAssemble(RpcFrame frame) throws Exception {
+            if (frame == null) {
+                return null;
+            }
+            if (frame.getEndOfMessage()) {
+                if (buffer.size() == 0 && frame.getChunkIndex() == 0) {
+                    return frame.getPayload().toByteArray();
+                }
+                append(frame);
+                byte[] out = buffer.toByteArray();
+                reset();
+                return out;
+            }
+            if (!enabled) {
+                return frame.getPayload().toByteArray();
+            }
+            if (maxFrameBytes > 0 && frame.getPayload().size() < maxFrameBytes && frame.getChunkIndex() == 0) {
+                return frame.getPayload().toByteArray();
+            }
+            append(frame);
+            return null;
+        }
+
+        private void append(RpcFrame frame) throws Exception {
+            if (frame.getChunkIndex() == 0 && buffer.size() > 0) {
+                reset();
+            }
+            if (frame.getChunkIndex() != expectedChunkIndex) {
+                throw new IllegalStateException("RPC 分片顺序错误");
+            }
+            buffer.write(frame.getPayload().toByteArray());
+            expectedChunkIndex++;
+        }
+
+        private void reset() {
+            buffer.reset();
+            expectedChunkIndex = 0;
         }
     }
 }

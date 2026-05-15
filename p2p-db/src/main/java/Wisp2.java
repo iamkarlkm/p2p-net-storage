@@ -27,7 +27,7 @@ $java -XX:+UnlockExperimentalVMOptions -XX:+UseWisp2 -XX:ActiveProcessorCount=1 
 //@Slf4j
 public class Wisp2 {
     
-    public static final ExecutorService THREAD_POOL = Executors.newVirtualThreadPerTaskExecutor();
+    public static final ExecutorService THREAD_POOL = createExecutor();
     
 //    public static final ExecutorService THREAD_POOL = Executors.newFixedThreadPool(2);
 
@@ -49,6 +49,15 @@ private static long pingpong(BlockingQueue<Byte> in, BlockingQueue<Byte> out) th
     long start = System.currentTimeMillis();
     for (int i = 0; i < 1_000_000; i++) out.put(in.take());
     return System.currentTimeMillis() - start;
+}
+    
+private static ExecutorService createExecutor() {
+    try {
+        var m = Executors.class.getMethod("newVirtualThreadPerTaskExecutor");
+        return (ExecutorService) m.invoke(null);
+    } catch (Throwable ignored) {
+        return Executors.newCachedThreadPool();
+    }
 }
     
 }

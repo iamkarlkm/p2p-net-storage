@@ -1,0 +1,17 @@
+taskId: 1234567890123456789
+storeId: 12345
+listenPort: 6060
+monitorPort: 8090
+remoteEndpoints:
+  - "127.0.0.1:9001"
+  - "10.0.0.2:9001"
+localDir: "./sync-dir"
+dsHome: "./sync-state"
+auth:
+  enabled: false
+userInfo:
+  userId: "alice"
+  displayName: "Alice"
+loginInfo:
+  username: "alice"
+  password: "REDACTED"

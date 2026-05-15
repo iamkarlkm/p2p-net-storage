@@ -14,6 +14,7 @@ import javax.net.p2p.common.AbstractSendMesageExecutor;
 import javax.net.p2p.error.P2PErrorCode;
 import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PCommandHandler;
+import javax.net.p2p.interfaces.P2PChannelAwareCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.model.StreamP2PWrapper;
 import javax.net.p2p.rpc.server.RpcControlSupport;
@@ -162,7 +163,11 @@ public class ServerUdpMessageProcessor extends AbstractUdpMessageProcessor {
                 return;
 
             } else {//实时短操作,不用另外启动异步任务线程,直接在channel事件循环主线程执行并立即返回结果,可以节约线程切换开销
-                response = handler.process(request);
+                if (handler instanceof P2PChannelAwareCommandHandler) {
+                    response = ((P2PChannelAwareCommandHandler) handler).process(ctx, request);
+                } else {
+                    response = handler.process(request);
+                }
             }
 
         } else {

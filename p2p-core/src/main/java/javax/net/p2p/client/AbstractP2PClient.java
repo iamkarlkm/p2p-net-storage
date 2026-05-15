@@ -26,8 +26,7 @@ public abstract class AbstractP2PClient extends AbstractP2PMessageServiceAdapter
         
         // 初始化Bootstrap
         this.bootstrap = new io.netty.bootstrap.Bootstrap();
-        // this.io_work_group = ExecutorServicePool.createClientPools();
-        // this.io_work_group = new io.netty.channel.nio.NioEventLoopGroup();
+        this.io_work_group = new io.netty.channel.nio.NioEventLoopGroup();
         // do not set group here, let connect method set it
         // this.bootstrap.group(this.io_work_group)
         //         .channel(io.netty.channel.socket.nio.NioDatagramChannel.class)

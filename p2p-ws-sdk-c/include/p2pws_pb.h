@@ -38,6 +38,8 @@ typedef struct p2pws_hand_ack_plain_view {
   uint32_t header_policy_id;
   p2pws_pb_slice_t selected_key_id;
   p2pws_pb_slice_t session_id;
+  char crypto_mode[64];
+  p2pws_pb_slice_t server_random_key;
 } p2pws_hand_ack_plain_view_t;
 
 typedef struct p2pws_hand_view {
@@ -45,6 +47,8 @@ typedef struct p2pws_hand_view {
   p2pws_pb_slice_t key_id;
   uint32_t max_frame_payload;
   char client_id[64];
+  char crypto_mode[64];
+  p2pws_pb_slice_t client_random_key;
 } p2pws_hand_view_t;
 
 typedef struct p2pws_peer_hello_view {

@@ -15,10 +15,12 @@ import javax.net.p2p.rpc.server.RpcServerInterceptors;
 import javax.net.p2p.rpc.server.RpcFrames;
 import javax.net.p2p.rpc.server.RpcPubSubBroker;
 import javax.net.p2p.rpc.server.RpcPubSubServices;
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * RPC 长生命周期事件流入口。
  */
+@Slf4j
 public class RpcEventCommandServerHandler extends AbstractStreamRequestAdapter implements StreamRequest {
     private String topic;
     private RpcRequestContext requestContext;
@@ -56,6 +58,7 @@ public class RpcEventCommandServerHandler extends AbstractStreamRequestAdapter i
             PubSubSubscribeRequest request = PubSubSubscribeRequest.parseFrom(frame.getPayload());
             topic = request.getTopic();
             if (message.getIndex() == 0) {
+                log.info("rpc.event subscribe open seq={} topic={}", message.getSeq(), topic);
                 boolean subscribed = RpcPubSubBroker.subscribe(topic, message.getSeq(), executor, frame);
                 if (!subscribed) {
                     continued = false;

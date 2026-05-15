@@ -9,6 +9,7 @@ import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.auth.utils.AuthCrypto;
 import javax.net.p2p.channel.ChannelUtils;
 import javax.net.p2p.model.P2PWrapper;
+import javax.net.p2p.model.StreamP2PWrapper;
 import javax.net.p2p.utils.SerializationUtil;
 
 public class P2PWrapperSecureDecoder extends ByteToMessageDecoder {
@@ -39,9 +40,10 @@ public class P2PWrapperSecureDecoder extends ByteToMessageDecoder {
         in.readBytes(payload);
         byte[] key = ctx.channel().attr(ChannelUtils.XOR_KEY).get();
         if (key != null && key.length > 0) {
-            AuthCrypto.xorInPlace(payload, key);
+            Integer offset = ctx.channel().attr(ChannelUtils.XOR_OFFSET).get();
+            AuthCrypto.xorInPlace(payload, key, offset == null ? 0 : offset);
         }
-        P2PWrapper result = SerializationUtil.deserialize(P2PWrapper.class, payload);
+        P2PWrapper result = SerializationUtil.deserialize(StreamP2PWrapper.class, payload);
         out.add(result);
     }
 }

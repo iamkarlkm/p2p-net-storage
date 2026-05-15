@@ -5,6 +5,7 @@ import com.q3lives.ds.database.adapter.DsTableAdapter;
 import com.q3lives.ds.database.config.DsDatabaseClientConfig;
 import com.q3lives.ds.database.config.DsDatabaseClientConfigLoader;
 import com.q3lives.ds.database.remote.DbEntityRelationsCodec;
+import com.q3lives.ds.database.startup.DsDbClientMetaPrecheck;
 import com.q3lives.ds.database.integration.QueryWrapper;
 import com.q3lives.ds.util.DsPathUtil;
 import java.io.File;
@@ -15,8 +16,10 @@ import java.nio.file.Files;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.LongConsumer;
 import javax.net.p2p.client.AbstractP2PClient;
 import javax.net.p2p.client.P2PClientTcp;
+import javax.net.p2p.channel.AbstractStreamResponseAdapter;
 import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.model.DbMetaGetRequest;
 import javax.net.p2p.model.DbMetaGetResponse;
@@ -40,8 +43,13 @@ import javax.net.p2p.model.DbRowPutResponse;
 import javax.net.p2p.model.DbRowGetRequest;
 import javax.net.p2p.model.DbRowGetResponse;
 import javax.net.p2p.model.DbQuery;
+import javax.net.p2p.model.DbRowCountRequest;
+import javax.net.p2p.model.DbRowCountResponse;
+import javax.net.p2p.model.DbRowExistsByQueryRequest;
+import javax.net.p2p.model.DbRowExistsByQueryResponse;
 import javax.net.p2p.model.DbRowQueryIdsRequest;
 import javax.net.p2p.model.DbRowQueryIdsResponse;
+import javax.net.p2p.model.DbRowQueryIdsStreamRequest;
 import javax.net.p2p.model.DbIndexCreateRequest;
 import javax.net.p2p.model.DbIndexCreateResponse;
 import javax.net.p2p.model.DbIndexDropRequest;
@@ -64,6 +72,7 @@ import javax.net.p2p.model.DbEntityRemoveResponse;
 import javax.net.p2p.model.DbMetaPutRequest;
 import javax.net.p2p.model.DbTableSchema;
 import javax.net.p2p.model.P2PWrapper;
+import javax.net.p2p.model.StreamP2PWrapper;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.utils.SerializationUtil;
 import org.yaml.snakeyaml.Yaml;
@@ -125,7 +134,14 @@ public class DsDatabaseServer implements AutoCloseable {
         if (cfg.local != null && cfg.local.dbHome != null && !cfg.local.dbHome.isBlank()) {
             localDbRoot = new File(cfg.local.dbHome);
         }
-        return new DsDatabaseServer(c, localDbRoot);
+        DsDatabaseServer server = new DsDatabaseServer(c, localDbRoot);
+        try {
+            DsDbClientMetaPrecheck.runOrThrow(server, localDbRoot, cfg.metaCheck);
+        } catch (RuntimeException e) {
+            server.close();
+            throw e;
+        }
+        return server;
     }
     
     /**
@@ -612,6 +628,149 @@ public class DsDatabaseServer implements AutoCloseable {
             throw e;
         } catch (Exception e) {
             throw new IOException(e);
+        }
+    }
+
+    public long countRows(String entityClassName, DbQuery query) throws IOException {
+        if (entityClassName == null || entityClassName.isBlank()) {
+            throw new IllegalArgumentException("entityClassName is blank");
+        }
+        try {
+            DbRowCountRequest payload = new DbRowCountRequest(entityClassName, query);
+            P2PWrapper resp = client.excute(P2PWrapper.build(P2PCommand.DB_ROW_COUNT, payload));
+            if (resp.getCommand() == P2PCommand.STD_ERROR) {
+                throw P2PErrors.asRuntimeException(resp);
+            }
+            if (resp.getCommand() != P2PCommand.R_OK_DB_ROW_COUNT || !(resp.getData() instanceof DbRowCountResponse ok)) {
+                throw new IOException("unexpected response: " + resp.getCommand());
+            }
+            return ok.count;
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException(e);
+        }
+    }
+
+    public boolean existsByQuery(String entityClassName, DbQuery query) throws IOException {
+        if (entityClassName == null || entityClassName.isBlank()) {
+            throw new IllegalArgumentException("entityClassName is blank");
+        }
+        try {
+            DbRowExistsByQueryRequest payload = new DbRowExistsByQueryRequest(entityClassName, query);
+            P2PWrapper resp = client.excute(P2PWrapper.build(P2PCommand.DB_ROW_EXISTS_BY_QUERY, payload));
+            if (resp.getCommand() == P2PCommand.STD_ERROR) {
+                throw P2PErrors.asRuntimeException(resp);
+            }
+            if (resp.getCommand() != P2PCommand.R_OK_DB_ROW_EXISTS_BY_QUERY || !(resp.getData() instanceof DbRowExistsByQueryResponse ok)) {
+                throw new IOException("unexpected response: " + resp.getCommand());
+            }
+            return ok.exists;
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException(e);
+        }
+    }
+
+    public void queryRowIdsStreaming(
+        String entityClassName,
+        DbQuery query,
+        int offset,
+        int limit,
+        int chunkSize,
+        LongConsumer onRowId
+    ) throws IOException {
+        openQueryRowIdsStreaming(entityClassName, query, offset, limit, chunkSize, onRowId);
+    }
+
+    public DbRowQueryStreamHandle openQueryRowIdsStreaming(
+        String entityClassName,
+        DbQuery query,
+        int offset,
+        int limit,
+        int chunkSize,
+        LongConsumer onRowId
+    ) throws IOException {
+        if (entityClassName == null || entityClassName.isBlank()) {
+            throw new IllegalArgumentException("entityClassName is blank");
+        }
+        if (onRowId == null) {
+            throw new IllegalArgumentException("onRowId is null");
+        }
+        try {
+            DbRowQueryIdsStreamRequest payload = new DbRowQueryIdsStreamRequest(entityClassName, query, offset, limit, chunkSize);
+            StreamP2PWrapper req = StreamP2PWrapper.buildStream(0, 0, P2PCommand.DB_ROW_QUERY_IDS_STREAM, payload, true);
+            AbstractStreamResponseAdapter adapter = new DbRowIdsStreamAdapter(onRowId);
+            var bound = client.openBoundStreamRequest(req, adapter);
+            P2PWrapper ack = bound.ack();
+            if (ack.getCommand() == P2PCommand.STD_ERROR) {
+                throw P2PErrors.asRuntimeException(ack);
+            }
+            if (ack.getCommand() != P2PCommand.STREAM_ACK) {
+                throw new IOException("unexpected response: " + ack.getCommand());
+            }
+            return new DbRowQueryStreamHandle(client, req.getSeq());
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException(e);
+        }
+    }
+
+    public static final class DbRowQueryStreamHandle {
+        private final AbstractP2PClient client;
+        private final int seq;
+        private final java.util.concurrent.atomic.AtomicBoolean canceled = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        private DbRowQueryStreamHandle(AbstractP2PClient client, int seq) {
+            this.client = client;
+            this.seq = seq;
+        }
+
+        public int getSeq() {
+            return seq;
+        }
+
+        public void cancel() throws IOException {
+            if (!canceled.compareAndSet(false, true)) {
+                return;
+            }
+            client.cancelExcute(seq);
+        }
+    }
+
+    private static final class DbRowIdsStreamAdapter extends AbstractStreamResponseAdapter {
+        private final LongConsumer onRowId;
+
+        private DbRowIdsStreamAdapter(LongConsumer onRowId) {
+            this.onRowId = onRowId;
+        }
+
+        @Override
+        public void response(StreamP2PWrapper message) {
+            if (message == null) {
+                return;
+            }
+            if (message.getCommand() != P2PCommand.R_OK_DB_ROW_QUERY_IDS_STREAM) {
+                return;
+            }
+            if (!(message.getData() instanceof DbRowQueryIdsResponse payload) || payload.idsBytes == null) {
+                return;
+            }
+            long[] ids = SerializationUtil.deserialize(long[].class, payload.idsBytes);
+            if (ids == null || ids.length == 0) {
+                return;
+            }
+            for (long rowId : ids) {
+                if (rowId > 0L) {
+                    onRowId.accept(rowId);
+                }
+            }
+        }
+
+        @Override
+        public void cancel(StreamP2PWrapper message) {
         }
     }
 

@@ -14,3 +14,22 @@ Uint8List xorNoWrap(Uint8List data, Uint8List key, int keyOffset) {
   return out;
 }
 
+Uint8List xorRepeat(Uint8List data, Uint8List key) {
+  if (key.isEmpty) {
+    throw ArgumentError("key must not be empty");
+  }
+  final out = Uint8List(data.length);
+  for (var i = 0; i < data.length; i++) {
+    out[i] = data[i] ^ key[i % key.length];
+  }
+  return out;
+}
+
+void xorRepeatInPlace(Uint8List data, Uint8List key) {
+  if (key.isEmpty) {
+    throw ArgumentError("key must not be empty");
+  }
+  for (var i = 0; i < data.length; i++) {
+    data[i] = data[i] ^ key[i % key.length];
+  }
+}

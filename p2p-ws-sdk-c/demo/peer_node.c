@@ -16,6 +16,28 @@
 #include "p2pws_ws.h"
 #include "p2pws_yaml.h"
 
+static int streq(const char* a, const char* b) {
+  if (!a || !b) return 0;
+  return strcmp(a, b) == 0;
+}
+
+static int apply_cipher(const char* crypto_mode, const p2pws_keyfile_t* kf, uint32_t offset, const uint8_t* repeat_key, size_t repeat_key_len, const uint8_t* in, size_t in_len, uint8_t* out) {
+  if (streq(crypto_mode, "PLAIN")) {
+    if (in_len) memcpy(out, in, in_len);
+    return 0;
+  }
+  if (streq(crypto_mode, "KEYFILE_XOR_RSA_OAEP")) {
+    if (!kf) return -10;
+    return p2pws_xor_no_wrap(in, in_len, kf->data, kf->len, offset, out);
+  }
+  if (!repeat_key || repeat_key_len == 0) return -11;
+  return p2pws_xor_repeat(in, in_len, repeat_key, repeat_key_len, out);
+}
+
+static uint8_t wire_flags_for_mode(const p2pws_cfg_t* cfg, const char* crypto_mode) {
+  return streq(crypto_mode, "PLAIN") ? (uint8_t)cfg->flags_plain : (uint8_t)cfg->flags_encrypted;
+}
+
 static void dirname_of(const char* path, char* out, size_t cap) {
   if (!out || cap == 0) return;
   out[0] = 0;
@@ -172,6 +194,11 @@ static void handle_client(p2pws_ws_client_t* c, const p2pws_cfg_t* cfg, const p2
 
   int stage = 0;
   uint32_t offset = 0;
+  char crypto_mode[64];
+  memset(crypto_mode, 0, sizeof(crypto_mode));
+  strncpy(crypto_mode, "KEYFILE_XOR_RSA_OAEP", sizeof(crypto_mode) - 1);
+  uint8_t repeat_key[64];
+  size_t repeat_key_len = 0;
 
   for (;;) {
     p2pws_header_t h;
@@ -180,10 +207,10 @@ static void handle_client(p2pws_ws_client_t* c, const p2pws_cfg_t* cfg, const p2
 
     const uint8_t* wbytes = cipher.data;
     size_t wlen = cipher.len;
-    if (stage >= 1) {
+    if (stage >= 1 && !streq(crypto_mode, "PLAIN")) {
       plain.len = 0;
       p2pws_buf_reserve(&plain, cipher.len);
-      if (p2pws_xor_no_wrap(cipher.data, cipher.len, kf->data, kf->len, offset, plain.data) != 0) break;
+      if (apply_cipher(crypto_mode, kf, offset, repeat_key, repeat_key_len, cipher.data, cipher.len, plain.data) != 0) break;
       plain.len = cipher.len;
       wbytes = plain.data;
       wlen = plain.len;
@@ -196,16 +223,39 @@ static void handle_client(p2pws_ws_client_t* c, const p2pws_cfg_t* cfg, const p2
       if (wv.command != -10001) break;
       p2pws_hand_view_t hv;
       if (p2pws_pb_decode_hand(wv.data.p, wv.data.n, &hv) != 0) break;
-      if (hv.key_id.n != 32 || memcmp(hv.key_id.p, key_id32, 32) != 0) break;
+      const char* req_mode = hv.crypto_mode[0] ? hv.crypto_mode : "KEYFILE_XOR_RSA_OAEP";
+      if (streq(req_mode, "PLAIN")) {
+        strncpy(crypto_mode, "PLAIN", sizeof(crypto_mode) - 1);
+        offset = 0;
+        repeat_key_len = 0;
+      } else if (streq(req_mode, "CLIENT_RANDOM_XOR_RSA_OAEP")) {
+        if (hv.client_random_key.n == 0) break;
+        strncpy(crypto_mode, "CLIENT_RANDOM_XOR_RSA_OAEP", sizeof(crypto_mode) - 1);
+        repeat_key_len = hv.client_random_key.n < sizeof(repeat_key) ? hv.client_random_key.n : sizeof(repeat_key);
+        memcpy(repeat_key, hv.client_random_key.p, repeat_key_len);
+      } else if (streq(req_mode, "SERVER_RANDOM_XOR_RSA_OAEP")) {
+        strncpy(crypto_mode, "SERVER_RANDOM_XOR_RSA_OAEP", sizeof(crypto_mode) - 1);
+        repeat_key_len = 32;
+        if (rand_bytes(repeat_key, repeat_key_len) != 0) break;
+      } else {
+        strncpy(crypto_mode, "KEYFILE_XOR_RSA_OAEP", sizeof(crypto_mode) - 1);
+        if (hv.key_id.n != 32 || memcmp(hv.key_id.p, key_id32, 32) != 0) break;
+      }
 
       uint8_t session_id[16];
       if (rand_bytes(session_id, sizeof(session_id)) != 0) break;
       uint8_t offb[4];
       if (rand_bytes(offb, sizeof(offb)) != 0) break;
-      offset = ((uint32_t)offb[0] << 24) | ((uint32_t)offb[1] << 16) | ((uint32_t)offb[2] << 8) | (uint32_t)offb[3];
-      offset = offset % 1024;
+      if (streq(crypto_mode, "KEYFILE_XOR_RSA_OAEP")) {
+        offset = ((uint32_t)offb[0] << 24) | ((uint32_t)offb[1] << 16) | ((uint32_t)offb[2] << 8) | (uint32_t)offb[3];
+        offset = offset % 1024;
+      } else {
+        offset = 0;
+      }
 
-      if (p2pws_msg_encode_hand_ack_plain(session_id, key_id32, offset, cfg->max_frame_payload, 0, &tmp) != 0) break;
+      const uint8_t* server_rand = streq(crypto_mode, "SERVER_RANDOM_XOR_RSA_OAEP") ? repeat_key : NULL;
+      size_t server_rand_len = streq(crypto_mode, "SERVER_RANDOM_XOR_RSA_OAEP") ? repeat_key_len : 0;
+      if (p2pws_msg_encode_hand_ack_plain(session_id, key_id32, offset, cfg->max_frame_payload, 0, crypto_mode, server_rand, server_rand_len, &tmp) != 0) break;
       if (p2pws_rsa_oaep_sha256_encrypt_spki_der(hv.client_pubkey.p, hv.client_pubkey.n, tmp.data, tmp.len, &cipher) != 0) break;
       if (p2pws_msg_encode_wrapper(wv.seq, -10002, cipher.data, cipher.len, &wrap) != 0) break;
       if (send_wire_frame_server(c, cfg->magic, (uint8_t)cfg->version, (uint8_t)cfg->flags_plain, wrap.data, wrap.len) != 0) break;
@@ -224,9 +274,9 @@ static void handle_client(p2pws_ws_client_t* c, const p2pws_cfg_t* cfg, const p2
       if (p2pws_msg_encode_wrapper(wv.seq, -12002, tmp.data, tmp.len, &wrap) != 0) break;
       cipher.len = 0;
       p2pws_buf_reserve(&cipher, wrap.len);
-      if (p2pws_xor_no_wrap(wrap.data, wrap.len, kf->data, kf->len, offset, cipher.data) != 0) break;
+      if (apply_cipher(crypto_mode, kf, offset, repeat_key, repeat_key_len, wrap.data, wrap.len, cipher.data) != 0) break;
       cipher.len = wrap.len;
-      if (send_wire_frame_server(c, cfg->magic, (uint8_t)cfg->version, (uint8_t)cfg->flags_encrypted, cipher.data, cipher.len) != 0) break;
+      if (send_wire_frame_server(c, cfg->magic, (uint8_t)cfg->version, wire_flags_for_mode(cfg, crypto_mode), cipher.data, cipher.len) != 0) break;
 
       stage = 2;
       (void)pb;
@@ -247,9 +297,9 @@ static void handle_client(p2pws_ws_client_t* c, const p2pws_cfg_t* cfg, const p2
       if (p2pws_msg_encode_wrapper(wv.seq, 1002, tmp.data, tmp.len, &wrap) != 0) break;
       cipher.len = 0;
       p2pws_buf_reserve(&cipher, wrap.len);
-      p2pws_xor_no_wrap(wrap.data, wrap.len, kf->data, kf->len, offset, cipher.data);
+      if (apply_cipher(crypto_mode, kf, offset, repeat_key, repeat_key_len, wrap.data, wrap.len, cipher.data) != 0) break;
       cipher.len = wrap.len;
-      if (send_wire_frame_server(c, cfg->magic, (uint8_t)cfg->version, (uint8_t)cfg->flags_encrypted, cipher.data, cipher.len) != 0) break;
+      if (send_wire_frame_server(c, cfg->magic, (uint8_t)cfg->version, wire_flags_for_mode(cfg, crypto_mode), cipher.data, cipher.len) != 0) break;
       continue;
     }
 
@@ -273,9 +323,9 @@ static void handle_client(p2pws_ws_client_t* c, const p2pws_cfg_t* cfg, const p2
       if (p2pws_msg_encode_wrapper(wv.seq, 1004, tmp.data, tmp.len, &wrap) != 0) break;
       cipher.len = 0;
       p2pws_buf_reserve(&cipher, wrap.len);
-      p2pws_xor_no_wrap(wrap.data, wrap.len, kf->data, kf->len, offset, cipher.data);
+      if (apply_cipher(crypto_mode, kf, offset, repeat_key, repeat_key_len, wrap.data, wrap.len, cipher.data) != 0) break;
       cipher.len = wrap.len;
-      if (send_wire_frame_server(c, cfg->magic, (uint8_t)cfg->version, (uint8_t)cfg->flags_encrypted, cipher.data, cipher.len) != 0) break;
+      if (send_wire_frame_server(c, cfg->magic, (uint8_t)cfg->version, wire_flags_for_mode(cfg, crypto_mode), cipher.data, cipher.len) != 0) break;
       continue;
     }
   }
@@ -298,6 +348,9 @@ typedef struct {
 typedef struct {
   p2pws_ws_client_t ws;
   uint32_t offset;
+  char crypto_mode[64];
+  uint8_t repeat_key[64];
+  size_t repeat_key_len;
   const p2pws_cfg_t* cfg;
   const p2pws_keyfile_t* kf;
   p2pws_rsa_t* rsa;
@@ -333,7 +386,7 @@ static DWORD WINAPI center_recv_thread_func(LPVOID lpParam) {
 
     plain.len = 0;
     p2pws_buf_reserve(&plain, cipher.len);
-    if (p2pws_xor_no_wrap(cipher.data, cipher.len, conn->kf->data, conn->kf->len, conn->offset, plain.data) != 0) break;
+    if (apply_cipher(conn->crypto_mode, conn->kf, conn->offset, conn->repeat_key, conn->repeat_key_len, cipher.data, cipher.len, plain.data) != 0) break;
     plain.len = cipher.len;
 
     p2pws_wrapper_view_t wv;
@@ -371,9 +424,9 @@ static DWORD WINAPI center_recv_thread_func(LPVOID lpParam) {
 
       cipher.len = 0;
       p2pws_buf_reserve(&cipher, wrap.len);
-      if (p2pws_xor_no_wrap(wrap.data, wrap.len, conn->kf->data, conn->kf->len, conn->offset, cipher.data) != 0) continue;
+      if (apply_cipher(conn->crypto_mode, conn->kf, conn->offset, conn->repeat_key, conn->repeat_key_len, wrap.data, wrap.len, cipher.data) != 0) continue;
       cipher.len = wrap.len;
-      (void)send_wire_frame_client(&conn->ws, conn->cfg->magic, (uint8_t)conn->cfg->version, (uint8_t)conn->cfg->flags_encrypted, cipher.data, cipher.len);
+      (void)send_wire_frame_client(&conn->ws, conn->cfg->magic, (uint8_t)conn->cfg->version, wire_flags_for_mode(conn->cfg, conn->crypto_mode), cipher.data, cipher.len);
       continue;
     }
 
@@ -405,9 +458,9 @@ static DWORD WINAPI center_recv_thread_func(LPVOID lpParam) {
 
       cipher.len = 0;
       p2pws_buf_reserve(&cipher, wrap.len);
-      if (p2pws_xor_no_wrap(wrap.data, wrap.len, conn->kf->data, conn->kf->len, conn->offset, cipher.data) != 0) continue;
+      if (apply_cipher(conn->crypto_mode, conn->kf, conn->offset, conn->repeat_key, conn->repeat_key_len, wrap.data, wrap.len, cipher.data) != 0) continue;
       cipher.len = wrap.len;
-      (void)send_wire_frame_client(&conn->ws, conn->cfg->magic, (uint8_t)conn->cfg->version, (uint8_t)conn->cfg->flags_encrypted, cipher.data, cipher.len);
+      (void)send_wire_frame_client(&conn->ws, conn->cfg->magic, (uint8_t)conn->cfg->version, wire_flags_for_mode(conn->cfg, conn->crypto_mode), cipher.data, cipher.len);
       continue;
     }
   }
@@ -458,7 +511,27 @@ static DWORD WINAPI center_renew_thread_func(LPVOID lpParam) {
     p2pws_buf_reserve(&cipher, 4096);
     p2pws_buf_reserve(&tmp, 4096);
 
-    if (p2pws_msg_encode_hand(rsa->pub_spki_der, rsa->pub_spki_der_len, key_id32, cfg->max_frame_payload, cfg->user_id, &msg) != 0) goto reconnect;
+    char crypto_mode[64];
+    memset(crypto_mode, 0, sizeof(crypto_mode));
+    strncpy(crypto_mode, cfg->crypto_mode[0] ? cfg->crypto_mode : "KEYFILE_XOR_RSA_OAEP", sizeof(crypto_mode) - 1);
+    uint8_t client_random_key[64];
+    size_t client_random_key_len = 0;
+    if (streq(crypto_mode, "CLIENT_RANDOM_XOR_RSA_OAEP")) {
+      client_random_key_len = 32;
+      if (rand_bytes(client_random_key, client_random_key_len) != 0) goto reconnect;
+    }
+
+    if (p2pws_msg_encode_hand(
+            rsa->pub_spki_der,
+            rsa->pub_spki_der_len,
+            key_id32,
+            cfg->max_frame_payload,
+            cfg->user_id,
+            crypto_mode,
+            client_random_key_len ? client_random_key : NULL,
+            client_random_key_len,
+            &msg) != 0)
+      goto reconnect;
     if (p2pws_msg_encode_wrapper(1, -10001, msg.data, msg.len, &wrap) != 0) goto reconnect;
     if (send_wire_frame_client(&ws, cfg->magic, (uint8_t)cfg->version, (uint8_t)cfg->flags_plain, wrap.data, wrap.len) != 0) goto reconnect;
 
@@ -470,16 +543,33 @@ static DWORD WINAPI center_renew_thread_func(LPVOID lpParam) {
     if (p2pws_rsa_oaep_sha256_decrypt(rsa, wv.data.p, wv.data.n, &tmp) != 0) goto reconnect;
     p2pws_hand_ack_plain_view_t hak;
     if (p2pws_pb_decode_hand_ack_plain(tmp.data, tmp.len, &hak) != 0) goto reconnect;
-    uint32_t offset = hak.offset;
+    if (hak.crypto_mode[0]) {
+      memset(crypto_mode, 0, sizeof(crypto_mode));
+      strncpy(crypto_mode, hak.crypto_mode, sizeof(crypto_mode) - 1);
+    }
+    uint32_t offset = streq(crypto_mode, "KEYFILE_XOR_RSA_OAEP") ? hak.offset : 0;
+    uint8_t repeat_key[64];
+    size_t repeat_key_len = 0;
+    if (streq(crypto_mode, "CLIENT_RANDOM_XOR_RSA_OAEP")) {
+      repeat_key_len = client_random_key_len;
+      memcpy(repeat_key, client_random_key, repeat_key_len);
+    } else if (streq(crypto_mode, "SERVER_RANDOM_XOR_RSA_OAEP")) {
+      repeat_key_len = hak.server_random_key.n < sizeof(repeat_key) ? hak.server_random_key.n : sizeof(repeat_key);
+      if (repeat_key_len) memcpy(repeat_key, hak.server_random_key.p, repeat_key_len);
+    }
 
     uint64_t node_id64 = (uint64_t)strtoull(cfg->user_id, NULL, 10);
     uint32_t seq = 2;
 
-    printf("[Center] Connected, offset=%u\n", (unsigned)offset);
+    printf("[Center] Connected, mode=%s offset=%u\n", crypto_mode, (unsigned)offset);
 
     conn = (center_conn_t*)calloc(1, sizeof(center_conn_t));
     conn->ws = ws;
     conn->offset = offset;
+    memset(conn->crypto_mode, 0, sizeof(conn->crypto_mode));
+    strncpy(conn->crypto_mode, crypto_mode, sizeof(conn->crypto_mode) - 1);
+    conn->repeat_key_len = repeat_key_len;
+    if (repeat_key_len) memcpy(conn->repeat_key, repeat_key, repeat_key_len);
     conn->cfg = cfg;
     conn->kf = kf;
     conn->rsa = rsa;
@@ -500,9 +590,9 @@ static DWORD WINAPI center_renew_thread_func(LPVOID lpParam) {
       if (p2pws_msg_encode_wrapper(seq++, -11001, plain.data, plain.len, &wrap) != 0) goto reconnect;
       cipher.len = 0;
       p2pws_buf_reserve(&cipher, wrap.len);
-      if (p2pws_xor_no_wrap(wrap.data, wrap.len, kf->data, kf->len, offset, cipher.data) != 0) goto reconnect;
+      if (apply_cipher(conn->crypto_mode, kf, offset, conn->repeat_key, conn->repeat_key_len, wrap.data, wrap.len, cipher.data) != 0) goto reconnect;
       cipher.len = wrap.len;
-      if (send_wire_frame_client(&conn->ws, cfg->magic, (uint8_t)cfg->version, (uint8_t)cfg->flags_encrypted, cipher.data, cipher.len) != 0) goto reconnect;
+      if (send_wire_frame_client(&conn->ws, cfg->magic, (uint8_t)cfg->version, wire_flags_for_mode(cfg, conn->crypto_mode), cipher.data, cipher.len) != 0) goto reconnect;
 
       int sleep_sec = cfg->renew_seconds > 0 ? cfg->renew_seconds : 30;
       printf("[Center] Renew sent, sleeping for %d seconds...\n", sleep_sec);

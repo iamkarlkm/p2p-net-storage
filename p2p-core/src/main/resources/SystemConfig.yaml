@@ -17,3 +17,10 @@ FileSync:
     #    - .exe
     prefixExcludes:  #不监听前缀
         - .
+
+DsDbStartupCheck:
+    enabled: false
+    strict: true
+    entityClasses: []
+    entityPackages: []
+    failOnSuperclassRelationFields: true

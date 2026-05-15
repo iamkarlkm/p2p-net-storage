@@ -1,1 +1,1 @@
-__all__ = ["frame", "xor", "keyid", "handshake", "wrapper"]
+__all__ = ["client", "core_compat", "frame", "xor", "keyid", "handshake", "wrapper"]

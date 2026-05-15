@@ -5,6 +5,7 @@ import "package:asn1lib/asn1lib.dart";
 import "package:basic_utils/basic_utils.dart";
 import "package:crypto/crypto.dart";
 
+import "crypto.dart";
 import "messages/control.dart";
 import "messages/wrapper.dart";
 
@@ -152,12 +153,16 @@ P2PWrapper buildHandWrapper({
   required List<Uint8List> keyIds,
   required int maxFramePayload,
   required String clientId,
+  String cryptoMode = P2PCryptoMode.keyfileXorRsaOaep,
+  Uint8List? clientRandomKey,
 }) {
   final hand = Hand(
     clientPubkeySpkiDer: clientPubkeySpkiDer,
     keyIds: keyIds,
     maxFramePayload: maxFramePayload,
     clientId: clientId,
+    cryptoMode: cryptoMode,
+    clientRandomKey: clientRandomKey ?? Uint8List(0),
   );
   return P2PWrapper(seq: seq, command: -10001, data: encodeHand(hand));
 }

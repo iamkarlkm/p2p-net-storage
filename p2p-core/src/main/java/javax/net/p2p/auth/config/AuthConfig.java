@@ -14,6 +14,8 @@ public class AuthConfig {
 
     private boolean enabled;
     private int xorKeyLength;
+    private String cryptoMode;
+    private String xorKeyFile;
     private String keyDir;
     private Client client;
     private Server server;
@@ -35,6 +37,22 @@ public class AuthConfig {
 
     public void setXorKeyLength(int xorKeyLength) {
         this.xorKeyLength = xorKeyLength;
+    }
+
+    public String getCryptoMode() {
+        return cryptoMode;
+    }
+
+    public void setCryptoMode(String cryptoMode) {
+        this.cryptoMode = cryptoMode;
+    }
+
+    public String getXorKeyFile() {
+        return xorKeyFile;
+    }
+
+    public void setXorKeyFile(String xorKeyFile) {
+        this.xorKeyFile = xorKeyFile;
     }
 
     public String getKeyDir() {
@@ -164,6 +182,14 @@ public class AuthConfig {
         private String privateKey;
         private Map<String, String> clientPublicKeys = new HashMap<>();
         private Map<String, List<String>> allowCommands = new HashMap<>();
+        private Map<String, RolePolicy> roles = new HashMap<>();
+        private List<String> defaultRoles;
+        private List<RoleBinding> roleBindings;
+        private Map<String, List<String>> userRoles = new HashMap<>();
+        private String clientPublicKeyTemplate;
+        private String clientPublicKeyDir;
+        private String clientPublicKeySuffix;
+        private List<ClientKeyBinding> clientPublicKeyBindings;
 
         public Server() {
         }
@@ -190,6 +216,142 @@ public class AuthConfig {
 
         public void setAllowCommands(Map<String, List<String>> allowCommands) {
             this.allowCommands = allowCommands;
+        }
+
+        public Map<String, RolePolicy> getRoles() {
+            return roles;
+        }
+
+        public void setRoles(Map<String, RolePolicy> roles) {
+            this.roles = roles;
+        }
+
+        public List<String> getDefaultRoles() {
+            return defaultRoles;
+        }
+
+        public void setDefaultRoles(List<String> defaultRoles) {
+            this.defaultRoles = defaultRoles;
+        }
+
+        public List<RoleBinding> getRoleBindings() {
+            return roleBindings;
+        }
+
+        public void setRoleBindings(List<RoleBinding> roleBindings) {
+            this.roleBindings = roleBindings;
+        }
+
+        public Map<String, List<String>> getUserRoles() {
+            return userRoles;
+        }
+
+        public void setUserRoles(Map<String, List<String>> userRoles) {
+            this.userRoles = userRoles;
+        }
+
+        public String getClientPublicKeyTemplate() {
+            return clientPublicKeyTemplate;
+        }
+
+        public void setClientPublicKeyTemplate(String clientPublicKeyTemplate) {
+            this.clientPublicKeyTemplate = clientPublicKeyTemplate;
+        }
+
+        public String getClientPublicKeyDir() {
+            return clientPublicKeyDir;
+        }
+
+        public void setClientPublicKeyDir(String clientPublicKeyDir) {
+            this.clientPublicKeyDir = clientPublicKeyDir;
+        }
+
+        public String getClientPublicKeySuffix() {
+            return clientPublicKeySuffix;
+        }
+
+        public void setClientPublicKeySuffix(String clientPublicKeySuffix) {
+            this.clientPublicKeySuffix = clientPublicKeySuffix;
+        }
+
+        public List<ClientKeyBinding> getClientPublicKeyBindings() {
+            return clientPublicKeyBindings;
+        }
+
+        public void setClientPublicKeyBindings(List<ClientKeyBinding> clientPublicKeyBindings) {
+            this.clientPublicKeyBindings = clientPublicKeyBindings;
+        }
+    }
+
+    public static class RolePolicy {
+        private List<String> allowCategories;
+        private List<String> allowCommands;
+
+        public RolePolicy() {
+        }
+
+        public List<String> getAllowCategories() {
+            return allowCategories;
+        }
+
+        public void setAllowCategories(List<String> allowCategories) {
+            this.allowCategories = allowCategories;
+        }
+
+        public List<String> getAllowCommands() {
+            return allowCommands;
+        }
+
+        public void setAllowCommands(List<String> allowCommands) {
+            this.allowCommands = allowCommands;
+        }
+    }
+
+    public static class RoleBinding {
+        private String match;
+        private List<String> roles;
+
+        public RoleBinding() {
+        }
+
+        public String getMatch() {
+            return match;
+        }
+
+        public void setMatch(String match) {
+            this.match = match;
+        }
+
+        public List<String> getRoles() {
+            return roles;
+        }
+
+        public void setRoles(List<String> roles) {
+            this.roles = roles;
+        }
+    }
+
+    public static class ClientKeyBinding {
+        private String match;
+        private String publicKey;
+
+        public ClientKeyBinding() {
+        }
+
+        public String getMatch() {
+            return match;
+        }
+
+        public void setMatch(String match) {
+            this.match = match;
+        }
+
+        public String getPublicKey() {
+            return publicKey;
+        }
+
+        public void setPublicKey(String publicKey) {
+            this.publicKey = publicKey;
         }
     }
 }

@@ -6,10 +6,16 @@
 #include "p2p_ws.h"
 #include "p2pws_buf.h"
 #include "p2pws_crypto.h"
+#include "p2pws_cipher.h"
 #include "p2pws_messages.h"
 #include "p2pws_pb.h"
 #include "p2pws_ws.h"
 #include "p2pws_yaml.h"
+
+static int streq(const char* a, const char* b) {
+  if (!a || !b) return 0;
+  return strcmp(a, b) == 0;
+}
 
 static int is_abs_path(const char* p) {
   if (!p || !p[0]) return 0;
@@ -159,28 +165,33 @@ int main(int argc, char** argv) {
   join_path(cfg_dir, cfg.rsa_private_key_pem_path, priv_abs, sizeof(priv_abs));
 
   p2pws_keyfile_t kf;
-  if (p2pws_keyfile_load(keyfile_abs, &kf) != 0) {
-    printf("keyfile_load_failed\n");
-    return 4;
-  }
-  char key_hex[65];
-  if (p2pws_sha256_hex(kf.data, kf.len, key_hex) != 0) {
-    printf("keyfile_sha256_failed\n");
-    p2pws_keyfile_free(&kf);
-    return 5;
-  }
-  if (cfg.key_id_sha256_hex[0] && _stricmp(cfg.key_id_sha256_hex, key_hex) != 0) {
-    printf("key_id_sha256_hex_mismatch\n");
-    p2pws_keyfile_free(&kf);
-    return 6;
-  }
   uint8_t key_id32[32];
-  for (int i = 0; i < 32; i++) {
-    char tmp2[3];
-    tmp2[0] = key_hex[i * 2];
-    tmp2[1] = key_hex[i * 2 + 1];
-    tmp2[2] = 0;
-    key_id32[i] = (uint8_t)strtoul(tmp2, NULL, 16);
+  memset(&kf, 0, sizeof(kf));
+  memset(key_id32, 0, sizeof(key_id32));
+  const int need_keyfile = streq(cfg.crypto_mode, "KEYFILE_XOR_RSA_OAEP");
+  if (need_keyfile) {
+    if (p2pws_keyfile_load(keyfile_abs, &kf) != 0) {
+      printf("keyfile_load_failed\n");
+      return 4;
+    }
+    char key_hex[65];
+    if (p2pws_sha256_hex(kf.data, kf.len, key_hex) != 0) {
+      printf("keyfile_sha256_failed\n");
+      p2pws_keyfile_free(&kf);
+      return 5;
+    }
+    if (cfg.key_id_sha256_hex[0] && _stricmp(cfg.key_id_sha256_hex, key_hex) != 0) {
+      printf("key_id_sha256_hex_mismatch\n");
+      p2pws_keyfile_free(&kf);
+      return 6;
+    }
+    for (int i = 0; i < 32; i++) {
+      char tmp3[3];
+      tmp3[0] = key_hex[i * 2];
+      tmp3[1] = key_hex[i * 2 + 1];
+      tmp3[2] = 0;
+      key_id32[i] = (uint8_t)strtoul(tmp3, NULL, 16);
+    }
   }
 
   p2pws_rsa_t rsa;
@@ -227,7 +238,8 @@ int main(int argc, char** argv) {
   p2pws_buf_reserve(&cipher, 4096);
   p2pws_buf_reserve(&tmp, 4096);
 
-  p2pws_msg_encode_hand(rsa.pub_spki_der, rsa.pub_spki_der_len, key_id32, cfg.max_frame_payload, cfg.user_id, &msg);
+  p2pws_cipher_ctx_t center_ctx;
+  if (p2pws_cipher_prepare_hand(&cfg, &rsa, need_keyfile ? key_id32 : NULL, &center_ctx, &msg) != 0) return 9;
   p2pws_msg_encode_wrapper(1, -10001, msg.data, msg.len, &wrap);
   send_wire_frame(&cws, cfg.magic, (uint8_t)cfg.version, (uint8_t)cfg.flags_plain, wrap.data, wrap.len);
 
@@ -242,7 +254,7 @@ int main(int argc, char** argv) {
   p2pws_rsa_oaep_sha256_decrypt(&rsa, wv.data.p, wv.data.n, &tmp);
   p2pws_hand_ack_plain_view_t hak;
   p2pws_pb_decode_hand_ack_plain(tmp.data, tmp.len, &hak);
-  uint32_t offset = hak.offset;
+  if (p2pws_cipher_apply_hand_ack(&hak, &center_ctx) != 0) return 10;
 
   uint64_t node_id64 = (uint64_t)strtoull(cfg.user_id, NULL, 10);
   p2pws_msg_encode_center_hello_body(node_id64, rsa.pub_spki_der, rsa.pub_spki_der_len, cfg.reported_transport, cfg.reported_addr, cfg.max_frame_payload, cfg.magic, cfg.version, cfg.flags_plain, cfg.flags_encrypted, now_ms(), cfg.crypto_mode, &msg);
@@ -251,14 +263,14 @@ int main(int argc, char** argv) {
   p2pws_msg_encode_wrapper(2, -11001, plain.data, plain.len, &wrap);
   p2pws_pb_reset(&cipher);
   p2pws_buf_reserve(&cipher, wrap.len);
-  p2pws_xor_no_wrap(wrap.data, wrap.len, kf.data, kf.len, offset, cipher.data);
+  if (p2pws_cipher_apply(&center_ctx, need_keyfile ? &kf : NULL, wrap.data, wrap.len, cipher.data) != 0) return 10;
   cipher.len = wrap.len;
-  send_wire_frame(&cws, cfg.magic, (uint8_t)cfg.version, (uint8_t)cfg.flags_encrypted, cipher.data, cipher.len);
+  send_wire_frame(&cws, cfg.magic, (uint8_t)cfg.version, p2pws_cipher_wire_flags(&cfg, &center_ctx), cipher.data, cipher.len);
 
   recv_wire_frame(&cws, &cipher, &h);
   p2pws_pb_reset(&plain);
   p2pws_buf_reserve(&plain, cipher.len);
-  p2pws_xor_no_wrap(cipher.data, cipher.len, kf.data, kf.len, offset, plain.data);
+  if (p2pws_cipher_apply(&center_ctx, need_keyfile ? &kf : NULL, cipher.data, cipher.len, plain.data) != 0) return 10;
   plain.len = cipher.len;
   p2pws_pb_decode_wrapper(plain.data, plain.len, &wv);
   if (wv.command != -11002) {
@@ -272,14 +284,14 @@ int main(int argc, char** argv) {
   p2pws_msg_encode_wrapper(3, -11010, msg.data, msg.len, &wrap);
   p2pws_pb_reset(&cipher);
   p2pws_buf_reserve(&cipher, wrap.len);
-  p2pws_xor_no_wrap(wrap.data, wrap.len, kf.data, kf.len, offset, cipher.data);
+  if (p2pws_cipher_apply(&center_ctx, need_keyfile ? &kf : NULL, wrap.data, wrap.len, cipher.data) != 0) return 12;
   cipher.len = wrap.len;
-  send_wire_frame(&cws, cfg.magic, (uint8_t)cfg.version, (uint8_t)cfg.flags_encrypted, cipher.data, cipher.len);
+  send_wire_frame(&cws, cfg.magic, (uint8_t)cfg.version, p2pws_cipher_wire_flags(&cfg, &center_ctx), cipher.data, cipher.len);
 
   recv_wire_frame(&cws, &cipher, &h);
   p2pws_pb_reset(&plain);
   p2pws_buf_reserve(&plain, cipher.len);
-  p2pws_xor_no_wrap(cipher.data, cipher.len, kf.data, kf.len, offset, plain.data);
+  if (p2pws_cipher_apply(&center_ctx, need_keyfile ? &kf : NULL, cipher.data, cipher.len, plain.data) != 0) return 12;
   plain.len = cipher.len;
   p2pws_pb_decode_wrapper(plain.data, plain.len, &wv);
   if (wv.command != -11011) {
@@ -311,7 +323,8 @@ int main(int argc, char** argv) {
     return 16;
   }
 
-  p2pws_msg_encode_hand(rsa.pub_spki_der, rsa.pub_spki_der_len, key_id32, cfg.max_frame_payload, cfg.user_id, &msg);
+  p2pws_cipher_ctx_t peer_ctx;
+  if (p2pws_cipher_prepare_hand(&cfg, &rsa, need_keyfile ? key_id32 : NULL, &peer_ctx, &msg) != 0) return 16;
   p2pws_msg_encode_wrapper(1, -10001, msg.data, msg.len, &wrap);
   send_wire_frame(&pws, cfg.magic, (uint8_t)cfg.version, (uint8_t)cfg.flags_plain, wrap.data, wrap.len);
 
@@ -323,7 +336,7 @@ int main(int argc, char** argv) {
   }
   p2pws_rsa_oaep_sha256_decrypt(&rsa, wv.data.p, wv.data.n, &tmp);
   p2pws_pb_decode_hand_ack_plain(tmp.data, tmp.len, &hak);
-  uint32_t peer_offset = hak.offset;
+  if (p2pws_cipher_apply_hand_ack(&hak, &peer_ctx) != 0) return 17;
 
   p2pws_msg_encode_peer_hello_body(node_id64, rsa.pub_spki_der, rsa.pub_spki_der_len, now_ms(), cfg.crypto_mode, &msg);
   p2pws_rsa_sign_sha256(&rsa, msg.data, msg.len, &tmp);
@@ -331,14 +344,14 @@ int main(int argc, char** argv) {
   p2pws_msg_encode_wrapper(2, -12001, plain.data, plain.len, &wrap);
   p2pws_pb_reset(&cipher);
   p2pws_buf_reserve(&cipher, wrap.len);
-  p2pws_xor_no_wrap(wrap.data, wrap.len, kf.data, kf.len, peer_offset, cipher.data);
+  if (p2pws_cipher_apply(&peer_ctx, need_keyfile ? &kf : NULL, wrap.data, wrap.len, cipher.data) != 0) return 18;
   cipher.len = wrap.len;
-  send_wire_frame(&pws, cfg.magic, (uint8_t)cfg.version, (uint8_t)cfg.flags_encrypted, cipher.data, cipher.len);
+  send_wire_frame(&pws, cfg.magic, (uint8_t)cfg.version, p2pws_cipher_wire_flags(&cfg, &peer_ctx), cipher.data, cipher.len);
 
   recv_wire_frame(&pws, &cipher, &h);
   p2pws_pb_reset(&plain);
   p2pws_buf_reserve(&plain, cipher.len);
-  p2pws_xor_no_wrap(cipher.data, cipher.len, kf.data, kf.len, peer_offset, plain.data);
+  if (p2pws_cipher_apply(&peer_ctx, need_keyfile ? &kf : NULL, cipher.data, cipher.len, plain.data) != 0) return 18;
   plain.len = cipher.len;
   p2pws_pb_decode_wrapper(plain.data, plain.len, &wv);
   if (wv.command != -12002) {
@@ -357,14 +370,14 @@ int main(int argc, char** argv) {
   p2pws_msg_encode_wrapper(3, 1001, msg.data, msg.len, &wrap);
   p2pws_pb_reset(&cipher);
   p2pws_buf_reserve(&cipher, wrap.len);
-  p2pws_xor_no_wrap(wrap.data, wrap.len, kf.data, kf.len, peer_offset, cipher.data);
+  if (p2pws_cipher_apply(&peer_ctx, need_keyfile ? &kf : NULL, wrap.data, wrap.len, cipher.data) != 0) return 19;
   cipher.len = wrap.len;
-  send_wire_frame(&pws, cfg.magic, (uint8_t)cfg.version, (uint8_t)cfg.flags_encrypted, cipher.data, cipher.len);
+  send_wire_frame(&pws, cfg.magic, (uint8_t)cfg.version, p2pws_cipher_wire_flags(&cfg, &peer_ctx), cipher.data, cipher.len);
 
   recv_wire_frame(&pws, &cipher, &h);
   p2pws_pb_reset(&plain);
   p2pws_buf_reserve(&plain, cipher.len);
-  p2pws_xor_no_wrap(cipher.data, cipher.len, kf.data, kf.len, peer_offset, plain.data);
+  if (p2pws_cipher_apply(&peer_ctx, need_keyfile ? &kf : NULL, cipher.data, cipher.len, plain.data) != 0) return 19;
   plain.len = cipher.len;
   p2pws_pb_decode_wrapper(plain.data, plain.len, &wv);
   if (wv.command != 1002) {
@@ -379,14 +392,14 @@ int main(int argc, char** argv) {
   p2pws_msg_encode_wrapper(4, 1003, msg.data, msg.len, &wrap);
   p2pws_pb_reset(&cipher);
   p2pws_buf_reserve(&cipher, wrap.len);
-  p2pws_xor_no_wrap(wrap.data, wrap.len, kf.data, kf.len, peer_offset, cipher.data);
+  if (p2pws_cipher_apply(&peer_ctx, need_keyfile ? &kf : NULL, wrap.data, wrap.len, cipher.data) != 0) return 20;
   cipher.len = wrap.len;
-  send_wire_frame(&pws, cfg.magic, (uint8_t)cfg.version, (uint8_t)cfg.flags_encrypted, cipher.data, cipher.len);
+  send_wire_frame(&pws, cfg.magic, (uint8_t)cfg.version, p2pws_cipher_wire_flags(&cfg, &peer_ctx), cipher.data, cipher.len);
 
   recv_wire_frame(&pws, &cipher, &h);
   p2pws_pb_reset(&plain);
   p2pws_buf_reserve(&plain, cipher.len);
-  p2pws_xor_no_wrap(cipher.data, cipher.len, kf.data, kf.len, peer_offset, plain.data);
+  if (p2pws_cipher_apply(&peer_ctx, need_keyfile ? &kf : NULL, cipher.data, cipher.len, plain.data) != 0) return 20;
   plain.len = cipher.len;
   p2pws_pb_decode_wrapper(plain.data, plain.len, &wv);
   if (wv.command != 1004) {

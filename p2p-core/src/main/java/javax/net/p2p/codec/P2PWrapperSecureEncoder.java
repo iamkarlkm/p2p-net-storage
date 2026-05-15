@@ -35,7 +35,11 @@ public class P2PWrapperSecureEncoder extends MessageToByteEncoder<P2PWrapper> {
         int payloadStart = start + 8;
         int end = out.writerIndex();
         int keyLen = key.length;
-        int j = 0;
+        Integer offset = ctx.channel().attr(ChannelUtils.XOR_OFFSET).get();
+        int j = offset == null ? 0 : offset % keyLen;
+        if (j < 0) {
+            j += keyLen;
+        }
         for (int i = payloadStart; i < end; i++) {
             out.setByte(i, out.getByte(i) ^ key[j]);
             j++;

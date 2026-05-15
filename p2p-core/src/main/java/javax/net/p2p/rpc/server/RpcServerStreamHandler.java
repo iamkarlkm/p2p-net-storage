@@ -29,13 +29,17 @@ public class RpcServerStreamHandler extends AbstractStreamRequestAdapter {
 
     @Override
     public void processStream(AbstractSendMesageExecutor executor, P2PWrapper request) throws InterruptedException {
+        StreamP2PWrapper<?> streamRequest = null;
+        RpcFrame frame = null;
+        RpcRequestContext context = null;
         try {
-            if (!(request instanceof StreamP2PWrapper<?> streamRequest)) {
+            if (!(request instanceof StreamP2PWrapper<?> req)) {
                 executor.sendResponse(P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, "RPC_STREAM 仅支持 StreamP2PWrapper"));
                 return;
             }
-            RpcFrame frame = RpcFrame.parseFrom((byte[]) streamRequest.getData());
-            RpcRequestContext context = RpcRequestContext.from(request, frame, executor.getChannel());
+            streamRequest = req;
+            frame = RpcFrame.parseFrom((byte[]) streamRequest.getData());
+            context = RpcRequestContext.from(request, frame, executor.getChannel());
             RpcStatus intercepted = beforeHandle(context);
             if (intercepted != null) {
                 executor.sendResponse(StreamP2PWrapper.buildStream(
@@ -49,7 +53,7 @@ public class RpcServerStreamHandler extends AbstractStreamRequestAdapter {
             }
             if (context.isDeadlineExceeded(System.currentTimeMillis())) {
                 afterError(context, RpcStatusCode.DEADLINE_EXCEEDED, "deadline exceeded");
-                sendError(executor, streamRequest, frame, RpcStatusCode.DEADLINE_EXCEEDED, "deadline exceeded");
+                sendError(executor, streamRequest, frame, RpcStatusCode.DEADLINE_EXCEEDED, "deadline exceeded", context);
                 return;
             }
             RpcMethodDescriptor descriptor = RpcBootstrap.registry().find(new RpcMethodKey(
@@ -59,12 +63,12 @@ public class RpcServerStreamHandler extends AbstractStreamRequestAdapter {
             ));
             if (descriptor == null) {
                 afterError(context, RpcStatusCode.NOT_FOUND, "RPC 方法不存在");
-                sendError(executor, streamRequest, frame, RpcStatusCode.NOT_FOUND, "RPC 方法不存在");
+                sendError(executor, streamRequest, frame, RpcStatusCode.NOT_FOUND, "RPC 方法不存在", context);
                 return;
             }
             if (descriptor.callType() != RpcCallType.SERVER_STREAM) {
                 afterError(context, RpcStatusCode.METHOD_NOT_ALLOWED, "仅支持 server stream 方法");
-                sendError(executor, streamRequest, frame, RpcStatusCode.METHOD_NOT_ALLOWED, "仅支持 server stream 方法");
+                sendError(executor, streamRequest, frame, RpcStatusCode.METHOD_NOT_ALLOWED, "仅支持 server stream 方法", context);
                 return;
             }
             Message requestMessage = parseMessage(descriptor.requestType(), frame.getPayload().toByteArray());
@@ -82,6 +86,13 @@ public class RpcServerStreamHandler extends AbstractStreamRequestAdapter {
         } catch (InterruptedException ex) {
             throw ex;
         } catch (Exception ex) {
+            if (streamRequest != null && frame != null) {
+                if (context != null) {
+                    afterError(context, RpcStatusCode.INTERNAL_ERROR, ex.toString());
+                }
+                sendError(executor, streamRequest, frame, RpcStatusCode.INTERNAL_ERROR, ex.toString(), context);
+                return;
+            }
             executor.sendResponse(P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, ex.toString()));
         }
     }
@@ -91,9 +102,10 @@ public class RpcServerStreamHandler extends AbstractStreamRequestAdapter {
         StreamP2PWrapper<?> streamRequest,
         RpcFrame frame,
         RpcStatusCode code,
-        String message
+        String message,
+        RpcRequestContext context
     ) throws InterruptedException {
-        RpcFrame errorFrame = RpcFrames.error(frame, code, message, false, null);
+        RpcFrame errorFrame = RpcFrames.error(frame, code, message, false, context);
         executor.sendResponse(StreamP2PWrapper.buildStream(
             streamRequest.getSeq(),
             0,

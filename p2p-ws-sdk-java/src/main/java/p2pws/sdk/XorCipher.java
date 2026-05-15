@@ -35,5 +35,18 @@ public final class XorCipher {
         byte[] keySlice = provider.read(keyId32, offset, input.length);
         return xor(input, keySlice);
     }
-}
 
+    public static byte[] xorRepeat(byte[] input, byte[] key) {
+        if (input == null) {
+            throw new IllegalArgumentException("input required");
+        }
+        if (key == null || key.length == 0) {
+            throw new IllegalArgumentException("key required");
+        }
+        byte[] out = new byte[input.length];
+        for (int i = 0; i < input.length; i++) {
+            out[i] = (byte) (input[i] ^ key[i % key.length]);
+        }
+        return out;
+    }
+}

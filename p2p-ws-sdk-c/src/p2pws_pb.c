@@ -224,6 +224,18 @@ int p2pws_pb_decode_hand(const uint8_t* p, size_t n, p2pws_hand_view_t* out) {
       out->client_id[m] = 0;
       continue;
     }
+    if (field == 5 && wt == 2) {
+      p2pws_pb_slice_t s;
+      if (decode_len_bytes(p, n, &off, &s) != 0) return -7;
+      size_t m = s.n < sizeof(out->crypto_mode) - 1 ? s.n : sizeof(out->crypto_mode) - 1;
+      memcpy(out->crypto_mode, s.p, m);
+      out->crypto_mode[m] = 0;
+      continue;
+    }
+    if (field == 6 && wt == 2) {
+      if (decode_len_bytes(p, n, &off, &out->client_random_key) != 0) return -8;
+      continue;
+    }
     int r = skip_field(p, n, &off, wt);
     if (r != 0) return r;
   }
@@ -254,6 +266,18 @@ int p2pws_pb_decode_hand_ack_plain(const uint8_t* p, size_t n, p2pws_hand_ack_pl
       if (field == 3) out->offset = (uint32_t)v;
       if (field == 4) out->max_frame_payload = (uint32_t)v;
       if (field == 5) out->header_policy_id = (uint32_t)v;
+      continue;
+    }
+    if (field == 6 && wt == 2) {
+      p2pws_pb_slice_t s;
+      if (decode_len_bytes(p, n, &off, &s) != 0) return -6;
+      size_t m = s.n < sizeof(out->crypto_mode) - 1 ? s.n : sizeof(out->crypto_mode) - 1;
+      memcpy(out->crypto_mode, s.p, m);
+      out->crypto_mode[m] = 0;
+      continue;
+    }
+    if (field == 7 && wt == 2) {
+      if (decode_len_bytes(p, n, &off, &out->server_random_key) != 0) return -7;
       continue;
     }
     int r = skip_field(p, n, &off, wt);

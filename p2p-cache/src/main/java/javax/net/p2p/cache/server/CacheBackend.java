@@ -1,8 +1,8 @@
 package javax.net.p2p.cache.server;
 
-import ds.cache.RedisCacheSystem;
-import ds.cache.RedisBytesCache;
-import ds.cache.RedisStringCache;
+import com.q3lives.ds.cache.RedisBytesCache;
+import com.q3lives.ds.cache.RedisCacheSystem;
+import com.q3lives.ds.cache.RedisStringCache;
 import java.io.IOException;
 
 /**

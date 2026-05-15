@@ -1,0 +1,36 @@
+version: 1
+project:
+    name: p2p-ws-sdk-dart
+    slug: p2p-ws-sdk-dart
+    runtime: unknown
+    memory:
+        accepted_note_globs:
+            - AGENTS.md
+            - docs/**
+            - .brain/context/**
+            - .brain/resources/**
+session:
+    require_task: true
+    single_active: true
+    active_file: .brain/session.json
+    ledger_dir: .brain/sessions
+preflight:
+    require_brain_doctor: true
+    required_docs:
+        - AGENTS.md
+        - .brain/context/overview.md
+        - .brain/context/workflows.md
+        - .brain/context/memory-policy.md
+    suggested_commands:
+        - brain find p2p-ws-sdk-dart
+        - brain search "p2p-ws-sdk-dart {task}"
+closeout:
+    acceptable_history_operations:
+        - create
+        - update
+        - move
+        - rename
+        - publish
+        - seed
+    require_memory_update_on_repo_change: true
+    verification_profiles: []

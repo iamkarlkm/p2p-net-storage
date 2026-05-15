@@ -501,6 +501,18 @@ public enum P2PCommand {
     DB_INDEX_INFO(24040, P2PServiceCategory.DS_DB),
 
     R_OK_DB_INDEX_INFO(24041, P2PServiceCategory.DS_DB),
+
+    DB_ROW_COUNT(24042, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ROW_COUNT(24043, P2PServiceCategory.DS_DB),
+
+    DB_ROW_EXISTS_BY_QUERY(24044, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ROW_EXISTS_BY_QUERY(24045, P2PServiceCategory.DS_DB),
+
+    DB_ROW_QUERY_IDS_STREAM(24046, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ROW_QUERY_IDS_STREAM(24047, P2PServiceCategory.DS_DB),
     
     DATA_TRANSFER(21000, P2PServiceCategory.DATA_TRANSFER),
 

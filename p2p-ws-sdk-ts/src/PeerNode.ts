@@ -8,6 +8,7 @@ import { loadProtoRoot } from "./proto.js"
 import { decodeWrapper, encodeWrapper } from "./wrapper.js"
 import { ClientConfig } from "./config.js"
 import { rsaOaepSha256Decrypt } from "./handshake.js"
+import { xorRepeat } from "./xor.js"
 import { FORCE_PUT_FILE, GET_FILE, GET_FILE_SEGMENTS, IM_CHAT_ACK, IM_CHAT_HISTORY_REQUEST, IM_CHAT_HISTORY_RESPONSE, IM_CHAT_RECEIVE, IM_CHAT_SEND, IM_CHAT_STATUS_UPDATE, IM_GROUP_CREATE, IM_GROUP_DISMISS, IM_GROUP_JOIN, IM_GROUP_LEAVE, IM_GROUP_LIST, IM_GROUP_MEMBERS, IM_GROUP_MESSAGE_RECEIVE, IM_GROUP_MESSAGE_SEND, IM_GROUP_REMOVE_MEMBER, IM_GROUP_SET_ADMIN, IM_GROUP_UPDATE_INFO, IM_SYSTEM_STATUS, IM_USER_LOGIN, IM_USER_LOGOUT, IM_USER_LIST, INFO_FILE, INVALID_DATA, OK_GET_FILE, OK_GET_FILE_SEGMENTS, PUT_FILE, PUT_FILE_SEGMENTS, PUT_FILE_SEGMENTS_COMPLETE, STD_ERROR, STD_OK } from "./commands.js"
 import { decodeIMChatAck, decodeIMChatHistoryRequest, decodeIMChatModel, decodeIMGroupDismissRequest, decodeIMGroupModel, decodeIMGroupRemoveMemberRequest, decodeIMGroupSetAdminRequest, decodeIMGroupUpdateInfoRequest, decodeIMUserModel, encodeIMChatAck, encodeIMChatHistoryResponse, encodeIMChatModel, encodeIMGroupListResponse, encodeIMGroupMembersResponse, encodeIMGroupModel, encodeIMSystemEvent, encodeIMUserListResponse, encodeIMUserModel } from "./im.js"
 
@@ -15,6 +16,11 @@ export class PeerNodeDaemon {
   private static readonly IM_STORE_PUBLIC_U32 = 0xFFFFFFFF
   private static readonly IM_STORE_GROUP_U32 = 0xFFFFFFFE
   private static readonly IM_STORE_PRIVATE_U32 = 0xFFFFFFFD
+
+  private static readonly CRYPTO_KEYFILE = "KEYFILE_XOR_RSA_OAEP"
+  private static readonly CRYPTO_CLIENT_RANDOM = "CLIENT_RANDOM_XOR_RSA_OAEP"
+  private static readonly CRYPTO_SERVER_RANDOM = "SERVER_RANDOM_XOR_RSA_OAEP"
+  private static readonly CRYPTO_PLAIN = "PLAIN"
 
   private cfg: ClientConfig
   private cfgDir: string
@@ -26,8 +32,11 @@ export class PeerNodeDaemon {
   private maxFramePayload: number
   private listenPort: number
   
-  private keyId: Buffer
-  private fd: number
+  private cryptoMode: string
+  private clientRandomKey?: Buffer
+  private keyId?: Buffer
+  private fd?: number
+  private keyLen: number = 0
   private privateKeyPem: string
   private clientPubDer: Buffer
   private nodeKey32: Buffer
@@ -42,7 +51,7 @@ export class PeerNodeDaemon {
   
   private wss?: WebSocketServer
   private centerWs?: WebSocket
-  private centerOffset: number = -1
+  private centerCipher: any = { kind: "plain" }
   private renewTimer?: NodeJS.Timeout
   private endpointCooldown = new Map<string, { untilMs: number; fails: number }>()
 
@@ -65,10 +74,19 @@ export class PeerNodeDaemon {
     this.maxFramePayload = cfg.max_frame_payload ?? 4 * 1024 * 1024
     this.listenPort = parseInt(String(cfg.listen_port ?? "0"), 10)
 
-    const keyfileAbs = path.resolve(this.cfgDir, cfg.keyfile_path)
-    this.fd = fs.openSync(keyfileAbs, "r")
-    const keyHex = crypto.createHash("sha256").update(fs.readFileSync(keyfileAbs)).digest("hex")
-    this.keyId = Buffer.from(keyHex, "hex")
+    this.cryptoMode = this.resolveCryptoMode(cfg)
+    const rk = Math.max(1, Math.min(64, Number(cfg.random_key_bytes ?? 32) | 0))
+    if (this.cryptoMode === PeerNodeDaemon.CRYPTO_CLIENT_RANDOM) {
+      this.clientRandomKey = crypto.randomBytes(rk)
+    }
+    if (this.cryptoMode === PeerNodeDaemon.CRYPTO_KEYFILE) {
+      if (!cfg.keyfile_path) throw new Error("keyfile_path required for keyfile mode")
+      const keyfileAbs = path.resolve(this.cfgDir, cfg.keyfile_path)
+      this.keyLen = fs.statSync(keyfileAbs).size
+      this.fd = fs.openSync(keyfileAbs, "r")
+      const keyHex = crypto.createHash("sha256").update(fs.readFileSync(keyfileAbs)).digest("hex")
+      this.keyId = Buffer.from(keyHex, "hex")
+    }
 
     const privAbs = path.resolve(this.cfgDir, cfg.rsa_private_key_pem_path!)
     this.privateKeyPem = fs.readFileSync(privAbs, "utf-8")
@@ -105,7 +123,18 @@ export class PeerNodeDaemon {
     this.connectCenter()
   }
 
+  private resolveCryptoMode(cfg: ClientConfig): string {
+    if (cfg.crypto_mode) return String(cfg.crypto_mode)
+    const enabled = cfg.encryption_enabled !== false
+    if (!enabled) return PeerNodeDaemon.CRYPTO_PLAIN
+    const m = String(cfg.encryption_mode ?? "keyfile").toLowerCase()
+    if (m === "server_random") return PeerNodeDaemon.CRYPTO_SERVER_RANDOM
+    if (m === "client_random") return PeerNodeDaemon.CRYPTO_CLIENT_RANDOM
+    return PeerNodeDaemon.CRYPTO_KEYFILE
+  }
+
   private xorWithFile(data: Uint8Array, off: number): Uint8Array {
+    if (this.fd == null) throw new Error("keyfile not opened")
     const slice = Buffer.allocUnsafe(data.length)
     let pos = 0
     while (pos < slice.length) {
@@ -118,12 +147,24 @@ export class PeerNodeDaemon {
     return out
   }
 
+  private applyCipher(data: Uint8Array, cipher: any): Uint8Array {
+    if (!cipher || cipher.kind === "plain") return data
+    if (cipher.kind === "keyfile") return this.xorWithFile(data, Number(cipher.offset) | 0)
+    return xorRepeat(data, cipher.key ?? new Uint8Array())
+  }
+
+  private cipherFlags(cipher: any): number {
+    if (!cipher || cipher.kind === "plain") return this.flagsPlain
+    return this.flagsEncrypted
+  }
+
   private startServer() {
     if (this.listenPort <= 0) return
     this.wss = new WebSocketServer({ port: this.listenPort })
     this.wss.on("connection", (ws) => {
       console.log(`[PeerDaemon] Accepted incoming connection`)
-      let peerOffset = -1
+      let peerCipher: any = { kind: "plain" }
+      let peerCryptReady = false
       let peerHandshakeDone = false
       let imUserId: string | null = null
 
@@ -140,10 +181,10 @@ export class PeerNodeDaemon {
       }
 
       const sendEncrypted = (seq: number, command: number, data?: Uint8Array) => {
-        if (peerOffset < 0) return
+        if (!peerCryptReady) return
         const respWrap = encodeWrapper(this.root, { seq, command, data })
-        const cipher = this.xorWithFile(respWrap, peerOffset)
-        ws.send(encodeFrame({ length: cipher.length, magic: this.magic, version: this.version, flags: this.flagsEncrypted }, cipher))
+        const cipher = this.applyCipher(respWrap, peerCipher)
+        ws.send(encodeFrame({ length: cipher.length, magic: this.magic, version: this.version, flags: this.cipherFlags(peerCipher) }, cipher))
       }
 
       const cleanupIm = () => {
@@ -159,17 +200,48 @@ export class PeerNodeDaemon {
 
       ws.on("message", (data: Buffer) => {
         const f = decodeFrame(new Uint8Array(data))
-        if (!peerHandshakeDone && peerOffset < 0) {
+        if (!peerHandshakeDone && !peerCryptReady) {
           const w = decodeWrapper(this.root, f.cipherPayload)
           if (w.command === -10001) {
             const hand = this.root.lookupType("p2pws.Hand").decode(w.data ?? new Uint8Array()) as any
-            peerOffset = crypto.randomInt(0, 1024)
+            const mode = String(hand.crypto_mode ?? PeerNodeDaemon.CRYPTO_KEYFILE)
+            const maxPayload = Math.min(this.maxFramePayload, Number(hand.max_frame_payload ?? this.maxFramePayload) | 0)
+            let selectedKeyId = this.keyId ?? new Uint8Array()
+            let offset = 0
+            let serverRandomKey: Uint8Array | undefined
+            if (mode === PeerNodeDaemon.CRYPTO_KEYFILE) {
+              if (this.fd == null || !this.keyId || this.keyLen <= 0) return
+              const ids: Uint8Array[] = Array.isArray(hand.key_ids) ? hand.key_ids : []
+              const ok = ids.some((x) => Buffer.from(x).compare(this.keyId!) === 0)
+              if (!ok) return
+              if (this.keyLen <= maxPayload) return
+              offset = crypto.randomInt(0, this.keyLen - maxPayload)
+              peerCipher = { kind: "keyfile", offset }
+            } else if (mode === PeerNodeDaemon.CRYPTO_SERVER_RANDOM) {
+              serverRandomKey = crypto.randomBytes(32)
+              selectedKeyId = new Uint8Array()
+              peerCipher = { kind: "xor", key: serverRandomKey }
+            } else if (mode === PeerNodeDaemon.CRYPTO_CLIENT_RANDOM) {
+              const clientKey = new Uint8Array(hand.client_random_key ?? new Uint8Array())
+              if (clientKey.length === 0 || clientKey.length > 64) return
+              selectedKeyId = new Uint8Array()
+              peerCipher = { kind: "xor", key: clientKey }
+            } else if (mode === PeerNodeDaemon.CRYPTO_PLAIN) {
+              selectedKeyId = new Uint8Array()
+              peerCipher = { kind: "plain" }
+            } else {
+              return
+            }
+            peerCryptReady = true
+
             const ackPlain = this.root.lookupType("p2pws.HandAckPlain").encode({
               session_id: crypto.randomBytes(16),
-              selected_key_id: this.keyId,
-              offset: peerOffset,
-              max_frame_payload: this.maxFramePayload,
-              header_policy_id: 0
+              selected_key_id: selectedKeyId,
+              offset,
+              max_frame_payload: maxPayload,
+              header_policy_id: 0,
+              crypto_mode: mode,
+              server_random_key: serverRandomKey ?? new Uint8Array(),
             }).finish()
             
             const pubKey = crypto.createPublicKey({ key: Buffer.from(hand.client_pubkey), type: "spki", format: "der" })
@@ -181,7 +253,7 @@ export class PeerNodeDaemon {
           return
         }
 
-        const plainPayload = this.xorWithFile(f.cipherPayload, peerOffset)
+        const plainPayload = this.applyCipher(f.cipherPayload, peerCipher)
         const w = decodeWrapper(this.root, plainPayload)
 
         if (this.handleStoreFileCommands(w, sendEncrypted)) {
@@ -197,8 +269,8 @@ export class PeerNodeDaemon {
             server_time_ms: Date.now()
           }).finish()
           const ackWrap = encodeWrapper(this.root, { seq: w.seq, command: -12002, data: ack })
-          const cipher = this.xorWithFile(ackWrap, peerOffset)
-          ws.send(encodeFrame({ length: cipher.length, magic: this.magic, version: this.version, flags: this.flagsEncrypted }, cipher))
+          const cipher = this.applyCipher(ackWrap, peerCipher)
+          ws.send(encodeFrame({ length: cipher.length, magic: this.magic, version: this.version, flags: this.cipherFlags(peerCipher) }, cipher))
           return
         }
 
@@ -209,8 +281,8 @@ export class PeerNodeDaemon {
           fs.writeFileSync(path.join(this.storageDir, hash), req.content)
           const resp = this.root.lookupType("p2pws.FilePutResponse").encode({ success: true, file_hash_sha256: req.file_hash_sha256 }).finish()
           const respWrap = encodeWrapper(this.root, { seq: w.seq, command: 1002, data: resp })
-          const cipher = this.xorWithFile(respWrap, peerOffset)
-          ws.send(encodeFrame({ length: cipher.length, magic: this.magic, version: this.version, flags: this.flagsEncrypted }, cipher))
+          const cipher = this.applyCipher(respWrap, peerCipher)
+          ws.send(encodeFrame({ length: cipher.length, magic: this.magic, version: this.version, flags: this.cipherFlags(peerCipher) }, cipher))
           return
         }
 
@@ -225,8 +297,8 @@ export class PeerNodeDaemon {
             resp = this.root.lookupType("p2pws.FileGetResponse").encode({ found: false }).finish()
           }
           const respWrap = encodeWrapper(this.root, { seq: w.seq, command: 1004, data: resp })
-          const cipher = this.xorWithFile(respWrap, peerOffset)
-          ws.send(encodeFrame({ length: cipher.length, magic: this.magic, version: this.version, flags: this.flagsEncrypted }, cipher))
+          const cipher = this.applyCipher(respWrap, peerCipher)
+          ws.send(encodeFrame({ length: cipher.length, magic: this.magic, version: this.version, flags: this.cipherFlags(peerCipher) }, cipher))
           return
         }
 
@@ -1091,43 +1163,61 @@ export class PeerNodeDaemon {
   }
 
   private sendCenterHello(seq: number) {
-    if (this.centerOffset < 0 || !this.centerWs) return
+    if (!this.centerWs) return
     const bodyMsg = this.root.lookupType("p2pws.CenterHelloBody").create({
       node_id64: this.nodeId64Str,
       pubkey_spki_der: this.clientPubDer,
       reported_endpoints: this.reportedEndpoints,
       caps: { max_frame_payload: this.maxFramePayload, magic: this.magic, version: this.version, flags_plain: this.flagsPlain, flags_encrypted: this.flagsEncrypted },
       timestamp_ms: String(Date.now()),
-      crypto_mode: this.cfg.crypto_mode ?? "KEYFILE_XOR_RSA_OAEP",
+      crypto_mode: this.cryptoMode,
     })
     const bodyBytes = this.root.lookupType("p2pws.CenterHelloBody").encode(bodyMsg).finish()
     const sig = crypto.sign("RSA-SHA256", Buffer.from(bodyBytes), crypto.createPrivateKey(this.privateKeyPem))
     const hello = this.root.lookupType("p2pws.CenterHello").encode({ body: bodyMsg, signature: sig }).finish()
     const wrap = encodeWrapper(this.root, { seq, command: -11001, data: hello })
-    const cipher = this.xorWithFile(wrap, this.centerOffset)
-    this.centerWs.send(encodeFrame({ length: cipher.length, magic: this.magic, version: this.version, flags: this.flagsEncrypted }, cipher))
+    const cipher = this.applyCipher(wrap, this.centerCipher)
+    this.centerWs.send(encodeFrame({ length: cipher.length, magic: this.magic, version: this.version, flags: this.cipherFlags(this.centerCipher) }, cipher))
   }
 
   private connectCenter() {
-    this.centerWs = new WebSocket(this.cfg.ws_url)
+    const urls = (this.cfg.ws_urls && this.cfg.ws_urls.length > 0 ? this.cfg.ws_urls : [this.cfg.ws_url]).filter(Boolean)
+    if (urls.length === 0) throw new Error("ws_url/ws_urls required")
+    this.centerWs = new WebSocket(urls[0])
     this.centerWs.binaryType = "arraybuffer"
 
     this.centerWs.on("open", () => {
       console.log(`[PeerDaemon] Connecting to Center...`)
       this.centerSeq = 1
-      const handData = this.root.lookupType("p2pws.Hand").encode({ client_pubkey: this.clientPubDer, key_ids: [this.keyId], max_frame_payload: this.maxFramePayload, client_id: this.cfg.user_id }).finish()
+      const handData = this.root.lookupType("p2pws.Hand").encode({
+        client_pubkey: this.clientPubDer,
+        key_ids: this.keyId ? [this.keyId] : [],
+        max_frame_payload: this.maxFramePayload,
+        client_id: this.cfg.user_id,
+        crypto_mode: this.cryptoMode,
+        client_random_key: this.clientRandomKey ?? new Uint8Array(),
+      }).finish()
       const wrapper = encodeWrapper(this.root, { seq: this.centerSeq++, command: -10001, data: handData })
       this.centerWs!.send(encodeFrame({ length: wrapper.length, magic: this.magic, version: this.version, flags: this.flagsPlain }, wrapper))
     })
 
     this.centerWs.on("message", (ev) => {
       const f = decodeFrame(new Uint8Array(ev as Buffer))
-      const plainPayload = this.centerOffset >= 0 ? this.xorWithFile(f.cipherPayload, this.centerOffset) : f.cipherPayload
+      const plainPayload = this.applyCipher(f.cipherPayload, this.centerCipher)
       const w = decodeWrapper(this.root, plainPayload)
       
       if (w.command === -10002) {
         const ack = this.root.lookupType("p2pws.HandAckPlain").decode(rsaOaepSha256Decrypt(this.privateKeyPem, w.data ?? new Uint8Array())) as any
-        this.centerOffset = Number(ack.offset)
+        const mode = String(ack.crypto_mode ?? this.cryptoMode)
+        if (mode === PeerNodeDaemon.CRYPTO_KEYFILE) {
+          this.centerCipher = { kind: "keyfile", offset: Number(ack.offset) }
+        } else if (mode === PeerNodeDaemon.CRYPTO_SERVER_RANDOM) {
+          this.centerCipher = { kind: "xor", key: new Uint8Array(ack.server_random_key ?? new Uint8Array()) }
+        } else if (mode === PeerNodeDaemon.CRYPTO_CLIENT_RANDOM) {
+          this.centerCipher = { kind: "xor", key: new Uint8Array(this.clientRandomKey ?? new Uint8Array()) }
+        } else {
+          this.centerCipher = { kind: "plain" }
+        }
         this.sendCenterHello(this.centerSeq++)
         return
       }
@@ -1164,7 +1254,7 @@ export class PeerNodeDaemon {
         return
       }
 
-      if (w.command === -11012 && this.centerOffset >= 0) {
+      if (w.command === -11012 && this.centerWs) {
         const RelayData = this.root.lookupType("p2pws.RelayData")
         const rd = RelayData.decode(w.data ?? new Uint8Array()) as any
         if (!rd.target_node_key || Buffer.from(rd.target_node_key).compare(this.nodeKey32) !== 0) return
@@ -1275,7 +1365,8 @@ export class PeerNodeDaemon {
     const url = `${endpoint.transport}://${endpoint.addr}`
     const ws = new WebSocket(url)
     ws.binaryType = "arraybuffer"
-    let peerOffset = -1
+    let peerCipher: any = { kind: "plain" }
+    let peerCryptReady = false
     let done = false
 
     const finish = (ok: boolean) => {
@@ -1289,33 +1380,50 @@ export class PeerNodeDaemon {
       const t = setTimeout(() => resolve(finish(false)!), timeoutMs)
 
       ws.on("open", () => {
-        const handData = this.root.lookupType("p2pws.Hand").encode({ client_pubkey: this.clientPubDer, key_ids: [this.keyId], max_frame_payload: this.maxFramePayload, client_id: this.cfg.user_id }).finish()
+        const handData = this.root.lookupType("p2pws.Hand").encode({
+          client_pubkey: this.clientPubDer,
+          key_ids: this.keyId ? [this.keyId] : [],
+          max_frame_payload: this.maxFramePayload,
+          client_id: this.cfg.user_id,
+          crypto_mode: this.cryptoMode,
+          client_random_key: this.clientRandomKey ?? new Uint8Array(),
+        }).finish()
         const wrapper = encodeWrapper(this.root, { seq: 1, command: -10001, data: handData })
         ws.send(encodeFrame({ length: wrapper.length, magic: this.magic, version: this.version, flags: this.flagsPlain }, wrapper))
       })
 
       ws.on("message", (ev) => {
         const f = decodeFrame(new Uint8Array(ev as Buffer))
-        const plainPayload = peerOffset >= 0 ? this.xorWithFile(f.cipherPayload, peerOffset) : f.cipherPayload
+        const plainPayload = peerCryptReady ? this.applyCipher(f.cipherPayload, peerCipher) : f.cipherPayload
         const w = decodeWrapper(this.root, plainPayload)
 
         if (w.command === -10002) {
           const enc = w.data ?? new Uint8Array()
           const ack = this.root.lookupType("p2pws.HandAckPlain").decode(rsaOaepSha256Decrypt(this.privateKeyPem, enc)) as any
-          peerOffset = Number(ack.offset)
+          const mode = String(ack.crypto_mode ?? this.cryptoMode)
+          if (mode === PeerNodeDaemon.CRYPTO_KEYFILE) {
+            peerCipher = { kind: "keyfile", offset: Number(ack.offset) }
+          } else if (mode === PeerNodeDaemon.CRYPTO_SERVER_RANDOM) {
+            peerCipher = { kind: "xor", key: new Uint8Array(ack.server_random_key ?? new Uint8Array()) }
+          } else if (mode === PeerNodeDaemon.CRYPTO_CLIENT_RANDOM) {
+            peerCipher = { kind: "xor", key: new Uint8Array(this.clientRandomKey ?? new Uint8Array()) }
+          } else {
+            peerCipher = { kind: "plain" }
+          }
+          peerCryptReady = true
 
           const bodyMsg = this.root.lookupType("p2pws.PeerHelloBody").create({
             node_id64: this.nodeId64Str,
             pubkey_spki_der: this.clientPubDer,
             timestamp_ms: String(Date.now()),
-            crypto_mode: this.cfg.crypto_mode ?? "KEYFILE_XOR_RSA_OAEP",
+            crypto_mode: this.cryptoMode,
           })
           const bodyBytes = this.root.lookupType("p2pws.PeerHelloBody").encode(bodyMsg).finish()
           const sig = crypto.sign("RSA-SHA256", Buffer.from(bodyBytes), crypto.createPrivateKey(this.privateKeyPem))
           const hello = this.root.lookupType("p2pws.PeerHello").encode({ body: bodyMsg, signature: sig }).finish()
           const helloWrap = encodeWrapper(this.root, { seq: 2, command: -12001, data: hello })
-          const helloCipher = this.xorWithFile(helloWrap, peerOffset)
-          ws.send(encodeFrame({ length: helloCipher.length, magic: this.magic, version: this.version, flags: this.flagsEncrypted }, helloCipher))
+          const helloCipher = this.applyCipher(helloWrap, peerCipher)
+          ws.send(encodeFrame({ length: helloCipher.length, magic: this.magic, version: this.version, flags: this.cipherFlags(peerCipher) }, helloCipher))
           return
         }
 
@@ -1338,7 +1446,7 @@ export class PeerNodeDaemon {
   }
 
   private sendRelay(targetNodeId64: any, targetNodeKey: any, payload: Uint8Array, seq: number) {
-    if (!this.centerWs || this.centerOffset < 0) return
+    if (!this.centerWs) return
     const RelayData = this.root.lookupType("p2pws.RelayData")
     const data = RelayData.encode({
       target_node_id64: String(targetNodeId64),
@@ -1348,8 +1456,8 @@ export class PeerNodeDaemon {
       payload
     }).finish()
     const wrap = encodeWrapper(this.root, { seq, command: -11012, data })
-    const cipher = this.xorWithFile(wrap, this.centerOffset)
-    this.centerWs.send(encodeFrame({ length: cipher.length, magic: this.magic, version: this.version, flags: this.flagsEncrypted }, cipher))
+    const cipher = this.applyCipher(wrap, this.centerCipher)
+    this.centerWs.send(encodeFrame({ length: cipher.length, magic: this.magic, version: this.version, flags: this.cipherFlags(this.centerCipher) }, cipher))
   }
 
   private sendRenew() {
@@ -1360,6 +1468,6 @@ export class PeerNodeDaemon {
     if (this.renewTimer) clearInterval(this.renewTimer)
     if (this.wss) this.wss.close()
     if (this.centerWs) this.centerWs.close()
-    fs.closeSync(this.fd)
+    if (this.fd != null) fs.closeSync(this.fd)
   }
 }

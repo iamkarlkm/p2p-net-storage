@@ -373,9 +373,6 @@ public class UdpNetworkAnomalyTest {
     public void testDuplicatePackets() throws Exception {
         InetSocketAddress remoteAddress = new InetSocketAddress("127.0.0.1", 9006);
         
-        // 启用重复包模拟
-        reliabilityManager.setDuplicatePacketEnabled(true);
-        
         int messageCount = 25;
         CountDownLatch latch = new CountDownLatch(messageCount);
         AtomicInteger deliveryCount = new AtomicInteger(0);
@@ -387,18 +384,17 @@ public class UdpNetworkAnomalyTest {
             latch.countDown();
         });
         
-        // 发送25个消息，每个都可能重复
+        java.util.Random rnd = new java.util.Random(20260511L);
+
+        // 模拟接收端收到 25 个按序数据包，并随机插入重复包
         for (int i = 0; i < messageCount; i++) {
-            int seq = reliabilityManager.sendReliableMessage(client,
-                P2PWrapper.build(0, P2PCommand.ECHO, "Duplicate test " + i));
-            
-            // 立即确认
-            reliabilityManager.processAck(seq, remoteAddress);
-            
-            // 模拟重复包（随机发送额外副本）
-            if (Math.random() < 0.3) { // 30%的概率发送重复包
+            int seq = i + 1;
+            ByteBuf data = Unpooled.copiedBuffer(("Duplicate test " + i).getBytes());
+            reliabilityManager.processDataMessage(seq, data, remoteAddress);
+
+            // 模拟重复包（随机发送额外副本），不应导致重复交付
+            if (rnd.nextDouble() < 0.3) {
                 duplicateCount.incrementAndGet();
-                // 发送重复的数据包
                 ByteBuf duplicateData = Unpooled.copiedBuffer(("Duplicate test " + i).getBytes());
                 reliabilityManager.processDataMessage(seq, duplicateData, remoteAddress);
             }

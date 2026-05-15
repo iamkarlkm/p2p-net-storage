@@ -170,6 +170,13 @@ int p2pws_sha256_bytes(const uint8_t* data, size_t len, uint8_t out32[32]) {
   return sha256_bytes(data, len, out32);
 }
 
+int p2pws_rand_bytes(uint8_t* out, size_t len) {
+  if (!out && len) return -1;
+  if (!len) return 0;
+  if (BCryptGenRandom(NULL, out, (ULONG)len, BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) return -2;
+  return 0;
+}
+
 int p2pws_rsa_load_private_pem(const char* path, p2pws_rsa_t* out) {
   if (!path || !out) return -1;
   memset(out, 0, sizeof(*out));
@@ -297,5 +304,166 @@ int p2pws_rsa_sign_sha256(p2pws_rsa_t* r, const uint8_t* msg, size_t msg_len, p2
   s = NCryptSignHash((NCRYPT_KEY_HANDLE)r->key, &pi, h32, 32, out_sig->data, sig_len, &sig_len, NCRYPT_PAD_PKCS1_FLAG);
   if (s != 0) return -5;
   out_sig->len = sig_len;
+  return 0;
+}
+
+static int rsa_get_key_bytes(NCRYPT_KEY_HANDLE key, uint32_t* out_bytes) {
+  DWORD bits = 0;
+  DWORD cb = 0;
+  SECURITY_STATUS s = NCryptGetProperty(key, NCRYPT_LENGTH_PROPERTY, (PBYTE)&bits, sizeof(bits), &cb, 0);
+  if (s != 0 || bits == 0) return -1;
+  *out_bytes = (bits + 7) / 8;
+  return 0;
+}
+
+int p2pws_rsa_pkcs1v15_private_encrypt_large(p2pws_rsa_t* r, const uint8_t* plain, size_t plain_len, p2pws_buf_t* out_cipher) {
+  if (!r || !r->key || (!plain && plain_len) || !out_cipher) return -1;
+  uint32_t k = 0;
+  if (rsa_get_key_bytes((NCRYPT_KEY_HANDLE)r->key, &k) != 0 || k < 16) return -2;
+  const uint32_t max_plain = (k > 11) ? (k - 11) : 0;
+  if (max_plain == 0) return -3;
+
+  p2pws_pb_reset(out_cipher);
+  if (p2pws_buf_reserve(out_cipher, ((plain_len + max_plain - 1) / max_plain) * (size_t)k + 1) != 0) return -4;
+
+  uint8_t* em = (uint8_t*)malloc(k);
+  uint8_t* block = (uint8_t*)malloc(k);
+  if (!em || !block) {
+    free(em);
+    free(block);
+    return -5;
+  }
+
+  size_t out_off = 0;
+  for (size_t off = 0; off < plain_len; off += max_plain) {
+    size_t n = plain_len - off;
+    if (n > max_plain) n = max_plain;
+
+    memset(em, 0, k);
+    em[0] = 0x00;
+    em[1] = 0x01;
+    memset(em + 2, 0xFF, (size_t)(k - n - 3));
+    em[k - n - 1] = 0x00;
+    memcpy(em + (k - n), plain + off, n);
+
+    DWORD got = 0;
+    SECURITY_STATUS s = NCryptDecrypt((NCRYPT_KEY_HANDLE)r->key, em, k, NULL, block, k, &got, 0);
+    if (s != 0 || got != k) {
+      free(em);
+      free(block);
+      return -6;
+    }
+    memcpy(out_cipher->data + out_off, block, k);
+    out_off += k;
+  }
+
+  out_cipher->len = out_off;
+  free(em);
+  free(block);
+  return 0;
+}
+
+int p2pws_rsa_verify_sha256_spki_der(const uint8_t* pub_spki_der, size_t pub_spki_len, const uint8_t* msg, size_t msg_len, const uint8_t* sig, size_t sig_len, int* out_ok) {
+  if (!pub_spki_der || !msg || !sig || !out_ok) return -1;
+  *out_ok = 0;
+  CERT_PUBLIC_KEY_INFO* info = NULL;
+  DWORD info_len = 0;
+  if (!CryptDecodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO, pub_spki_der, (DWORD)pub_spki_len, CRYPT_DECODE_ALLOC_FLAG, NULL, &info, &info_len)) {
+    return -2;
+  }
+  BCRYPT_KEY_HANDLE pub = NULL;
+  if (!CryptImportPublicKeyInfoEx2(X509_ASN_ENCODING, info, 0, NULL, &pub)) {
+    LocalFree(info);
+    return -3;
+  }
+  LocalFree(info);
+  uint8_t h32[32];
+  if (sha256_bytes(msg, msg_len, h32) != 0) {
+    BCryptDestroyKey(pub);
+    return -4;
+  }
+  BCRYPT_PKCS1_PADDING_INFO pi;
+  pi.pszAlgId = BCRYPT_SHA256_ALGORITHM;
+  NTSTATUS s = BCryptVerifySignature(pub, &pi, h32, 32, (PUCHAR)sig, (ULONG)sig_len, BCRYPT_PAD_PKCS1);
+  BCryptDestroyKey(pub);
+  if (s == 0) {
+    *out_ok = 1;
+    return 0;
+  }
+  return 0;
+}
+
+static int pkcs1v15_type1_unpad(const uint8_t* em, size_t em_len, const uint8_t** out_msg, size_t* out_msg_len) {
+  if (!em || em_len < 11 || !out_msg || !out_msg_len) return -1;
+  if (em[0] != 0x00 || em[1] != 0x01) return -2;
+  size_t i = 2;
+  while (i < em_len && em[i] == 0xFF) i++;
+  if (i >= em_len || em[i] != 0x00) return -3;
+  i++;
+  *out_msg = em + i;
+  *out_msg_len = em_len - i;
+  return 0;
+}
+
+int p2pws_rsa_pkcs1v15_public_decrypt_large_spki_der(const uint8_t* pub_spki_der, size_t pub_spki_len, const uint8_t* cipher, size_t cipher_len, p2pws_buf_t* out_plain) {
+  if (!pub_spki_der || !cipher || !out_plain) return -1;
+  CERT_PUBLIC_KEY_INFO* info = NULL;
+  DWORD info_len = 0;
+  if (!CryptDecodeObjectEx(X509_ASN_ENCODING, X509_PUBLIC_KEY_INFO, pub_spki_der, (DWORD)pub_spki_len, CRYPT_DECODE_ALLOC_FLAG, NULL, &info, &info_len)) {
+    return -2;
+  }
+  BCRYPT_KEY_HANDLE pub = NULL;
+  if (!CryptImportPublicKeyInfoEx2(X509_ASN_ENCODING, info, 0, NULL, &pub)) {
+    LocalFree(info);
+    return -3;
+  }
+  LocalFree(info);
+
+  ULONG k = 0;
+  ULONG cb = 0;
+  NTSTATUS s = BCryptGetProperty(pub, BCRYPT_KEY_LENGTH, (PUCHAR)&k, sizeof(k), &cb, 0);
+  if (s != 0 || k == 0) {
+    BCryptDestroyKey(pub);
+    return -4;
+  }
+  k = (k + 7) / 8;
+  if (k == 0 || (cipher_len % k) != 0) {
+    BCryptDestroyKey(pub);
+    return -5;
+  }
+
+  p2pws_pb_reset(out_plain);
+  if (p2pws_buf_reserve(out_plain, cipher_len + 1) != 0) {
+    BCryptDestroyKey(pub);
+    return -6;
+  }
+
+  uint8_t* em = (uint8_t*)malloc(k);
+  if (!em) {
+    BCryptDestroyKey(pub);
+    return -7;
+  }
+  size_t out_off = 0;
+  for (size_t off = 0; off < cipher_len; off += k) {
+    ULONG out_len = 0;
+    s = BCryptEncrypt(pub, (PUCHAR)(cipher + off), k, NULL, NULL, 0, em, k, &out_len, BCRYPT_PAD_NONE);
+    if (s != 0 || out_len != k) {
+      free(em);
+      BCryptDestroyKey(pub);
+      return -8;
+    }
+    const uint8_t* msg = NULL;
+    size_t msg_len = 0;
+    if (pkcs1v15_type1_unpad(em, k, &msg, &msg_len) != 0) {
+      free(em);
+      BCryptDestroyKey(pub);
+      return -9;
+    }
+    memcpy(out_plain->data + out_off, msg, msg_len);
+    out_off += msg_len;
+  }
+  out_plain->len = out_off;
+  free(em);
+  BCryptDestroyKey(pub);
   return 0;
 }

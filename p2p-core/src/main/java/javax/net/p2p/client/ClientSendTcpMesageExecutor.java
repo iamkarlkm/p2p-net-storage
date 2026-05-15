@@ -56,7 +56,9 @@ public class ClientSendTcpMesageExecutor extends ClientSendMesageExecutor implem
                 }
             }
             ClientTcpMessageProcessor clientTcpMessageProcessor = new ClientTcpMessageProcessor(messageService,magic,queueSize);
-            bootstrap.group(io_work_group)
+            Bootstrap bs = new Bootstrap();
+            PipelineInitializer.initClientOptions(bs);
+            bs.group(io_work_group)
                 .channel(NioSocketChannel.class)
                 .handler(new ChannelInitializer<SocketChannel>() {
                     @Override
@@ -66,7 +68,7 @@ public class ClientSendTcpMesageExecutor extends ClientSendMesageExecutor implem
                     }
                 });
             // 建立连接
-            channel = bootstrap.connect(messageService.getRemote()).sync().channel();
+            channel = bs.connect(messageService.getRemote()).sync().channel();
             //初始化必要的连接属性
             Attribute<Integer> attrMagic = channel.attr(ChannelUtils.MAGIC);
             attrMagic.set(magic);

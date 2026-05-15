@@ -17,6 +17,7 @@ import javax.net.p2p.websocket.codec.ByteBufToWebSocketFrameEncoder;
 import javax.net.p2p.websocket.codec.WebSocketServerHandshakeMarkHandler;
 import javax.net.p2p.websocket.codec.WebSocketFrameToByteBufDecoder;
 import javax.net.p2p.websocket.reliability.WebSocketReliabilityHandler;
+import javax.net.p2p.startup.P2PStartupChecks;
 
 public class P2PServerWebSocket extends AbstractP2PServer {
 
@@ -29,6 +30,14 @@ public class P2PServerWebSocket extends AbstractP2PServer {
         super(port);
     }
 
+    public P2PServerWebSocket(Integer port, Integer queueSize, Integer coreSize, Integer magic) {
+        super(
+            port == null ? 0 : port,
+            queueSize == null ? 0 : queueSize,
+            coreSize == null ? 0 : coreSize,
+            magic == null ? 0 : magic);
+    }
+
     public P2PServerWebSocket(int port, int queueSize, int coreSize, int magic) {
         super(port, queueSize, coreSize, magic);
     }
@@ -38,6 +47,7 @@ public class P2PServerWebSocket extends AbstractP2PServer {
         if (bossGroup != null || workerGroup != null) {
             throw new RuntimeException("同一服务正在运行，请先关闭后再操作,监听端口->" + port);
         }
+        P2PStartupChecks.runOrThrow();
         bossGroup = new NioEventLoopGroup();
         workerGroup = new NioEventLoopGroup();
         try {

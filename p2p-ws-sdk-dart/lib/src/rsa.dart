@@ -83,6 +83,45 @@ bool rsaVerifySha256Pkcs1v15(RSAPublicKey publicKey, Uint8List message, Uint8Lis
   return true;
 }
 
+Uint8List rsaPrivateEncryptPkcs1v15Large(RSAPrivateKey privateKey, Uint8List data) {
+  final n = privateKey.modulus!;
+  final d = privateKey.privateExponent!;
+  final k = (n.bitLength + 7) ~/ 8;
+  final maxPlain = k - 11;
+  if (maxPlain <= 0) {
+    throw StateError("invalid key size");
+  }
+  final out = BytesBuilder(copy: false);
+  for (var offset = 0; offset < data.length; offset += maxPlain) {
+    final end = (offset + maxPlain <= data.length) ? (offset + maxPlain) : data.length;
+    final block = Uint8List.sublistView(data, offset, end);
+    final em = _pkcs1v15Type1Pad(block, k);
+    final m = _os2ip(em);
+    final c = m.modPow(d, n);
+    out.add(_i2osp(c, k));
+  }
+  return out.takeBytes();
+}
+
+Uint8List _pkcs1v15Type1Pad(Uint8List msg, int k) {
+  if (msg.length > k - 11) {
+    throw StateError("message too long");
+  }
+  final psLen = k - msg.length - 3;
+  if (psLen < 8) {
+    throw StateError("invalid key size");
+  }
+  final em = Uint8List(k);
+  em[0] = 0x00;
+  em[1] = 0x01;
+  for (var i = 0; i < psLen; i++) {
+    em[2 + i] = 0xFF;
+  }
+  em[2 + psLen] = 0x00;
+  em.setRange(3 + psLen, em.length, msg);
+  return em;
+}
+
 BigInt _os2ip(Uint8List x) {
   var r = BigInt.zero;
   for (final b in x) {

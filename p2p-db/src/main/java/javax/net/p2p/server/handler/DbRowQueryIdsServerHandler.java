@@ -11,6 +11,7 @@ import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -24,6 +25,7 @@ import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.DbQuery;
 import javax.net.p2p.model.DbQueryCriterion;
 import javax.net.p2p.model.DbQueryOp;
+import javax.net.p2p.model.DbQueryOrGroup;
 import javax.net.p2p.model.DbQueryOrder;
 import javax.net.p2p.model.DbRowQueryIdsRequest;
 import javax.net.p2p.model.DbRowQueryIdsResponse;
@@ -67,24 +69,31 @@ public class DbRowQueryIdsServerHandler implements P2PCommandHandler {
 
             Map<String, TableMetaStore.ColumnDef> defs = buildColumnDefs(meta);
             ArrayList<Long> matched = new ArrayList<>();
-            long[] candidates = findEqIndexCandidates(eqIndexStore, payload.entityClassName, query.where, defs);
-            if (candidates != null) {
-                HashSet<Long> seen = new HashSet<>();
-                for (long rowId : candidates) {
-                    if (rowId <= 0L) {
-                        continue;
+            List<List<DbQueryCriterion>> groups = expandOrGroups(query);
+            HashSet<Long> seen = new HashSet<>();
+            for (List<DbQueryCriterion> groupWhere : groups) {
+                HashSet<Long> excluded = findEqIndexExcludedRowIds(eqIndexStore, payload.entityClassName, groupWhere, defs);
+                long[] candidates = findEqIndexCandidates(eqIndexStore, payload.entityClassName, groupWhere, defs);
+                if (candidates != null) {
+                    for (long rowId : candidates) {
+                        if (rowId <= 0L) {
+                            continue;
+                        }
+                        if (excluded != null && excluded.contains(rowId)) {
+                            continue;
+                        }
+                        if (!ids.contains(rowId)) {
+                            continue;
+                        }
+                        if (!seen.add(rowId)) {
+                            continue;
+                        }
+                        if (matches(store, payload.entityClassName, rowId, groupWhere, defs)) {
+                            matched.add(rowId);
+                        }
                     }
-                    if (!ids.contains(rowId)) {
-                        continue;
-                    }
-                    if (!seen.add(rowId)) {
-                        continue;
-                    }
-                    if (matches(store, payload.entityClassName, rowId, query.where, defs)) {
-                        matched.add(rowId);
-                    }
+                    continue;
                 }
-            } else {
                 for (Long rowIdObj : ids) {
                     if (rowIdObj == null) {
                         continue;
@@ -93,7 +102,13 @@ public class DbRowQueryIdsServerHandler implements P2PCommandHandler {
                     if (rowId <= 0L) {
                         continue;
                     }
-                    if (matches(store, payload.entityClassName, rowId, query.where, defs)) {
+                    if (excluded != null && excluded.contains(rowId)) {
+                        continue;
+                    }
+                    if (!seen.add(rowId)) {
+                        continue;
+                    }
+                    if (matches(store, payload.entityClassName, rowId, groupWhere, defs)) {
                         matched.add(rowId);
                     }
                 }
@@ -127,7 +142,7 @@ public class DbRowQueryIdsServerHandler implements P2PCommandHandler {
         }
     }
 
-    private static Map<String, TableMetaStore.ColumnDef> buildColumnDefs(TableMetaStore.TableMeta meta) {
+    static Map<String, TableMetaStore.ColumnDef> buildColumnDefs(TableMetaStore.TableMeta meta) {
         HashMap<String, TableMetaStore.ColumnDef> out = new HashMap<>();
         if (meta.columns == null) {
             return out;
@@ -141,7 +156,34 @@ public class DbRowQueryIdsServerHandler implements P2PCommandHandler {
         return out;
     }
 
-    private static long[] findEqIndexCandidates(
+    static List<List<DbQueryCriterion>> expandOrGroups(DbQuery query) {
+        List<DbQueryCriterion> global = query.where == null ? List.of() : query.where;
+        if (query.anyOf == null || query.anyOf.isEmpty()) {
+            return List.of(global);
+        }
+        ArrayList<List<DbQueryCriterion>> out = new ArrayList<>(query.anyOf.size());
+        for (DbQueryOrGroup g : query.anyOf) {
+            if (g == null || g.where == null || g.where.isEmpty()) {
+                if (global.isEmpty()) {
+                    out.add(List.of());
+                } else {
+                    out.add(global);
+                }
+                continue;
+            }
+            if (global.isEmpty()) {
+                out.add(g.where);
+                continue;
+            }
+            ArrayList<DbQueryCriterion> combined = new ArrayList<>(global.size() + g.where.size());
+            combined.addAll(global);
+            combined.addAll(g.where);
+            out.add(combined);
+        }
+        return out;
+    }
+
+    static HashSet<Long> findEqIndexExcludedRowIds(
         EqIndexStore eqIndexStore,
         String entityClassName,
         List<DbQueryCriterion> where,
@@ -150,14 +192,15 @@ public class DbRowQueryIdsServerHandler implements P2PCommandHandler {
         if (where == null || where.isEmpty()) {
             return null;
         }
+        HashSet<Long> excluded = null;
         for (DbQueryCriterion c : where) {
-            if (c == null || c.op != DbQueryOp.EQ) {
+            if (c == null || c.op != DbQueryOp.NOT_IN) {
                 continue;
             }
             if (c.name == null || c.name.isBlank() || c.name.startsWith("@composite:")) {
                 continue;
             }
-            if (c.a == null) {
+            if (c.list == null || c.list.isEmpty()) {
                 continue;
             }
             if (!eqIndexStore.exists(entityClassName, c.name)) {
@@ -171,10 +214,118 @@ public class DbRowQueryIdsServerHandler implements P2PCommandHandler {
             if (def == null) {
                 continue;
             }
-            byte[] valueBytes = encodeForEqIndex(def, c.a);
-            return eqIndexStore.findRowIds(entityClassName, idx.colId, valueBytes, 0);
+            if (excluded == null) {
+                excluded = new HashSet<>();
+            }
+            for (String s : c.list) {
+                if (s == null) {
+                    continue;
+                }
+                byte[] valueBytes = encodeForEqIndex(def, s);
+                long[] ids = eqIndexStore.findRowIds(entityClassName, idx.colId, valueBytes, 0);
+                if (ids == null) {
+                    continue;
+                }
+                for (long rowId : ids) {
+                    excluded.add(rowId);
+                }
+            }
         }
-        return null;
+        return excluded == null || excluded.isEmpty() ? null : excluded;
+    }
+
+    static long[] findEqIndexCandidates(
+        EqIndexStore eqIndexStore,
+        String entityClassName,
+        List<DbQueryCriterion> where,
+        Map<String, TableMetaStore.ColumnDef> defs
+    ) throws Exception {
+        if (where == null || where.isEmpty()) {
+            return null;
+        }
+        ArrayList<long[]> sets = new ArrayList<>();
+        for (DbQueryCriterion c : where) {
+            if (c == null || (c.op != DbQueryOp.EQ && c.op != DbQueryOp.IN)) {
+                continue;
+            }
+            if (c.name == null || c.name.isBlank() || c.name.startsWith("@composite:")) {
+                continue;
+            }
+            if (!eqIndexStore.exists(entityClassName, c.name)) {
+                continue;
+            }
+            EqIndexMetaStore.IndexDef idx = eqIndexStore.get(entityClassName, c.name);
+            if (idx == null || idx.colId <= 0L) {
+                continue;
+            }
+            TableMetaStore.ColumnDef def = defs.get(c.name);
+            if (def == null) {
+                continue;
+            }
+            if (c.op == DbQueryOp.EQ) {
+                if (c.a == null) {
+                    continue;
+                }
+                byte[] valueBytes = encodeForEqIndex(def, c.a);
+                long[] ids = eqIndexStore.findRowIds(entityClassName, idx.colId, valueBytes, 0);
+                sets.add(ids == null ? new long[0] : ids);
+                continue;
+            }
+            if (c.list == null || c.list.isEmpty()) {
+                sets.add(new long[0]);
+                continue;
+            }
+            HashSet<Long> union = new HashSet<>();
+            for (String s : c.list) {
+                if (s == null) {
+                    continue;
+                }
+                byte[] valueBytes = encodeForEqIndex(def, s);
+                long[] ids = eqIndexStore.findRowIds(entityClassName, idx.colId, valueBytes, 0);
+                if (ids == null) {
+                    continue;
+                }
+                for (long rowId : ids) {
+                    union.add(rowId);
+                }
+            }
+            long[] ids = new long[union.size()];
+            int p = 0;
+            for (Long v : union) {
+                if (v == null) {
+                    continue;
+                }
+                ids[p++] = v;
+            }
+            sets.add(p == ids.length ? ids : Arrays.copyOf(ids, p));
+        }
+        if (sets.isEmpty()) {
+            return null;
+        }
+        if (sets.size() == 1) {
+            return sets.get(0);
+        }
+        sets.sort(Comparator.comparingInt(a -> a.length));
+        long[] base = sets.get(0);
+        for (int i = 1; i < sets.size(); i++) {
+            if (base.length == 0) {
+                return base;
+            }
+            long[] cur = sets.get(i);
+            HashSet<Long> curSet = new HashSet<>(Math.max(16, cur.length * 2));
+            for (long v : cur) {
+                curSet.add(v);
+            }
+            long[] tmp = new long[Math.min(base.length, cur.length)];
+            int p = 0;
+            for (long v : base) {
+                if (curSet.contains(v)) {
+                    tmp[p++] = v;
+                }
+            }
+            base = p == tmp.length ? tmp : Arrays.copyOf(tmp, p);
+        }
+        return base;
     }
 
     private static byte[] encodeForEqIndex(TableMetaStore.ColumnDef def, String text) {
@@ -200,7 +351,7 @@ public class DbRowQueryIdsServerHandler implements P2PCommandHandler {
         return padded;
     }
 
-    private static boolean matches(
+    static boolean matches(
         ColumnarStore store,
         String entityClassName,
         long rowId,
@@ -257,14 +408,18 @@ public class DbRowQueryIdsServerHandler implements P2PCommandHandler {
         Object left = decode(def.javaType, bytes);
         Object a = c.a == null ? null : parse(def.javaType, c.a);
         Object b = c.b == null ? null : parse(def.javaType, c.b);
-        List<Object> list = new ArrayList<>();
-        if (c.list != null) {
-            for (String s : c.list) {
-                if (s == null) {
-                    continue;
+        List<Object> list = List.of();
+        if (op == DbQueryOp.IN || op == DbQueryOp.NOT_IN) {
+            ArrayList<Object> out = new ArrayList<>();
+            if (c.list != null) {
+                for (String s : c.list) {
+                    if (s == null) {
+                        continue;
+                    }
+                    out.add(parse(def.javaType, s));
                 }
-                list.add(parse(def.javaType, s));
             }
+            list = out;
         }
         return eval(op, left, a, b, list);
     }
@@ -363,7 +518,7 @@ public class DbRowQueryIdsServerHandler implements P2PCommandHandler {
         return false;
     }
 
-    private static RowSortKey buildRowSortKey(
+    static RowSortKey buildRowSortKey(
         ColumnarStore store,
         String entityClassName,
         long rowId,
@@ -392,7 +547,7 @@ public class DbRowQueryIdsServerHandler implements P2PCommandHandler {
         return new RowSortKey(rowId, keys);
     }
 
-    private static Comparator<RowSortKey> buildComparator(List<DbQueryOrder> orders) {
+    static Comparator<RowSortKey> buildComparator(List<DbQueryOrder> orders) {
         return (a, b) -> {
             for (int i = 0; i < orders.size(); i++) {
                 DbQueryOrder o = orders.get(i);
@@ -424,7 +579,7 @@ public class DbRowQueryIdsServerHandler implements P2PCommandHandler {
         return String.valueOf(a).compareTo(String.valueOf(b));
     }
 
-    private static final class RowSortKey {
+    static final class RowSortKey {
         final long rowId;
         final Object[] keys;
 

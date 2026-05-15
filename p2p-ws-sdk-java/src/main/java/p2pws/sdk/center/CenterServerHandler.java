@@ -27,6 +27,11 @@ import p2pws.sdk.XorCipher;
 
 public final class CenterServerHandler extends SimpleChannelInboundHandler<BinaryWebSocketFrame> {
 
+    private static final String CRYPTO_KEYFILE = "KEYFILE_XOR_RSA_OAEP";
+    private static final String CRYPTO_CLIENT_RANDOM = "CLIENT_RANDOM_XOR_RSA_OAEP";
+    private static final String CRYPTO_SERVER_RANDOM = "SERVER_RANDOM_XOR_RSA_OAEP";
+    private static final String CRYPTO_PLAIN = "PLAIN";
+
     private final KeyFileProvider provider;
     private final byte[] keyId32;
     private final long keyLen;
@@ -42,6 +47,8 @@ public final class CenterServerHandler extends SimpleChannelInboundHandler<Binar
 
     private long offset = -1;
     private boolean encrypted = false;
+    private byte[] xorKey = null;
+    private String cryptoMode = CRYPTO_KEYFILE;
     private byte[] selfNodeKey32 = null;
     private long selfNodeId64 = 0;
 
@@ -67,7 +74,14 @@ public final class CenterServerHandler extends SimpleChannelInboundHandler<Binar
 
         WireFrame wf = FrameCodec.decode(ws);
         byte[] payload = wf.cipherPayload();
-        byte[] plain = encrypted ? XorCipher.xorWithKeyFile(payload, provider, keyId32, offset) : payload;
+        byte[] plain;
+        if (!encrypted) {
+            plain = payload;
+        } else if (xorKey != null) {
+            plain = XorCipher.xorRepeat(payload, xorKey);
+        } else {
+            plain = XorCipher.xorWithKeyFile(payload, provider, keyId32, offset);
+        }
         P2PWrapperOuterClass.P2PWrapper wrapper = P2PWrapperCodec.decode(plain);
 
         int cmd = wrapper.getCommand();
@@ -96,38 +110,72 @@ public final class CenterServerHandler extends SimpleChannelInboundHandler<Binar
     private void handleHand(ChannelHandlerContext ctx, P2PWrapperOuterClass.P2PWrapper wrapper) {
         try {
             P2PControl.Hand hand = P2PControl.Hand.parseFrom(wrapper.getData());
-            boolean ok = false;
-            for (ByteString kid : hand.getKeyIdsList()) {
-                byte[] b = kid.toByteArray();
-                if (b.length == 32 && Arrays.equals(b, keyId32)) {
-                    ok = true;
-                    break;
-                }
-            }
-            if (!ok) {
-                ctx.close();
-                return;
+            String mode = hand.getCryptoMode();
+            if (mode == null || mode.isBlank()) {
+                mode = CRYPTO_KEYFILE;
             }
             int maxPayload = maxFramePayload;
             if (hand.getMaxFramePayload() > 0 && hand.getMaxFramePayload() < maxPayload) {
                 maxPayload = hand.getMaxFramePayload();
             }
-            if (keyLen <= maxPayload) {
+            byte[] selectedKeyId = null;
+            byte[] serverRandomKey = null;
+            long off = 0;
+            if (CRYPTO_KEYFILE.equals(mode)) {
+                boolean ok = false;
+                for (ByteString kid : hand.getKeyIdsList()) {
+                    byte[] b = kid.toByteArray();
+                    if (b.length == 32 && Arrays.equals(b, keyId32)) {
+                        ok = true;
+                        break;
+                    }
+                }
+                if (!ok) {
+                    ctx.close();
+                    return;
+                }
+                if (keyLen <= maxPayload) {
+                    ctx.close();
+                    return;
+                }
+                long maxOffset = keyLen - maxPayload;
+                off = (Integer.toUnsignedLong(rnd.nextInt()) % maxOffset);
+                selectedKeyId = keyId32;
+                this.xorKey = null;
+                this.encrypted = true;
+            } else if (CRYPTO_SERVER_RANDOM.equals(mode)) {
+                serverRandomKey = new byte[32];
+                rnd.nextBytes(serverRandomKey);
+                this.xorKey = Arrays.copyOf(serverRandomKey, serverRandomKey.length);
+                this.encrypted = true;
+            } else if (CRYPTO_CLIENT_RANDOM.equals(mode)) {
+                byte[] clientKey = hand.getClientRandomKey().toByteArray();
+                if (clientKey.length == 0 || clientKey.length > 64) {
+                    ctx.close();
+                    return;
+                }
+                this.xorKey = Arrays.copyOf(clientKey, clientKey.length);
+                this.encrypted = true;
+            } else if (CRYPTO_PLAIN.equals(mode)) {
+                this.xorKey = null;
+                this.encrypted = false;
+            } else {
                 ctx.close();
                 return;
             }
-            long maxOffset = keyLen - maxPayload;
-            long off = (Integer.toUnsignedLong(rnd.nextInt()) % maxOffset);
+            this.cryptoMode = mode;
             this.offset = off;
 
             byte[] sessionId = new byte[16];
             rnd.nextBytes(sessionId);
             P2PControl.HandAckPlain ackPlain = P2PControl.HandAckPlain.newBuilder()
                 .setSessionId(ByteString.copyFrom(sessionId))
-                .setSelectedKeyId(ByteString.copyFrom(keyId32))
+                .setSelectedKeyId(selectedKeyId == null ? ByteString.EMPTY : ByteString.copyFrom(selectedKeyId))
                 .setOffset((int) off)
                 .setMaxFramePayload(maxPayload)
                 .setHeaderPolicyId(0)
+                .setCryptoMode(mode)
+                .setServerRandomKey(serverRandomKey == null ? ByteString.EMPTY : ByteString.copyFrom(serverRandomKey))
                 .build();
 
             PublicKey clientPub = java.security.KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(hand.getClientPubkey().toByteArray()));
@@ -140,7 +188,6 @@ public final class CenterServerHandler extends SimpleChannelInboundHandler<Binar
                 .build();
 
             writePlain(ctx, resp);
-            this.encrypted = true;
         } catch (Exception e) {
             ctx.close();
         }
@@ -395,7 +442,7 @@ public final class CenterServerHandler extends SimpleChannelInboundHandler<Binar
 
     private void writeEncrypted(ChannelHandlerContext ctx, P2PWrapperOuterClass.P2PWrapper wrapper) {
         byte[] plain = P2PWrapperCodec.encode(wrapper);
-        byte[] cipher = XorCipher.xorWithKeyFile(plain, provider, keyId32, offset);
+        byte[] cipher = xorKey != null ? XorCipher.xorRepeat(plain, xorKey) : XorCipher.xorWithKeyFile(plain, provider, keyId32, offset);
         WireHeader h = new WireHeader(cipher.length, magic, version, flagsEncrypted);
         byte[] ws = FrameCodec.encode(h, cipher);
         ctx.writeAndFlush(new BinaryWebSocketFrame(Unpooled.wrappedBuffer(ws)));

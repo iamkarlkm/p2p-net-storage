@@ -98,7 +98,10 @@ class _InboundSession {
   final Uint8List _serverNodeKey;
   final SharedStorageRegistry _storage;
 
+  bool _handshaked = false;
+  String _cryptoMode = P2PCryptoMode.keyfileXorRsaOaep;
   int? _offset;
+  Uint8List? _repeatKey;
   String? _userId;
   IMUserModel? _userModel;
 
@@ -112,17 +115,15 @@ class _InboundSession {
         if (msg is! List<int>) continue;
         final f = decodeFrame(Uint8List.fromList(msg));
         final cipherPayload = f.cipherPayload;
-        final off = _offset;
         Uint8List plainPayload;
-        if (off == null) {
-          plainPayload = Uint8List.fromList(cipherPayload);
+        if (f.header.flags == _cfg.flagsEncrypted) {
+          plainPayload = await _decrypt(Uint8List.fromList(cipherPayload));
         } else {
-          final slice = await _keyf.readSlice(off, cipherPayload.length);
-          plainPayload = xorNoWrap(Uint8List.fromList(cipherPayload), slice, 0);
+          plainPayload = Uint8List.fromList(cipherPayload);
         }
         final w = decodeWrapper(plainPayload);
 
-        if (_offset == null) {
+        if (!_handshaked) {
           if (w.command != P2PCommand.hand) {
             await _ws.close();
             return;
@@ -149,6 +150,46 @@ class _InboundSession {
       _userModel = null;
       await _keyf.close();
     }
+  }
+
+  Future<Uint8List> _decrypt(Uint8List cipher) async {
+    final mode = _cryptoMode;
+    if (P2PCryptoMode.isPlain(mode)) {
+      throw StateError("received encrypted frame in PLAIN mode");
+    }
+    if (mode == P2PCryptoMode.keyfileXorRsaOaep) {
+      final off = _offset;
+      if (off == null) {
+        throw StateError("keyfile offset missing");
+      }
+      final slice = await _keyf.readSlice(off, cipher.length);
+      return xorNoWrap(cipher, slice, 0);
+    }
+    final key = _repeatKey;
+    if (key == null || key.isEmpty) {
+      throw StateError("repeat key missing");
+    }
+    return xorRepeat(cipher, key);
+  }
+
+  Future<Uint8List> _encrypt(Uint8List plain) async {
+    final mode = _cryptoMode;
+    if (P2PCryptoMode.isPlain(mode)) {
+      return plain;
+    }
+    if (mode == P2PCryptoMode.keyfileXorRsaOaep) {
+      final off = _offset;
+      if (off == null) {
+        throw StateError("keyfile offset missing");
+      }
+      final slice = await _keyf.readSlice(off, plain.length);
+      return xorNoWrap(plain, slice, 0);
+    }
+    final key = _repeatKey;
+    if (key == null || key.isEmpty) {
+      throw StateError("repeat key missing");
+    }
+    return xorRepeat(plain, key);
   }
 
   Map<int, Future<void> Function(P2PWrapper)> _buildHandlers() {
@@ -945,13 +986,38 @@ class _InboundSession {
     for (var i = 0; i < sessionId.length; i++) {
       sessionId[i] = seed.nextInt(256);
     }
-    final offset = seed.nextInt(1024);
+    final requested = hand.cryptoMode.trim().isEmpty ? P2PCryptoMode.keyfileXorRsaOaep : hand.cryptoMode.trim();
+    final normalizedRequested = requested.toUpperCase();
+    final chosenMode = switch (normalizedRequested) {
+      P2PCryptoMode.plain => P2PCryptoMode.plain,
+      P2PCryptoMode.clientRandomXorRsaOaep => P2PCryptoMode.clientRandomXorRsaOaep,
+      P2PCryptoMode.serverRandomXorRsaOaep => P2PCryptoMode.serverRandomXorRsaOaep,
+      _ => P2PCryptoMode.keyfileXorRsaOaep,
+    };
+
+    int offset = 0;
+    Uint8List serverRandomKey = Uint8List(0);
+    Uint8List? repeatKey;
+    if (chosenMode == P2PCryptoMode.keyfileXorRsaOaep) {
+      offset = seed.nextInt(1024);
+    } else if (chosenMode == P2PCryptoMode.clientRandomXorRsaOaep) {
+      if (hand.clientRandomKey.isEmpty) {
+        await _ws.close();
+        return;
+      }
+      repeatKey = hand.clientRandomKey;
+    } else if (chosenMode == P2PCryptoMode.serverRandomXorRsaOaep) {
+      serverRandomKey = secureRandomBytes(32);
+      repeatKey = serverRandomKey;
+    }
     final ack = HandAckPlain(
       sessionId: sessionId,
       selectedKeyId: selected,
       offset: offset,
       maxFramePayload: maxPayload,
       headerPolicyId: 0,
+      cryptoMode: chosenMode,
+      serverRandomKey: serverRandomKey,
     );
     final ackBytes = encodeHandAckPlain(ack);
     final pub = rsaPublicKeyFromSpkiDer(hand.clientPubkeySpkiDer);
@@ -959,10 +1025,17 @@ class _InboundSession {
     final out = encodeWrapper(P2PWrapper(seq: w.seq, command: P2PCommand.handAck, data: encrypted));
     final frame = encodeFrame(WireHeader(out.length, _cfg.magic, _cfg.version, _cfg.flagsPlain), out);
     _ws.add(frame);
-    _offset = offset;
+
+    _handshaked = true;
+    _cryptoMode = chosenMode;
+    _offset = (chosenMode == P2PCryptoMode.keyfileXorRsaOaep) ? offset : null;
+    _repeatKey = repeatKey;
   }
 
   Future<void> _handleCryptUpdate(P2PWrapper w) async {
+    if (_cryptoMode != P2PCryptoMode.keyfileXorRsaOaep) {
+      return;
+    }
     final cu = decodeCryptUpdate(w.data);
     _offset = cu.offset;
   }
@@ -1235,14 +1308,10 @@ class _InboundSession {
   }
 
   Future<void> _sendEncrypted(P2PWrapper w) async {
-    final off = _offset;
-    if (off == null) {
-      throw StateError("not encrypted yet");
-    }
     final plain = encodeWrapper(w);
-    final slice = await _keyf.readSlice(off, plain.length);
-    final cipher = xorNoWrap(plain, slice, 0);
-    final frame = encodeFrame(WireHeader(cipher.length, _cfg.magic, _cfg.version, _cfg.flagsEncrypted), cipher);
+    final cipherOrPlain = await _encrypt(plain);
+    final flags = P2PCryptoMode.isPlain(_cryptoMode) ? _cfg.flagsPlain : _cfg.flagsEncrypted;
+    final frame = encodeFrame(WireHeader(cipherOrPlain.length, _cfg.magic, _cfg.version, flags), cipherOrPlain);
     _ws.add(frame);
   }
 }

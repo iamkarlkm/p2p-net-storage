@@ -7,6 +7,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.InvalidPathException;
 import java.security.KeyFactory;
+import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
@@ -19,6 +20,7 @@ import java.util.Arrays;
 import javax.net.p2p.utils.RSAUtils;
 import javax.crypto.Cipher;
 import org.apache.commons.codec.binary.Base64;
+import org.apache.commons.codec.binary.Hex;
 
 public final class AuthCrypto {
 
@@ -126,12 +128,57 @@ public final class AuthCrypto {
     }
 
     public static void xorInPlace(byte[] data, byte[] key) {
+        xorInPlace(data, key, 0);
+    }
+
+    public static void xorInPlace(byte[] data, byte[] key, int offset) {
         if (data == null || key == null || key.length == 0) {
             return;
         }
-        for (int i = 0; i < data.length; i++) {
-            data[i] = (byte) (data[i] ^ key[i % key.length]);
+        int base = offset % key.length;
+        if (base < 0) {
+            base += key.length;
         }
+        for (int i = 0; i < data.length; i++) {
+            data[i] = (byte) (data[i] ^ key[(base + i) % key.length]);
+        }
+    }
+
+    public static byte[] readKeyFileBytes(String path) throws Exception {
+        if (path == null) {
+            throw new IllegalArgumentException("path is null");
+        }
+        String s = path.trim();
+        if (s.startsWith("file:")) {
+            s = s.substring("file:".length());
+        }
+        s = s.trim();
+        if (s.isBlank()) {
+            throw new IllegalArgumentException("path is blank");
+        }
+        Path p = Paths.get(s);
+        if (p.isAbsolute()) {
+            throw new IllegalArgumentException("absolute key path is not allowed");
+        }
+        String base = System.getProperty("p2p.key.dir", ".");
+        Path baseDir = Paths.get(base).toAbsolutePath().normalize();
+        Path resolved = baseDir.resolve(p).normalize();
+        if (!resolved.startsWith(baseDir)) {
+            throw new IllegalArgumentException("invalid key path");
+        }
+        java.io.File f = resolved.toFile();
+        if (!f.exists() || !f.isFile()) {
+            throw new IllegalArgumentException("key file not found: " + s);
+        }
+        try (FileInputStream in = new FileInputStream(f)) {
+            return in.readAllBytes();
+        }
+    }
+
+    public static String sha256Hex(byte[] data) throws Exception {
+        MessageDigest md = MessageDigest.getInstance("SHA-256");
+        byte[] d = md.digest(data == null ? new byte[0] : data);
+        return Hex.encodeHexString(d);
     }
 
     private static PublicKey loadPublicKey(String base64OrPath) throws Exception {

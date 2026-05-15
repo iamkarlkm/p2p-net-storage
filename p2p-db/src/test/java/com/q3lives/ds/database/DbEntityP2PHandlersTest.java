@@ -51,9 +51,14 @@ import javax.net.p2p.model.DbRowPutRequest;
 import javax.net.p2p.model.DbRowPutResponse;
 import javax.net.p2p.model.DbRowGetRequest;
 import javax.net.p2p.model.DbRowGetResponse;
+import javax.net.p2p.model.DbRowCountRequest;
+import javax.net.p2p.model.DbRowCountResponse;
+import javax.net.p2p.model.DbRowExistsByQueryRequest;
+import javax.net.p2p.model.DbRowExistsByQueryResponse;
 import javax.net.p2p.model.DbQuery;
 import javax.net.p2p.model.DbQueryCriterion;
 import javax.net.p2p.model.DbQueryOp;
+import javax.net.p2p.model.DbQueryOrGroup;
 import javax.net.p2p.model.DbQueryOrder;
 import javax.net.p2p.model.DbRowQueryIdsRequest;
 import javax.net.p2p.model.DbRowQueryIdsResponse;
@@ -82,6 +87,8 @@ import javax.net.p2p.server.handler.DbColGetServerHandler;
 import javax.net.p2p.server.handler.DbColRemoveServerHandler;
 import javax.net.p2p.server.handler.DbRowPutServerHandler;
 import javax.net.p2p.server.handler.DbRowGetServerHandler;
+import javax.net.p2p.server.handler.DbRowCountServerHandler;
+import javax.net.p2p.server.handler.DbRowExistsByQueryServerHandler;
 import javax.net.p2p.server.handler.DbRowQueryIdsServerHandler;
 import javax.net.p2p.server.handler.DbIndexCreateServerHandler;
 import javax.net.p2p.server.handler.DbIndexDropServerHandler;
@@ -580,6 +587,270 @@ public class DbEntityP2PHandlersTest {
     }
 
     @Test
+    public void testDynamicEqIndexMultiEqQueryViaHandlers() throws Exception {
+        File home = Files.createTempDirectory("dsdb-p2p-handlers-dynidx-multi-eq").toFile();
+        String old = System.getProperty("p2p.db.home");
+        try {
+            System.setProperty("p2p.db.home", home.getAbsolutePath());
+
+            String table = "com.example.DynamicUserIndexMultiEqV1";
+            DbTableSchema schema = new DbTableSchema();
+            schema.columns.add(new DbColumnSchema("username", "java.lang.String", 32, 0, 0));
+            schema.columns.add(new DbColumnSchema("age", "int", 4, 0, 0));
+            DbMetaPutRequest putMeta = new DbMetaPutRequest(table, schema, true);
+            P2PWrapper metaResp = new DbMetaPutServerHandler().process(P2PWrapper.build(85, P2PCommand.DB_META_PUT, putMeta));
+            Assertions.assertEquals(P2PCommand.R_OK_DB_META_PUT, metaResp.getCommand());
+
+            long r1 = putRow(table, "bob", 10);
+            long r2 = putRow(table, "bob", 12);
+            long r3 = putRow(table, "alice", 12);
+            Assertions.assertTrue(r1 > 0 && r2 > 0 && r3 > 0);
+
+            P2PWrapper idxUser = new DbIndexCreateServerHandler().process(P2PWrapper.build(86, P2PCommand.DB_INDEX_CREATE, new DbIndexCreateRequest(table, "username")));
+            Assertions.assertEquals(P2PCommand.R_OK_DB_INDEX_CREATE, idxUser.getCommand());
+            Assertions.assertTrue(((DbIndexCreateResponse) idxUser.getData()).created);
+
+            P2PWrapper idxAge = new DbIndexCreateServerHandler().process(P2PWrapper.build(87, P2PCommand.DB_INDEX_CREATE, new DbIndexCreateRequest(table, "age")));
+            Assertions.assertEquals(P2PCommand.R_OK_DB_INDEX_CREATE, idxAge.getCommand());
+            Assertions.assertTrue(((DbIndexCreateResponse) idxAge.getData()).created);
+
+            DbQuery q = new DbQuery();
+            q.where.add(new DbQueryCriterion(DbQueryOp.EQ, "username", "bob", null, null));
+            q.where.add(new DbQueryCriterion(DbQueryOp.EQ, "age", "12", null, null));
+            long[] ids = queryIds(table, q);
+            Assertions.assertEquals(1, ids.length);
+            Assertions.assertEquals(r2, ids[0]);
+
+            DbQuery q2 = new DbQuery();
+            q2.where.add(new DbQueryCriterion(DbQueryOp.EQ, "username", "bob", null, null));
+            q2.where.add(new DbQueryCriterion(DbQueryOp.EQ, "age", "11", null, null));
+            long[] ids2 = queryIds(table, q2);
+            Assertions.assertEquals(0, ids2.length);
+        } finally {
+            if (old == null) {
+                System.clearProperty("p2p.db.home");
+            } else {
+                System.setProperty("p2p.db.home", old);
+            }
+        }
+    }
+
+    @Test
+    public void testDynamicEqIndexInQueryViaHandlers() throws Exception {
+        File home = Files.createTempDirectory("dsdb-p2p-handlers-dynidx-in").toFile();
+        String old = System.getProperty("p2p.db.home");
+        try {
+            System.setProperty("p2p.db.home", home.getAbsolutePath());
+
+            String table = "com.example.DynamicUserIndexInV1";
+            DbTableSchema schema = new DbTableSchema();
+            schema.columns.add(new DbColumnSchema("username", "java.lang.String", 32, 0, 0));
+            schema.columns.add(new DbColumnSchema("age", "int", 4, 0, 0));
+            DbMetaPutRequest putMeta = new DbMetaPutRequest(table, schema, true);
+            P2PWrapper metaResp = new DbMetaPutServerHandler().process(P2PWrapper.build(88, P2PCommand.DB_META_PUT, putMeta));
+            Assertions.assertEquals(P2PCommand.R_OK_DB_META_PUT, metaResp.getCommand());
+
+            long r1 = putRow(table, "bob", 10);
+            long r2 = putRow(table, "bob", 12);
+            long r3 = putRow(table, "alice", 12);
+            long r4 = putRow(table, "amy", 12);
+            Assertions.assertTrue(r1 > 0 && r2 > 0 && r3 > 0 && r4 > 0);
+
+            P2PWrapper idxUser = new DbIndexCreateServerHandler().process(P2PWrapper.build(89, P2PCommand.DB_INDEX_CREATE, new DbIndexCreateRequest(table, "username")));
+            Assertions.assertEquals(P2PCommand.R_OK_DB_INDEX_CREATE, idxUser.getCommand());
+            Assertions.assertTrue(((DbIndexCreateResponse) idxUser.getData()).created);
+
+            DbQuery q = new DbQuery();
+            q.where.add(new DbQueryCriterion(DbQueryOp.IN, "username", null, null, java.util.List.of("bob", "alice")));
+            q.where.add(new DbQueryCriterion(DbQueryOp.EQ, "age", "12", null, null));
+            long[] ids = queryIds(table, q);
+            Assertions.assertEquals(2, ids.length);
+            Assertions.assertTrue(Arrays.stream(ids).anyMatch(v -> v == r2));
+            Assertions.assertTrue(Arrays.stream(ids).anyMatch(v -> v == r3));
+
+            DbQuery q2 = new DbQuery();
+            q2.where.add(new DbQueryCriterion(DbQueryOp.IN, "username", null, null, java.util.List.of("bob", "alice")));
+            q2.where.add(new DbQueryCriterion(DbQueryOp.EQ, "age", "10", null, null));
+            long[] ids2 = queryIds(table, q2);
+            Assertions.assertEquals(1, ids2.length);
+            Assertions.assertEquals(r1, ids2[0]);
+        } finally {
+            if (old == null) {
+                System.clearProperty("p2p.db.home");
+            } else {
+                System.setProperty("p2p.db.home", old);
+            }
+        }
+    }
+
+    @Test
+    public void testDynamicOrGroupsQueryViaHandlers() throws Exception {
+        File home = Files.createTempDirectory("dsdb-p2p-handlers-dyn-or-groups").toFile();
+        String old = System.getProperty("p2p.db.home");
+        try {
+            System.setProperty("p2p.db.home", home.getAbsolutePath());
+
+            String table = "com.example.DynamicUserOrGroupsV1";
+            DbTableSchema schema = new DbTableSchema();
+            schema.columns.add(new DbColumnSchema("username", "java.lang.String", 32, 0, 0));
+            schema.columns.add(new DbColumnSchema("age", "int", 4, 0, 0));
+            DbMetaPutRequest putMeta = new DbMetaPutRequest(table, schema, true);
+            P2PWrapper metaResp = new DbMetaPutServerHandler().process(P2PWrapper.build(120, P2PCommand.DB_META_PUT, putMeta));
+            Assertions.assertEquals(P2PCommand.R_OK_DB_META_PUT, metaResp.getCommand());
+
+            long r1 = putRow(table, "bob", 12);
+            long r2 = putRow(table, "alice", 10);
+            long r3 = putRow(table, "amy", 12);
+            Assertions.assertTrue(r1 > 0 && r2 > 0 && r3 > 0);
+
+            P2PWrapper idxUser = new DbIndexCreateServerHandler().process(P2PWrapper.build(121, P2PCommand.DB_INDEX_CREATE, new DbIndexCreateRequest(table, "username")));
+            Assertions.assertEquals(P2PCommand.R_OK_DB_INDEX_CREATE, idxUser.getCommand());
+            Assertions.assertTrue(((DbIndexCreateResponse) idxUser.getData()).created);
+
+            DbQuery q = new DbQuery();
+            DbQueryOrGroup g1 = new DbQueryOrGroup();
+            g1.where.add(new DbQueryCriterion(DbQueryOp.EQ, "username", "bob", null, null));
+            DbQueryOrGroup g2 = new DbQueryOrGroup();
+            g2.where.add(new DbQueryCriterion(DbQueryOp.EQ, "username", "alice", null, null));
+            q.anyOf.add(g1);
+            q.anyOf.add(g2);
+            q.where.add(new DbQueryCriterion(DbQueryOp.EQ, "age", "12", null, null));
+
+            long[] ids = queryIds(table, q);
+            Assertions.assertEquals(1, ids.length);
+            Assertions.assertEquals(r1, ids[0]);
+        } finally {
+            if (old == null) {
+                System.clearProperty("p2p.db.home");
+            } else {
+                System.setProperty("p2p.db.home", old);
+            }
+        }
+    }
+
+    @Test
+    public void testDynamicNotInQueryViaHandlers() throws Exception {
+        File home = Files.createTempDirectory("dsdb-p2p-handlers-dyn-not-in").toFile();
+        String old = System.getProperty("p2p.db.home");
+        try {
+            System.setProperty("p2p.db.home", home.getAbsolutePath());
+
+            String table = "com.example.DynamicUserNotInV1";
+            DbTableSchema schema = new DbTableSchema();
+            schema.columns.add(new DbColumnSchema("username", "java.lang.String", 32, 0, 0));
+            schema.columns.add(new DbColumnSchema("age", "int", 4, 0, 0));
+            DbMetaPutRequest putMeta = new DbMetaPutRequest(table, schema, true);
+            P2PWrapper metaResp = new DbMetaPutServerHandler().process(P2PWrapper.build(130, P2PCommand.DB_META_PUT, putMeta));
+            Assertions.assertEquals(P2PCommand.R_OK_DB_META_PUT, metaResp.getCommand());
+
+            long r1 = putRow(table, "bob", 12);
+            long r2 = putRow(table, "alice", 12);
+            long r3 = putRow(table, "amy", 12);
+            Assertions.assertTrue(r1 > 0 && r2 > 0 && r3 > 0);
+
+            P2PWrapper idxUser = new DbIndexCreateServerHandler().process(P2PWrapper.build(131, P2PCommand.DB_INDEX_CREATE, new DbIndexCreateRequest(table, "username")));
+            Assertions.assertEquals(P2PCommand.R_OK_DB_INDEX_CREATE, idxUser.getCommand());
+            Assertions.assertTrue(((DbIndexCreateResponse) idxUser.getData()).created);
+
+            DbQuery q = new DbQuery();
+            q.where.add(new DbQueryCriterion(DbQueryOp.NOT_IN, "username", null, null, java.util.List.of("bob", "amy")));
+            q.where.add(new DbQueryCriterion(DbQueryOp.EQ, "age", "12", null, null));
+            long[] ids = queryIds(table, q);
+            Assertions.assertEquals(1, ids.length);
+            Assertions.assertEquals(r2, ids[0]);
+        } finally {
+            if (old == null) {
+                System.clearProperty("p2p.db.home");
+            } else {
+                System.setProperty("p2p.db.home", old);
+            }
+        }
+    }
+
+    @Test
+    public void testDynamicCountQueryViaHandlers() throws Exception {
+        File home = Files.createTempDirectory("dsdb-p2p-handlers-dyn-count").toFile();
+        String old = System.getProperty("p2p.db.home");
+        try {
+            System.setProperty("p2p.db.home", home.getAbsolutePath());
+
+            String table = "com.example.DynamicUserCountV1";
+            DbTableSchema schema = new DbTableSchema();
+            schema.columns.add(new DbColumnSchema("username", "java.lang.String", 32, 0, 0));
+            schema.columns.add(new DbColumnSchema("age", "int", 4, 0, 0));
+            DbMetaPutRequest putMeta = new DbMetaPutRequest(table, schema, true);
+            P2PWrapper metaResp = new DbMetaPutServerHandler().process(P2PWrapper.build(140, P2PCommand.DB_META_PUT, putMeta));
+            Assertions.assertEquals(P2PCommand.R_OK_DB_META_PUT, metaResp.getCommand());
+
+            long r1 = putRow(table, "bob", 12);
+            long r2 = putRow(table, "alice", 12);
+            long r3 = putRow(table, "bob", 10);
+            Assertions.assertTrue(r1 > 0 && r2 > 0 && r3 > 0);
+
+            P2PWrapper idxUser = new DbIndexCreateServerHandler().process(P2PWrapper.build(141, P2PCommand.DB_INDEX_CREATE, new DbIndexCreateRequest(table, "username")));
+            Assertions.assertEquals(P2PCommand.R_OK_DB_INDEX_CREATE, idxUser.getCommand());
+            Assertions.assertTrue(((DbIndexCreateResponse) idxUser.getData()).created);
+
+            DbQuery q = new DbQuery();
+            DbQueryOrGroup g1 = new DbQueryOrGroup();
+            g1.where.add(new DbQueryCriterion(DbQueryOp.EQ, "username", "bob", null, null));
+            DbQueryOrGroup g2 = new DbQueryOrGroup();
+            g2.where.add(new DbQueryCriterion(DbQueryOp.EQ, "username", "alice", null, null));
+            q.anyOf.add(g1);
+            q.anyOf.add(g2);
+            q.where.add(new DbQueryCriterion(DbQueryOp.EQ, "age", "12", null, null));
+
+            long count = countRows(table, q);
+            Assertions.assertEquals(2L, count);
+        } finally {
+            if (old == null) {
+                System.clearProperty("p2p.db.home");
+            } else {
+                System.setProperty("p2p.db.home", old);
+            }
+        }
+    }
+
+    @Test
+    public void testDynamicExistsByQueryViaHandlers() throws Exception {
+        File home = Files.createTempDirectory("dsdb-p2p-handlers-dyn-exists-by-query").toFile();
+        String old = System.getProperty("p2p.db.home");
+        try {
+            System.setProperty("p2p.db.home", home.getAbsolutePath());
+
+            String table = "com.example.DynamicUserExistsByQueryV1";
+            DbTableSchema schema = new DbTableSchema();
+            schema.columns.add(new DbColumnSchema("username", "java.lang.String", 32, 0, 0));
+            schema.columns.add(new DbColumnSchema("age", "int", 4, 0, 0));
+            DbMetaPutRequest putMeta = new DbMetaPutRequest(table, schema, true);
+            P2PWrapper metaResp = new DbMetaPutServerHandler().process(P2PWrapper.build(150, P2PCommand.DB_META_PUT, putMeta));
+            Assertions.assertEquals(P2PCommand.R_OK_DB_META_PUT, metaResp.getCommand());
+
+            long r1 = putRow(table, "bob", 12);
+            long r2 = putRow(table, "alice", 10);
+            Assertions.assertTrue(r1 > 0 && r2 > 0);
+
+            P2PWrapper idxUser = new DbIndexCreateServerHandler().process(P2PWrapper.build(151, P2PCommand.DB_INDEX_CREATE, new DbIndexCreateRequest(table, "username")));
+            Assertions.assertEquals(P2PCommand.R_OK_DB_INDEX_CREATE, idxUser.getCommand());
+            Assertions.assertTrue(((DbIndexCreateResponse) idxUser.getData()).created);
+
+            DbQuery yes = new DbQuery();
+            yes.where.add(new DbQueryCriterion(DbQueryOp.EQ, "username", "bob", null, null));
+            Assertions.assertTrue(existsByQuery(table, yes));
+
+            DbQuery no = new DbQuery();
+            no.where.add(new DbQueryCriterion(DbQueryOp.EQ, "username", "nobody", null, null));
+            Assertions.assertFalse(existsByQuery(table, no));
+        } finally {
+            if (old == null) {
+                System.clearProperty("p2p.db.home");
+            } else {
+                System.setProperty("p2p.db.home", old);
+            }
+        }
+    }
+
+    @Test
     public void testDynamicEqIndexDropViaHandlers() throws Exception {
         File home = Files.createTempDirectory("dsdb-p2p-handlers-dynidx-drop").toFile();
         String old = System.getProperty("p2p.db.home");
@@ -710,11 +981,31 @@ public class DbEntityP2PHandlersTest {
     private static long[] queryEq(String table, String name, String value) throws Exception {
         DbQuery q = new DbQuery();
         q.where.add(new DbQueryCriterion(DbQueryOp.EQ, name, value, null, null));
+        return queryIds(table, q);
+    }
+
+    private static long[] queryIds(String table, DbQuery q) throws Exception {
         DbRowQueryIdsRequest queryReq = new DbRowQueryIdsRequest(table, q, 0, 100);
         P2PWrapper resp = new DbRowQueryIdsServerHandler().process(P2PWrapper.build(0, P2PCommand.DB_ROW_QUERY_IDS, queryReq));
         Assertions.assertEquals(P2PCommand.R_OK_DB_ROW_QUERY_IDS, resp.getCommand());
         DbRowQueryIdsResponse ok = (DbRowQueryIdsResponse) resp.getData();
         return SerializationUtil.deserialize(long[].class, ok.idsBytes);
+    }
+
+    private static long countRows(String table, DbQuery q) throws Exception {
+        DbRowCountRequest countReq = new DbRowCountRequest(table, q);
+        P2PWrapper resp = new DbRowCountServerHandler().process(P2PWrapper.build(0, P2PCommand.DB_ROW_COUNT, countReq));
+        Assertions.assertEquals(P2PCommand.R_OK_DB_ROW_COUNT, resp.getCommand());
+        DbRowCountResponse ok = (DbRowCountResponse) resp.getData();
+        return ok.count;
+    }
+
+    private static boolean existsByQuery(String table, DbQuery q) throws Exception {
+        DbRowExistsByQueryRequest req = new DbRowExistsByQueryRequest(table, q);
+        P2PWrapper resp = new DbRowExistsByQueryServerHandler().process(P2PWrapper.build(0, P2PCommand.DB_ROW_EXISTS_BY_QUERY, req));
+        Assertions.assertEquals(P2PCommand.R_OK_DB_ROW_EXISTS_BY_QUERY, resp.getCommand());
+        DbRowExistsByQueryResponse ok = (DbRowExistsByQueryResponse) resp.getData();
+        return ok.exists;
     }
 
     private static String sha256Hex(byte[] data) throws Exception {

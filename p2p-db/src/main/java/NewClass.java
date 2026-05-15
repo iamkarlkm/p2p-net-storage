@@ -1,5 +1,3 @@
-import jdk.internal.access.foreign.UnmapperProxy;
-
 import java.io.RandomAccessFile;
 import java.lang.reflect.Method;
 import java.nio.MappedByteBuffer;
@@ -37,9 +35,12 @@ public class NewClass {
             //UnmapperProxy unmapper = UnmapperProxy.;
             Method m = MappedByteBuffer.class.getDeclaredMethod("unmapper");
             m.setAccessible(true);
-            UnmapperProxy unmapper = (UnmapperProxy) m.invoke( buffer);
+            Object unmapper = m.invoke(buffer);
             System.out.println(m);
-            unmapper.unmap();
+            if (unmapper != null) {
+                Method unmap = unmapper.getClass().getMethod("unmap");
+                unmap.invoke(unmapper);
+            }
 //            Method m = FileChannelImpl.class.getDeclaredMethod("unmap",
 //                    MappedByteBuffer.class);
 //            m.setAccessible(true);
