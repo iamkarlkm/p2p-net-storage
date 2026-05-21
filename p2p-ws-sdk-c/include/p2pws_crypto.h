@@ -29,6 +29,7 @@ typedef struct p2pws_rsa {
   uint8_t* pub_spki_der;
   size_t pub_spki_der_len;
   uint8_t node_key32[32];
+  int key_kind;
 } p2pws_rsa_t;
 
 int p2pws_rsa_load_private_pem(const char* path, p2pws_rsa_t* out);

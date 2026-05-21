@@ -125,6 +125,60 @@ done:
   return r;
 }
 
+int p2pws_core_send_stream_wrapper(
+  p2pws_ws_client_t* ws,
+  int32_t magic,
+  const uint8_t* xor_key,
+  size_t xor_key_len,
+  int encrypt,
+  int32_t seq,
+  int32_t command_ordinal,
+  const uint8_t* data,
+  size_t data_len,
+  int32_t index,
+  int completed,
+  int canceled) {
+  if (!ws) return -1;
+  p2pws_buf_t wrapper;
+  p2pws_buf_t frame;
+  p2pws_buf_init(&wrapper);
+  p2pws_buf_init(&frame);
+
+  int r = p2pws_msg_encode_stream_wrapper(seq, command_ordinal, data, data_len, index, completed, canceled, &wrapper);
+  if (r != 0) goto done;
+
+  uint8_t hdr[8];
+  r = p2pws_core_encode_header_be((int32_t)wrapper.len, magic, hdr);
+  if (r != 0) goto done;
+  r = p2pws_buf_append(&frame, hdr, sizeof(hdr));
+  if (r != 0) goto done;
+
+  if (encrypt && xor_key && xor_key_len && wrapper.len) {
+    p2pws_buf_t tmp;
+    p2pws_buf_init(&tmp);
+    r = p2pws_buf_reserve(&tmp, wrapper.len + 1);
+    if (r != 0) {
+      p2pws_buf_free(&tmp);
+      goto done;
+    }
+    tmp.len = wrapper.len;
+    p2pws_xor_repeat(wrapper.data, wrapper.len, xor_key, xor_key_len, tmp.data);
+    r = p2pws_buf_append(&frame, tmp.data, tmp.len);
+    p2pws_buf_free(&tmp);
+    if (r != 0) goto done;
+  } else {
+    r = p2pws_buf_append(&frame, wrapper.data, wrapper.len);
+    if (r != 0) goto done;
+  }
+
+  r = p2pws_ws_send_binary(ws, frame.data, frame.len);
+
+done:
+  p2pws_buf_free(&wrapper);
+  p2pws_buf_free(&frame);
+  return r;
+}
+
 int p2pws_core_recv_wrapper(
   p2pws_ws_client_t* ws,
   int32_t expected_magic,
@@ -152,6 +206,35 @@ int p2pws_core_recv_wrapper(
     p2pws_xor_repeat(payload, n, xor_key, xor_key_len, payload);
   }
   return p2pws_pb_decode_wrapper(payload, n, out_view);
+}
+
+int p2pws_core_recv_stream_wrapper(
+  p2pws_ws_client_t* ws,
+  int32_t expected_magic,
+  const uint8_t* xor_key,
+  size_t xor_key_len,
+  p2pws_buf_t* io_frame_payload,
+  p2pws_stream_wrapper_view_t* out_view) {
+  if (!ws || !io_frame_payload || !out_view) return -1;
+  p2pws_pb_reset(io_frame_payload);
+  int r = p2pws_ws_recv_binary(ws, io_frame_payload);
+  if (r != 0) return r;
+  if (io_frame_payload->len < 8) return -2;
+
+  int32_t payload_len = 0;
+  int32_t magic = 0;
+  r = p2pws_core_decode_header_be(io_frame_payload->data, &payload_len, &magic);
+  if (r != 0) return r;
+  if (magic != expected_magic) return -3;
+  if (payload_len < 0) return -4;
+  if ((size_t)payload_len + 8 > io_frame_payload->len) return -5;
+
+  uint8_t* payload = io_frame_payload->data + 8;
+  size_t n = (size_t)payload_len;
+  if (xor_key && xor_key_len && n) {
+    p2pws_xor_repeat(payload, n, xor_key, xor_key_len, payload);
+  }
+  return p2pws_pb_decode_stream_wrapper(payload, n, out_view);
 }
 
 int p2pws_core_request(
@@ -298,4 +381,3 @@ int p2pws_core_decode_login_response(const uint8_t* p, size_t n, int* out_ok, ch
   }
   return 0;
 }
-

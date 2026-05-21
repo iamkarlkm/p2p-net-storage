@@ -15,13 +15,40 @@ int p2pws_msg_encode_wrapper(int32_t seq, int32_t command, const uint8_t* data, 
   if (r != 0) return r;
   r = p2pws_pb_write_varint_i32(out, command);
   if (r != 0) return r;
-  if (data && data_len) {
-    r = p2pws_pb_write_bytes(out, 3, data, data_len);
-    if (r != 0) return r;
-  } else {
-    r = p2pws_pb_write_bytes(out, 3, "", 0);
-    if (r != 0) return r;
-  }
+  r = p2pws_pb_write_key(out, 3, 3);
+  if (r != 0) return r;
+  r = p2pws_pb_write_bytes(out, 11, data ? data : "", data ? data_len : 0);
+  if (r != 0) return r;
+  r = p2pws_pb_write_key(out, 3, 4);
+  if (r != 0) return r;
+  return 0;
+}
+
+int p2pws_msg_encode_stream_wrapper(int32_t seq, int32_t command, const uint8_t* data, size_t data_len, int32_t index, int completed, int canceled, p2pws_buf_t* out) {
+  if (!out) return -1;
+  p2pws_pb_reset(out);
+  int r = p2pws_pb_write_key(out, 1, 0);
+  if (r != 0) return r;
+  r = p2pws_pb_write_varint_i32(out, seq);
+  if (r != 0) return r;
+  r = p2pws_pb_write_key(out, 2, 0);
+  if (r != 0) return r;
+  r = p2pws_pb_write_varint_i32(out, command);
+  if (r != 0) return r;
+  r = p2pws_pb_write_key(out, 3, 3);
+  if (r != 0) return r;
+  r = p2pws_pb_write_bytes(out, 11, data ? data : "", data ? data_len : 0);
+  if (r != 0) return r;
+  r = p2pws_pb_write_key(out, 3, 4);
+  if (r != 0) return r;
+  r = p2pws_pb_write_key(out, 4, 0);
+  if (r != 0) return r;
+  r = p2pws_pb_write_varint_i32(out, index);
+  if (r != 0) return r;
+  r = p2pws_pb_write_bool(out, 5, completed ? 1 : 0);
+  if (r != 0) return r;
+  r = p2pws_pb_write_bool(out, 6, canceled ? 1 : 0);
+  if (r != 0) return r;
   return 0;
 }
 

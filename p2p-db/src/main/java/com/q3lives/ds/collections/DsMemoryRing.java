@@ -1,11 +1,12 @@
 package com.q3lives.ds.collections;
 
+import com.q3lives.ds.interfaces.DsTableSerializable;
 import com.q3lives.ds.util.DsDataUtil;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.locks.ReentrantLock;
 
-public class DsMemoryRing implements AutoCloseable {
+public class DsMemoryRing implements AutoCloseable,DsTableSerializable {
 
     private static final byte[] MAGIC = new byte[]{'.', 'M', '-', 'R'};
     private static final int OFF_MAGIC = 0;
@@ -18,6 +19,7 @@ public class DsMemoryRing implements AutoCloseable {
 
     private final ReentrantLock lock = new ReentrantLock();
     private ByteBuffer buffer;
+    private long id;
     private int cap;
     private int head;
     private int tail;
@@ -32,13 +34,14 @@ public class DsMemoryRing implements AutoCloseable {
     }
     
     public DsMemoryRing(byte[] data) {
-        if(magicMatches(data)){
-            cap = DsDataUtil.loadInt(data, OFF_CAP);
-            buffer = ByteBuffer.allocate(OFF_DATA + cap * 8);
-            openOrInit(64);
-        }else{
-            throw new RuntimeException("invalid magic!");
+        if (data == null || data.length < OFF_DATA) {
+            throw new IllegalArgumentException("data is too small");
         }
+        if (!magicMatches(data)) {
+            throw new IllegalArgumentException("invalid magic");
+        }
+        buffer = ByteBuffer.wrap(data);
+        openOrInit(64);
     }
 
     public DsMemoryRing(ByteBuffer buffer) {
@@ -73,6 +76,7 @@ public class DsMemoryRing implements AutoCloseable {
         try {
             //reloadHeaderIfNeeded();
             if (count >= cap) {
+                // 扩容时把 tail 放到旧容量末尾，避免覆盖旧数据，保持原 ring 的可读性
                 tail = cap;
                 expand(cap * 2);
             }
@@ -93,10 +97,8 @@ public class DsMemoryRing implements AutoCloseable {
             if (count >= cap) {
                 expand(cap * 2);
             }
-            for (int i = head; i < tail; i++) {//如果存在，直接返回false。
-                if (value == readAt(i)) {
-                    return false;
-                }
+            if (containsNoLock(value)) {
+                return false;
             }
             writeAt(tail, value);
             tail = (tail + 1) % cap;
@@ -224,9 +226,9 @@ public class DsMemoryRing implements AutoCloseable {
     private void writeHeader() throws IOException {
         buffer.position(OFF_CAP);
         buffer.putInt(cap);//cap
-        buffer.putInt(0); // head
-        buffer.putInt(0); // tail
-        buffer.putInt(0); // count
+        buffer.putInt(head); // head
+        buffer.putInt(tail); // tail
+        buffer.putInt(count); // count
     }
 
     private long readAt(int slot) throws IOException {
@@ -258,11 +260,104 @@ public class DsMemoryRing implements AutoCloseable {
         if(buffer.hasArray()){
             return buffer.array();
         }else{
-            //byte[] out = new byte[OFF_DATA + cap * 8];
-            byte[] out = new byte[OFF_DATA + count * 8];
+            // 必须按 cap 导出完整 ring，否则重载后 cap 与 buffer 长度不匹配会越界
+            byte[] out = new byte[OFF_DATA + cap * 8];
             buffer.get(0, out);
             return out;
         }
+    }
+
+    @Override
+    public Long getId() {
+        return this.id;
+    }
+
+    @Override
+    public void setId(long id) {
+        this.id = id;
+    }
+
+  
+
+    @Override
+    public void load(byte[] data) {
+        if (data == null || data.length < OFF_DATA) {
+            throw new IllegalArgumentException("data is too small");
+        }
+        buffer = ByteBuffer.wrap(data);
+        openOrInit(64);
+    }
+
+    public boolean contains(long value) throws IOException {
+        lock.lock();
+        try {
+            return containsNoLock(value);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public boolean removeValue(long value) throws IOException {
+        lock.lock();
+        try {
+            if (count <= 0) {
+                return false;
+            }
+            long[] snapshot = snapshotNoLock();
+            boolean removed = false;
+            head = 0;
+            tail = 0;
+            count = 0;
+            for (long v : snapshot) {
+                if (!removed && v == value) {
+                    removed = true;
+                    continue;
+                }
+                writeAt(tail, v);
+                tail = (tail + 1) % cap;
+                count++;
+            }
+            if (!removed) {
+                return false;
+            }
+            writeHeader();
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    public long[] snapshot() throws IOException {
+        lock.lock();
+        try {
+            return snapshotNoLock();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private boolean containsNoLock(long value) throws IOException {
+        if (count <= 0) {
+            return false;
+        }
+        for (int i = 0; i < count; i++) {
+            int slot = (head + i) % cap;
+            if (readAt(slot) == value) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private long[] snapshotNoLock() throws IOException {
+        if (count <= 0) {
+            return new long[0];
+        }
+        long[] out = new long[count];
+        for (int i = 0; i < count; i++) {
+            out[i] = readAt((head + i) % cap);
+        }
+        return out;
     }
 
 }

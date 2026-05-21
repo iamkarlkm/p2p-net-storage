@@ -68,6 +68,13 @@ public class FileMetadata implements Serializable {
         public String compressionAlg;
         public double compressionRatio;
         public SyncStatus syncStatus;
+        /**
+         * 小文件内联存储 ID。
+         * <p>当文件大小 &lt;= 4KB 时，内容直接存储在 DsFixedBucketStore 中，
+         * 此字段保存其编码 id（高 8 bit 为 power，低 56 bit 为 baseId）。
+         * 大文件或空文件时此字段为 0。</p>
+         */
+        public long inlineId = 0;
     }
 
     // 4. 安全与权限组 (鉴权使用)

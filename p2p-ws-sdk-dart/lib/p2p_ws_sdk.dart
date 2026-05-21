@@ -22,4 +22,5 @@ export "src/core_compat/core_ws_client.dart";
 export "src/core_compat/ordinals.dart";
 export "src/core_compat/protostuff.dart";
 export "src/core_compat/rpc_client.dart";
+export "src/core_compat/rpc_stream_client.dart";
 export "src/core_compat/rpc_proto_lite.dart";

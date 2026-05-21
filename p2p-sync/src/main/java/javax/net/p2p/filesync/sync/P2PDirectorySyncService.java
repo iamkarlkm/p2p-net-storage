@@ -22,6 +22,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import com.q3lives.ds.collections.DsHashSet;
 import javax.net.p2p.filesync.config.P2PSyncConfig;
+import javax.net.p2p.filesync.sync.P2PSyncStateStore.QueueStage;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
@@ -38,6 +39,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
     private volatile WatchService watchService;
     private volatile P2PSyncStateStore store;
     private volatile Path rootDir;
+    private final P2PSyncQueueEngine queueEngine = new P2PSyncQueueEngine();
 
     public P2PSyncStateStore getStore() {
         return store;
@@ -68,7 +70,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         store.requeueInflightToActive();
         initialScan();
         store.swapEventTablesForStartup();
-        drainStartupTables(store, 2048);
+        drainStage(store, QueueStage.STARTUP, 2048);
 
         // 记录最近成功运行时间：每秒落一次，用于下次启动时按 lastModified 过滤需要入队的事件
         this.heartbeatExecutor.scheduleAtFixedRate(() -> {
@@ -321,143 +323,30 @@ public final class P2PDirectorySyncService implements AutoCloseable {
                 sleepQuietly(200);
                 continue;
             }
-            if (isAllActiveQueuesEmpty(localStore)) {
+            if (queueEngine.isEmpty(localStore, QueueStage.ACTIVE)) {
                 sleepQuietly(200);
                 continue;
             }
-            processBatch(localStore, 1024);
+            processStage(localStore, QueueStage.ACTIVE, 1024);
         }
     }
 
-    private void processBatch(P2PSyncStateStore localStore, int maxBatchSize) {
-        int processed = 0;
-        processed += processOneQueue(localStore, localStore.dirCreatesActive(), localStore.dirCreatesInflight(), FileSyncEventType.CREATE, true, maxBatchSize - processed);
-        processed += processOneQueue(localStore, localStore.fileCreatesActive(), localStore.fileCreatesInflight(), FileSyncEventType.CREATE, false, maxBatchSize - processed);
-        processed += processOneQueue(localStore, localStore.fileModifiesActive(), localStore.fileModifiesInflight(), FileSyncEventType.MODIFY, false, maxBatchSize - processed);
-        processed += processOneQueue(localStore, localStore.fileDeletesActive(), localStore.fileDeletesInflight(), FileSyncEventType.DELETE, false, maxBatchSize - processed);
-        processed += processOneQueue(localStore, localStore.dirDeletesActive(), localStore.dirDeletesInflight(), FileSyncEventType.DELETE, true, maxBatchSize - processed);
-
-        if (processed > 0) {
-            localStore.dirCreatesActive().sync();
-            localStore.fileCreatesActive().sync();
-            localStore.fileModifiesActive().sync();
-            localStore.fileDeletesActive().sync();
-            localStore.dirDeletesActive().sync();
-            localStore.dirCreatesInflight().sync();
-            localStore.fileCreatesInflight().sync();
-            localStore.fileModifiesInflight().sync();
-            localStore.fileDeletesInflight().sync();
-            localStore.dirDeletesInflight().sync();
-            localStore.fileIdToLastModifiedMap().sync();
-            localStore.fileIdToKindMap().sync();
+    private void processStage(P2PSyncStateStore localStore, QueueStage stage, int maxBatchSize) {
+        try {
+            queueEngine.processBatch(localStore, stage, maxBatchSize, rootDir, eventHandler, running);
+        } catch (Exception e) {
+            log.error("process stage error: stage={}", stage, e);
         }
     }
 
-    private int processOneQueue(P2PSyncStateStore localStore, DsHashSet queue, DsHashSet inflight, FileSyncEventType type, boolean directory, int maxBatchSize) {
-        if (maxBatchSize <= 0) {
-            return 0;
-        }
-        Iterator<Long> it = queue.iterator();
-        int processed = 0;
-        while (it.hasNext() && processed < maxBatchSize && running.get()) {
-            long fileId = it.next();
-            inflight.add(Long.valueOf(fileId));
-            it.remove();
-            String relativePath = localStore.getRelativePath(fileId);
-            Path abs = relativePath == null ? null : rootDir.resolve(relativePath);
-            try {
-                eventHandler.handle(type, fileId, relativePath, abs, directory, new InflightAcker(localStore, queue, inflight, type, fileId, directory));
-                processed++;
-            } catch (Exception e) {
-                log.error("event handler failed: type={}, fileId={}, directory={}", type, fileId, directory, e);
-                break;
-            }
-        }
-        return processed;
-    }
-
-    private static boolean isAllActiveQueuesEmpty(P2PSyncStateStore store) {
-        return store.dirCreatesActive().isEmpty()
-            && store.fileCreatesActive().isEmpty()
-            && store.fileModifiesActive().isEmpty()
-            && store.fileDeletesActive().isEmpty()
-            && store.dirDeletesActive().isEmpty();
-    }
-
-    private void drainStartupTables(P2PSyncStateStore localStore, int maxBatchSize) {
-        int processed = 0;
-        processed += processOneQueue(localStore, localStore.dirCreatesStartup(), localStore.dirCreatesInflight(), FileSyncEventType.CREATE, true, maxBatchSize - processed);
-        processed += processOneQueue(localStore, localStore.fileCreatesStartup(), localStore.fileCreatesInflight(), FileSyncEventType.CREATE, false, maxBatchSize - processed);
-        processed += processOneQueue(localStore, localStore.fileModifiesStartup(), localStore.fileModifiesInflight(), FileSyncEventType.MODIFY, false, maxBatchSize - processed);
-        processed += processOneQueue(localStore, localStore.fileDeletesStartup(), localStore.fileDeletesInflight(), FileSyncEventType.DELETE, false, maxBatchSize - processed);
-        processed += processOneQueue(localStore, localStore.dirDeletesStartup(), localStore.dirDeletesInflight(), FileSyncEventType.DELETE, true, maxBatchSize - processed);
-        if (processed > 0) {
-            localStore.dirCreatesStartup().sync();
-            localStore.fileCreatesStartup().sync();
-            localStore.fileModifiesStartup().sync();
-            localStore.fileDeletesStartup().sync();
-            localStore.dirDeletesStartup().sync();
-            localStore.dirCreatesInflight().sync();
-            localStore.fileCreatesInflight().sync();
-            localStore.fileModifiesInflight().sync();
-            localStore.fileDeletesInflight().sync();
-            localStore.dirDeletesInflight().sync();
-            localStore.fileIdToLastModifiedMap().sync();
-            localStore.fileIdToKindMap().sync();
-        }
-    }
-
-    private static final class InflightAcker implements FileSyncAcker {
-
-        private final P2PSyncStateStore store;
-        private final DsHashSet queue;
-        private final DsHashSet inflight;
-        private final FileSyncEventType type;
-        private final long fileId;
-        private final boolean directory;
-        private final AtomicBoolean done = new AtomicBoolean(false);
-
-        private InflightAcker(P2PSyncStateStore store, DsHashSet queue, DsHashSet inflight, FileSyncEventType type, long fileId, boolean directory) {
-            this.store = store;
-            this.queue = queue;
-            this.inflight = inflight;
-            this.type = type;
-            this.fileId = fileId;
-            this.directory = directory;
-        }
-
-        @Override
-        public void ack() {
-            if (!done.compareAndSet(false, true)) {
+    private void drainStage(P2PSyncStateStore localStore, QueueStage stage, int maxBatchSize) {
+        int remaining = maxBatchSize;
+        while (remaining > 0 && running.get()) {
+            int processed = queueEngine.processBatch(localStore, stage, remaining, rootDir, eventHandler, running);
+            if (processed <= 0) {
                 return;
             }
-            inflight.remove(Long.valueOf(fileId));
-            inflight.sync();
-            if (type == FileSyncEventType.DELETE) {
-                store.removeKind(fileId);
-                store.fileIdToKindMap().sync();
-            }
-        }
-
-        @Override
-        public void retry() {
-            if (!done.compareAndSet(false, true)) {
-                return;
-            }
-            inflight.remove(Long.valueOf(fileId));
-            queue.add(Long.valueOf(fileId));
-            inflight.sync();
-            queue.sync();
-        }
-
-        @Override
-        public void fail(String reason) {
-            if (!done.compareAndSet(false, true)) {
-                return;
-            }
-            inflight.remove(Long.valueOf(fileId));
-            inflight.sync();
-            store.markFailed(type, directory, fileId, reason == null ? "" : reason);
+            remaining -= processed;
         }
     }
 

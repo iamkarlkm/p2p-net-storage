@@ -4,32 +4,65 @@ import { WebSocket } from "ws"
 import protobuf from "protobufjs"
 import path from "node:path"
 
-import { decodeCoreFrame, encodeCoreFrame } from "./core_frame.js"
+import { decodeAllCoreFrames, encodeCoreFrame } from "./core_frame.js"
 import { loadCommandOrdinals } from "./ordinals.js"
 import {
   decodeHandshakeResponse,
   decodeLoginResponse,
-  decodeP2PWrapper,
+  decodeStreamP2PWrapper,
   encodeHandshakeRequest,
   encodeLoginRequest,
   encodeP2PWrapper,
+  encodeStreamP2PWrapper,
   type HandshakeRequest,
   type LoginRequest,
   type P2PWrapper,
+  type StreamP2PWrapper,
 } from "./protostuff.js"
 
-export type CoreWsClientConfig = { wsUrl: string; magic: number; xorKeyLength?: number }
+export type CoreWsHeartbeatConfig = { intervalMs?: number; timeoutMs?: number }
+export type CoreWsTelemetry = {
+  onConnect?: () => void
+  onDisconnect?: () => void
+  onReconnectAttempt?: (delayMs: number) => void
+  onReconnectSuccess?: () => void
+}
+export type CoreWsReconnectConfig = {
+  enabled?: boolean
+  initialMs?: number
+  maxMs?: number
+  jitterRatio?: number
+  onReconnect?: (client: CoreWsClient) => Promise<void>
+}
 
-type Pending = { resolve: (w: P2PWrapper) => void; reject: (e: unknown) => void; t: any }
+export type CoreWsClientConfig = {
+  wsUrl: string
+  magic: number
+  xorKeyLength?: number
+  heartbeat?: CoreWsHeartbeatConfig
+  reconnect?: CoreWsReconnectConfig
+  maxPending?: number
+  telemetry?: CoreWsTelemetry
+}
+
+type Pending = { resolve: (w: StreamP2PWrapper) => void; reject: (e: unknown) => void; t: any }
+type StreamHandler = (w: StreamP2PWrapper) => void
 
 export class CoreWsClient {
   private cfg: CoreWsClientConfig
   private ws?: WebSocket
   private seq: number = 1
   private pending = new Map<number, Pending>()
+  private streamHandlers = new Map<number, StreamHandler>()
   private xorKey?: Buffer
   private ordinals: Map<string, number>
   private rpcRoot?: protobuf.Root
+  private heartbeatTimer?: any
+  private reconnectTimer?: any
+  private lastPongAtMs: number = 0
+  private reconnectDelayMs: number = 0
+  private reconnecting: boolean = false
+  private suppressReconnect: boolean = false
 
   constructor(cfg: CoreWsClientConfig) {
     this.cfg = cfg
@@ -37,6 +70,8 @@ export class CoreWsClient {
   }
 
   public async connect(timeoutMs: number = 6_000): Promise<void> {
+    this.suppressReconnect = false
+    this.clearTimers()
     const ws = new WebSocket(this.cfg.wsUrl)
     this.ws = ws
     ws.binaryType = "arraybuffer"
@@ -52,21 +87,24 @@ export class CoreWsClient {
       })
     })
     ws.on("message", (ev) => this.onMessage(ev as Buffer))
-    ws.on("close", () => this.close())
-    ws.on("error", () => this.close())
+    ws.on("close", () => this.handleDisconnect())
+    ws.on("error", () => this.handleDisconnect())
+    ws.on("pong", () => {
+      this.lastPongAtMs = Date.now()
+    })
+    this.lastPongAtMs = Date.now()
+    this.startHeartbeat()
+    this.cfg.telemetry?.onConnect?.()
   }
 
   public close(): void {
-    for (const [seq, p] of this.pending.entries()) {
-      clearTimeout(p.t)
-      p.reject(new Error("closed"))
-      this.pending.delete(seq)
-    }
+    this.suppressReconnect = true
+    this.clearTimers()
+    this.cleanup(new Error("closed"))
     try {
       this.ws?.close()
     } catch {}
     this.ws = undefined
-    this.xorKey = undefined
   }
 
   public async request(commandName: string, data: Uint8Array, timeoutMs: number = 10_000): Promise<P2PWrapper> {
@@ -74,6 +112,8 @@ export class CoreWsClient {
     if (!ws) throw new Error("not connected")
     const cmd = this.ordinals.get(commandName)
     if (cmd == null) throw new Error(`unknown command: ${commandName}`)
+    const maxPending = Number(this.cfg.maxPending ?? 0) | 0
+    if (maxPending > 0 && this.pending.size >= maxPending) throw new Error("too many pending requests")
     const seq = ++this.seq
     const w: P2PWrapper = { seq, commandOrdinal: cmd, data }
     await this.sendWrapper(w, commandName !== "HAND")
@@ -82,8 +122,61 @@ export class CoreWsClient {
         this.pending.delete(seq)
         reject(new Error("request timeout"))
       }, timeoutMs)
-      this.pending.set(seq, { resolve, reject, t })
+      this.pending.set(seq, {
+        resolve: (sw) => resolve({ seq: sw.seq, commandOrdinal: sw.commandOrdinal, data: sw.data }),
+        reject,
+        t,
+      })
     })
+  }
+
+  public allocateSeq(): number {
+    return ++this.seq
+  }
+
+  public registerStreamHandler(requestId: number, handler?: StreamHandler): void {
+    if (requestId <= 0) throw new Error("requestId required")
+    if (!handler) {
+      this.streamHandlers.delete(requestId)
+      return
+    }
+    this.streamHandlers.set(requestId, handler)
+  }
+
+  public async sendAndAwait(wrapper: P2PWrapper, encrypt: boolean, timeoutMs: number = 10_000): Promise<P2PWrapper> {
+    if (wrapper.seq <= 0) throw new Error("wrapper.seq required")
+    await this.sendObject(wrapper, encrypt)
+    return await new Promise<P2PWrapper>((resolve, reject) => {
+      const t = setTimeout(() => {
+        this.pending.delete(wrapper.seq)
+        reject(new Error("request timeout"))
+      }, timeoutMs)
+      this.pending.set(wrapper.seq, {
+        resolve: (sw) => resolve({ seq: sw.seq, commandOrdinal: sw.commandOrdinal, data: sw.data }),
+        reject,
+        t,
+      })
+    })
+  }
+
+  public async sendStreamOpen(wrapper: StreamP2PWrapper, timeoutMs: number = 10_000): Promise<P2PWrapper> {
+    if (wrapper.seq <= 0) throw new Error("wrapper.seq required")
+    await this.sendObject(wrapper, true)
+    return await new Promise<P2PWrapper>((resolve, reject) => {
+      const t = setTimeout(() => {
+        this.pending.delete(wrapper.seq)
+        reject(new Error("request timeout"))
+      }, timeoutMs)
+      this.pending.set(wrapper.seq, {
+        resolve: (sw) => resolve({ seq: sw.seq, commandOrdinal: sw.commandOrdinal, data: sw.data }),
+        reject,
+        t,
+      })
+    })
+  }
+
+  public async send(wrapper: P2PWrapper | StreamP2PWrapper, encrypt: boolean): Promise<void> {
+    await this.sendObject(wrapper, encrypt)
   }
 
   public async handshakeAndLogin(userId: string, privateKeyPemPath: string): Promise<void> {
@@ -159,20 +252,23 @@ export class CoreWsClient {
     const root = await this.loadRpcRoot()
     const RpcFrame = root.lookupType("p2p.rpc.v1.RpcFrame")
     const RpcMeta = root.lookupType("p2p.rpc.v1.RpcMeta")
+    const requestId = this.allocateSeq()
     const meta = RpcMeta.create({
-      request_id: process.hrtime.bigint().toString(),
+      request_id: String(requestId),
       service,
       method,
       service_version: "",
       call_type: 1,
-      deadline_epoch_ms: "0",
+      deadline_epoch_ms: String(BigInt(Date.now() + Math.max(1, timeoutMs | 0))),
       codec: "protobuf",
       idempotent: false,
       method_hash: 0,
       headers: {},
     })
     const open = RpcFrame.encode({ meta, frame_type: 1, payload: requestPayload, end_of_stream: true }).finish()
-    const resp = await this.request(commandName, open, timeoutMs)
+    const cmd = this.ordinals.get(commandName)
+    if (cmd == null) throw new Error(`unknown command: ${commandName}`)
+    const resp = await this.sendAndAwait({ seq: requestId, commandOrdinal: cmd, data: open }, true, timeoutMs)
     const frame = RpcFrame.decode(resp.data) as any
     if (!frame.status) throw new Error("RPC missing status")
     if (frame.frame_type === 5) throw new Error(String(frame.status.message ?? "RPC ERROR"))
@@ -191,37 +287,160 @@ export class CoreWsClient {
     return root
   }
 
-  private mustOrdinal(name: string): number {
+  public mustOrdinal(name: string): number {
     const v = this.ordinals.get(name)
     if (v == null) throw new Error(`missing ordinal: ${name}`)
     return v
   }
 
   private async sendWrapper(w: P2PWrapper, encrypt: boolean): Promise<void> {
+    await this.sendObject(w, encrypt)
+  }
+
+  private async sendObject(obj: P2PWrapper | StreamP2PWrapper, encrypt: boolean): Promise<void> {
     const ws = this.ws
     if (!ws) throw new Error("not connected")
-    let payload = Buffer.from(encodeP2PWrapper(w))
+    const bytes = isStreamWrapper(obj) ? encodeStreamP2PWrapper(obj) : encodeP2PWrapper(obj)
+    let payload = Buffer.from(bytes)
     if (encrypt && this.xorKey && payload.length > 0) xorRepeatInPlace(payload, this.xorKey)
     ws.send(encodeCoreFrame(this.cfg.magic, payload))
   }
 
   private onMessage(ev: Buffer): void {
-    let w: P2PWrapper
     try {
-      const f = decodeCoreFrame(new Uint8Array(ev))
-      if ((f.magic | 0) !== (this.cfg.magic | 0)) return
-      let payload = Buffer.from(f.payload)
-      if (this.xorKey && payload.length > 0) xorRepeatInPlace(payload, this.xorKey)
-      w = decodeP2PWrapper(payload)
+      const frames = decodeAllCoreFrames(new Uint8Array(ev))
+      for (const f of frames) {
+        if ((f.magic | 0) !== (this.cfg.magic | 0)) continue
+        let payload = Buffer.from(f.payload)
+        if (this.xorKey && payload.length > 0) xorRepeatInPlace(payload, this.xorKey)
+        const sw = decodeStreamP2PWrapper(payload)
+        const isAck =
+          sw.commandOrdinal === this.mustOrdinal("STREAM_ACK") ||
+          sw.commandOrdinal === this.mustOrdinal("STD_OK") ||
+          sw.commandOrdinal === this.mustOrdinal("STD_ERROR") ||
+          sw.commandOrdinal === this.mustOrdinal("INVALID_PROTOCOL")
+        if (isAck) {
+          const p = this.pending.get(sw.seq)
+          if (p) {
+            this.pending.delete(sw.seq)
+            clearTimeout(p.t)
+            p.resolve(sw)
+          }
+          continue
+        }
+
+        const handler = this.streamHandlers.get(sw.seq)
+        if (
+          handler &&
+          (sw.commandOrdinal === this.mustOrdinal("RPC_STREAM") || sw.commandOrdinal === this.mustOrdinal("RPC_EVENT"))
+        ) {
+          handler(sw)
+          continue
+        }
+
+        if (sw.commandOrdinal === this.mustOrdinal("RPC_STREAM") || sw.commandOrdinal === this.mustOrdinal("RPC_EVENT")) {
+          continue
+        }
+
+        const p = this.pending.get(sw.seq)
+        if (!p) continue
+        this.pending.delete(sw.seq)
+        clearTimeout(p.t)
+        p.resolve(sw)
+      }
     } catch {
       return
     }
-    const p = this.pending.get(w.seq)
-    if (!p) return
-    this.pending.delete(w.seq)
-    clearTimeout(p.t)
-    p.resolve(w)
   }
+
+  private cleanup(error: Error): void {
+    for (const [seq, p] of this.pending.entries()) {
+      clearTimeout(p.t)
+      p.reject(error)
+      this.pending.delete(seq)
+    }
+    this.streamHandlers.clear()
+    this.xorKey = undefined
+  }
+
+  private clearTimers(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    this.heartbeatTimer = undefined
+    this.reconnectTimer = undefined
+  }
+
+  private startHeartbeat(): void {
+    const intervalMs = Number(this.cfg.heartbeat?.intervalMs ?? 0) | 0
+    if (intervalMs <= 0) return
+    const timeoutMs = Math.max(intervalMs * 2, Number(this.cfg.heartbeat?.timeoutMs ?? 0) | 0)
+    this.heartbeatTimer = setInterval(() => {
+      const ws = this.ws
+      if (!ws) return
+      const now = Date.now()
+      if (timeoutMs > 0 && now - this.lastPongAtMs > timeoutMs) {
+        try {
+          ws.terminate()
+        } catch {}
+        return
+      }
+      try {
+        ws.ping()
+      } catch {}
+    }, intervalMs)
+  }
+
+  private handleDisconnect(): void {
+    if (!this.ws) return
+    this.clearTimers()
+    this.ws = undefined
+    this.cleanup(new Error("closed"))
+    this.cfg.telemetry?.onDisconnect?.()
+    if (this.suppressReconnect) return
+    if (!this.cfg.reconnect?.enabled) return
+    if (this.reconnecting) return
+    this.reconnecting = true
+    this.scheduleReconnect()
+  }
+
+  private scheduleReconnect(): void {
+    const cfg = this.cfg.reconnect
+    if (!cfg?.enabled) return
+    const initialMs = Math.max(50, Number(cfg.initialMs ?? 250) | 0)
+    const maxMs = Math.max(initialMs, Number(cfg.maxMs ?? 10_000) | 0)
+    const jitterRatio = Math.max(0, Math.min(1, Number(cfg.jitterRatio ?? 0.2)))
+    const base = this.reconnectDelayMs > 0 ? Math.min(maxMs, this.reconnectDelayMs * 2) : initialMs
+    const jitter = Math.floor(base * jitterRatio * Math.random())
+    const delay = base + jitter
+    this.reconnectDelayMs = base
+    this.cfg.telemetry?.onReconnectAttempt?.(delay)
+    this.reconnectTimer = setTimeout(() => {
+      void this.reconnectNow()
+    }, delay)
+  }
+
+  private async reconnectNow(): Promise<void> {
+    if (this.suppressReconnect) {
+      this.reconnecting = false
+      return
+    }
+    try {
+      await this.connect()
+      this.reconnectDelayMs = 0
+      if (this.cfg.reconnect?.onReconnect) await this.cfg.reconnect.onReconnect(this)
+      this.reconnecting = false
+      this.cfg.telemetry?.onReconnectSuccess?.()
+    } catch {
+      this.clearTimers()
+      this.ws = undefined
+      this.cleanup(new Error("closed"))
+      this.scheduleReconnect()
+    }
+  }
+}
+
+function isStreamWrapper(w: P2PWrapper | StreamP2PWrapper): w is StreamP2PWrapper {
+  return (w as StreamP2PWrapper).index != null
 }
 
 function xorRepeatInPlace(out: Uint8Array, key: Uint8Array): void {

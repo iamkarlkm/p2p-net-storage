@@ -13,6 +13,21 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public final class P2PSyncStateStore implements AutoCloseable {
 
+    public enum QueueStage {
+        ACTIVE,
+        STARTUP,
+        INFLIGHT,
+        FAILED
+    }
+
+    public enum QueueKey {
+        DIR_CREATE,
+        DIR_DELETE,
+        FILE_CREATE,
+        FILE_MODIFY,
+        FILE_DELETE
+    }
+
     private final Path dsHome;
     private final DsString fileIdStrings;
     private final DsString failureReasonStrings;
@@ -45,6 +60,8 @@ public final class P2PSyncStateStore implements AutoCloseable {
     private DsHashSet fileDeletesFailed;
     private DsHashSet dirCreatesFailed;
     private DsHashSet dirDeletesFailed;
+
+    private final PersistentLongQueue[] queueRefs = new PersistentLongQueue[QueueKey.values().length * QueueStage.values().length];
 
     public P2PSyncStateStore(Path dsHome) {
         try {
@@ -87,6 +104,8 @@ public final class P2PSyncStateStore implements AutoCloseable {
             this.fileDeletesFailed = new DsHashSet(this.dsHome.resolve("events_file_delete.failed.set").toFile());
             this.dirCreatesFailed = new DsHashSet(this.dsHome.resolve("events_dir_create.failed.set").toFile());
             this.dirDeletesFailed = new DsHashSet(this.dsHome.resolve("events_dir_delete.failed.set").toFile());
+
+            initQueueRefs();
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -244,6 +263,49 @@ public final class P2PSyncStateStore implements AutoCloseable {
 
     public DsHashSet dirDeletesFailed() {
         return dirDeletesFailed;
+    }
+
+    public DsHashSet queue(QueueKey key, QueueStage stage) {
+        int code = codeForKey(key);
+        if (code < 0) {
+            throw new IllegalArgumentException("invalid queue key");
+        }
+        DsHashSet set = stageSetForCode(code, stage);
+        if (set == null) {
+            throw new IllegalArgumentException("invalid queue stage");
+        }
+        return set;
+    }
+
+    public PersistentLongQueue queueRef(QueueKey key, QueueStage stage) {
+        PersistentLongQueue q = queueRefs[indexOf(key, stage)];
+        if (q == null) {
+            throw new IllegalStateException("queueRef not initialized");
+        }
+        return q;
+    }
+
+    private void initQueueRefs() {
+        for (QueueKey key : QueueKey.values()) {
+            for (QueueStage stage : QueueStage.values()) {
+                DsHashSet set = queue(key, stage);
+                queueRefs[indexOf(key, stage)] = new DsHashSetQueue(set);
+            }
+        }
+    }
+
+    private static int indexOf(QueueKey key, QueueStage stage) {
+        int stages = QueueStage.values().length;
+        return key.ordinal() * stages + stage.ordinal();
+    }
+
+    private static int codeForKey(QueueKey key) {
+        if (key == QueueKey.DIR_CREATE) return 0;
+        if (key == QueueKey.DIR_DELETE) return 1;
+        if (key == QueueKey.FILE_CREATE) return 2;
+        if (key == QueueKey.FILE_MODIFY) return 3;
+        if (key == QueueKey.FILE_DELETE) return 4;
+        return -1;
     }
 
     public void markFailed(FileSyncEventType type, boolean directory, long fileId, String reason) {
@@ -431,6 +493,28 @@ public final class P2PSyncStateStore implements AutoCloseable {
         if (code == 2) return fileCreatesFailed;
         if (code == 3) return fileModifiesFailed;
         if (code == 4) return fileDeletesFailed;
+        return null;
+    }
+
+    private DsHashSet stageSetForCode(int code, QueueStage stage) {
+        if (stage == QueueStage.ACTIVE) return activeSetForCode(code);
+        if (stage == QueueStage.STARTUP) {
+            if (code == 0) return dirCreatesStartup;
+            if (code == 1) return dirDeletesStartup;
+            if (code == 2) return fileCreatesStartup;
+            if (code == 3) return fileModifiesStartup;
+            if (code == 4) return fileDeletesStartup;
+            return null;
+        }
+        if (stage == QueueStage.INFLIGHT) {
+            if (code == 0) return dirCreatesInflight;
+            if (code == 1) return dirDeletesInflight;
+            if (code == 2) return fileCreatesInflight;
+            if (code == 3) return fileModifiesInflight;
+            if (code == 4) return fileDeletesInflight;
+            return null;
+        }
+        if (stage == QueueStage.FAILED) return failedSetForCode(code);
         return null;
     }
 

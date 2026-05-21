@@ -131,7 +131,7 @@ public final class Ds256File implements Serializable, Comparable<Ds256File> {
         }
     }
 
-    public FileMetadata save(byte[] content, FileMetadata metadata) throws IOException, InterruptedException {
+    public FileMetadata save(byte[] content, FileMetadata metadata) throws IOException, InterruptedException, ClassNotFoundException {
         return getDefaultFileSystem().saveFile(path, content, metadata);
     }
 

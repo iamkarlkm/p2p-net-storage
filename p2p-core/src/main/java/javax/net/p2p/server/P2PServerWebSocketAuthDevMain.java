@@ -46,6 +46,7 @@ public final class P2PServerWebSocketAuthDevMain {
                 + "      - \"RPC_DISCOVER\"\n"
                 + "      - \"RPC_HEALTH\"\n"
                 + "      - \"RPC_UNARY\"\n"
+                + "      - \"RPC_STREAM\"\n"
                 + "      - \"RPC_EVENT\"\n"
                 + "      - \"RPC_CONTROL\"\n";
 

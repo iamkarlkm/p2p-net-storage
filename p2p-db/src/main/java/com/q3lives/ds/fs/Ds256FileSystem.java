@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import com.q3lives.ds.bucket.DsFixedBucketStore;
 import com.q3lives.ds.index.value.DsTagIndex;
 import com.q3lives.ds.kv.DsSha256KV;
 import com.q3lives.ds.util.DsDataUtil;
@@ -53,6 +54,11 @@ public class Ds256FileSystem {
     private static final String NS_SYSTEM = "system";//系统预定义空间。
 
     /**
+     * 小文件内联阈值：&lt;= 4KB 的文件直接存入 DsFixedBucketStore，不走 SHA-256 内容寻址。
+     */
+    private static final int INLINE_THRESHOLD = 4096;
+
+    /**
      * 创建文件系统实例。
      *
      * <p>会为 global/group.private/system 三个内部命名空间各自初始化一套 Stores（内容、元数据、目录、索引）。</p>
@@ -76,7 +82,7 @@ public class Ds256FileSystem {
      *
      * <p>该接口不指定路径：fileId 通过 globalFileId 创建/定位；内容按 sha256(content) 做内容寻址存储。</p>
      */
-    public FileMetadata saveFile(byte[] content, FileMetadata metadata) throws IOException, InterruptedException {
+    public FileMetadata saveFile(byte[] content, FileMetadata metadata) throws IOException, InterruptedException, ClassNotFoundException {
         return saveFileInternal(globals, null, content, metadata);
     }
 
@@ -88,7 +94,7 @@ public class Ds256FileSystem {
      *
      * @param path Linux 风格路径（system 空间可为 "$..."，例如 "$cfg/sys.txt"）
      */
-    public FileMetadata saveFile(String path, byte[] content, FileMetadata metadata) throws IOException, InterruptedException {
+    public FileMetadata saveFile(String path, byte[] content, FileMetadata metadata) throws IOException, InterruptedException, ClassNotFoundException {
         ParsedPath pp = parsePath(null, path);
         Stores s = stores(pp.ns);
         ensureDirPath(s, parentPath(pp.path));
@@ -118,6 +124,16 @@ public class Ds256FileSystem {
         if (basic == null) {
             return null;
         }
+        // 空文件快速返回
+        if (basic.fileSize == 0) {
+            return new byte[0];
+        }
+        // 小文件内联路径
+        FileMetadata.StorageMeta storage = (FileMetadata.StorageMeta) loadMetadataGroupByFileId(s, fileId, "storage");
+        if (storage != null && storage.inlineId != 0) {
+            return s.inlineStore.get("mft", "inline", storage.inlineId, (int) basic.fileSize);
+        }
+        // 大文件 SHA-256 路径
         return getFileContent(s, basic.contentHash);
     }
 
@@ -179,7 +195,7 @@ public class Ds256FileSystem {
      * <p>用于避免调用方自行拼接路径，从而统一规范化与禁止目录穿透规则。</p>
      */
     public FileMetadata saveFile(String parentPath, String relativePath, byte[] content, FileMetadata metadata)
-            throws IOException, InterruptedException {
+            throws IOException, InterruptedException, ClassNotFoundException {
         ParsedPath base = parsePath(null, parentPath);
         ParsedPath child = parsePath(base, relativePath);
         Stores s = stores(child.ns);
@@ -205,7 +221,7 @@ public class Ds256FileSystem {
     }
 
     private FileMetadata saveFileInternal(Stores s, Long fixedFileId, byte[] content, FileMetadata metadata, String filePath)
-            throws IOException, InterruptedException {
+            throws IOException, InterruptedException, ClassNotFoundException {
         if (content == null) {
             content = new byte[0];
         }
@@ -213,21 +229,50 @@ public class Ds256FileSystem {
             metadata = new FileMetadata();
         }
 
-        byte[] contentHashBytes = DsDataUtil.sha256(content);
-        String contentHashStr = DsDataUtil.toHex(contentHashBytes);
+        // 尝试释放旧内联块（更新场景）
+        long oldInlineId = 0;
+        if (fixedFileId != null && fixedFileId > 0) {
+            FileMetadata.StorageMeta oldStorage = (FileMetadata.StorageMeta) loadMetadataGroupByFileId(s, fixedFileId, "storage");
+            if (oldStorage != null) {
+                oldInlineId = oldStorage.inlineId;
+            }
+        }
 
-        s.contentStore.update(contentHashBytes, content);
+        // 根据内容大小选择存储路径：空文件 / 小文件内联 / 大文件 SHA-256
+        if (content.length == 0) {
+            metadata.basic.contentHash = "";
+            metadata.storage.inlineId = 0;
+            metadata.security.hashAlgorithm = "";
+        } else if (content.length <= INLINE_THRESHOLD) {
+            metadata.basic.contentHash = "";
+            metadata.storage.inlineId = s.inlineStore.put("mft", "inline", content);
+            metadata.security.hashAlgorithm = "INLINE";
+        } else {
+            byte[] contentHashBytes = DsDataUtil.sha256(content);
+            String contentHashStr = DsDataUtil.toHex(contentHashBytes);
+            s.contentStore.update(contentHashBytes, content);
+            metadata.basic.contentHash = contentHashStr;
+            metadata.storage.inlineId = 0;
+            metadata.security.hashAlgorithm = "SHA-256";
+        }
 
         if (metadata.globalFileId == null || metadata.globalFileId.isEmpty()) {
             metadata.globalFileId = UUID.randomUUID().toString();
         }
-       
+
         metadata.basic.fileSize = content.length;
         metadata.storage.fileSizePhysical = content.length;
-        metadata.basic.contentHash = contentHashStr;
-        metadata.security.hashAlgorithm = "SHA-256";
 
         long fileId = fixedFileId != null ? fixedFileId : getOrCreateFileIdByGlobalFileId(s, metadata.globalFileId);
+        // 确保 globalFileId -> fileId 映射存在（路径写入场景可能未建立）
+        if (fileId > 0 && metadata.globalFileId != null && !metadata.globalFileId.isEmpty()) {
+            byte[] k = metadata.globalFileId.getBytes(StandardCharsets.UTF_8);
+            byte[] v = s.gidToFileId.get(k);
+            long existing = Ds256DirectoryStore.bytesToLong(v);
+            if (existing == 0) {
+                s.gidToFileId.update(k, Ds256DirectoryStore.longToBytes(fileId));
+            }
+        }
         if (filePath != null && !filePath.isEmpty()) {
             metadata.basic.filePathVirtual = filePath;
             metadata.basic.fileName = fileName(filePath);
@@ -239,6 +284,11 @@ public class Ds256FileSystem {
         saveMetadataGroupByFileId(s, fileId, "security", metadata.security);
         saveMetadataGroupByFileId(s, fileId, "ext", metadata.ext);
         saveMetadataGroupByFileId(s, fileId, "tags", metadata.tags);
+
+        // 释放旧内联块（更新后）
+        if (oldInlineId != 0 && oldInlineId != metadata.storage.inlineId) {
+            s.inlineStore.remove("mft", "inline", oldInlineId);
+        }
 
         if (metadata.tags != null && metadata.tags.tags != null) {
             for (Map.Entry<String, String> entry : metadata.tags.tags.entrySet()) {
@@ -294,11 +344,20 @@ public class Ds256FileSystem {
      * 通过 globalFileId 读取文件内容（默认 global 命名空间）。
      */
     public byte[] getFileContentById(String globalFileId) throws IOException, InterruptedException, ClassNotFoundException {
-        FileMetadata.BasicMeta basic = getBasicMetadata(globalFileId);
-        if (basic == null) {
+        FileMetadata metadata = getMetadata(globalFileId);
+        if (metadata == null || metadata.basic == null) {
             return null;
         }
-        return getFileContent(basic.contentHash);
+        // 空文件快速返回
+        if (metadata.basic.fileSize == 0) {
+            return new byte[0];
+        }
+        // 小文件内联路径
+        if (metadata.storage != null && metadata.storage.inlineId != 0) {
+            return globals.inlineStore.get("mft", "inline", metadata.storage.inlineId, (int) metadata.basic.fileSize);
+        }
+        // 大文件 SHA-256 路径
+        return getFileContent(metadata.basic.contentHash);
     }
 
     /**
@@ -312,7 +371,7 @@ public class Ds256FileSystem {
     }
 
     private FileMetadata saveFileInternal(Stores s, Long fixedFileId, byte[] content, FileMetadata metadata)
-            throws IOException, InterruptedException {
+            throws IOException, InterruptedException, ClassNotFoundException {
         return saveFileInternal(s, fixedFileId, content, metadata, null);
     }
 
@@ -576,6 +635,7 @@ public class Ds256FileSystem {
         final DsSha256KV pathToDirId;
         final DsTagIndex tagIndex;
         final Ds256DirectoryStore dirStore;
+        final DsFixedBucketStore inlineStore;
 
         Stores(String rootDir, String nsDir) throws IOException {
             String base = rootDir + File.separator + nsDir;
@@ -586,6 +646,7 @@ public class Ds256FileSystem {
             this.pathToDirId = new DsSha256KV(base + File.separator + "dir_map");
             this.tagIndex = new DsTagIndex(base + File.separator + "tags");
             this.dirStore = new Ds256DirectoryStore(base + File.separator + "dir_blocks");
+            this.inlineStore = new DsFixedBucketStore(base + File.separator + "inline");
         }
 
         void close() {
@@ -595,6 +656,11 @@ public class Ds256FileSystem {
             pathToFileId.close();
             pathToDirId.close();
             tagIndex.close();
+            try {
+                inlineStore.close();
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
             try {
                 dirStore.close();
             } catch (IOException e) {

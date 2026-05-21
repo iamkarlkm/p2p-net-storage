@@ -1,5 +1,5 @@
 ---
-updated: "2026-05-14T15:51:37Z"
+updated: "2026-05-17T21:36:31Z"
 ---
 ﻿---
 updated: "2026-05-12T12:23:20Z"
@@ -25,6 +25,7 @@ This file is a deterministic snapshot of the repository state at the last refres
 
 ## Work Notes
 
+- 2026-05-17：WebSocket 开发服务器 `P2PServerWebSocketAuthDevMain` 的 auth allowCommands 补齐 `RPC_STREAM`；C core_compat 的私钥加载支持“PKCS8 PEM 或仅 base64 的 PKCS8”两种文件格式，C demo 自动把非 64 位 hex userId 归一化为 sha256 hex。
 - ???p2p-sync ????/????+??????`p2p-sync.yaml` ?? `auth`??? `AuthConfig`?? `authYaml`??? auth.yaml??????? `p2p.auth.*` ??????? client/server ???`P2PSyncNodeMain` ???? `auth.enabled` ??????????????? authYaml ???? normalize ?????
 - ???RPC_EVENT ??? PubSub???????????? `SimpleChannelInboundHandler` ?? `release()` ????? `clear()`?`seq` ? 0????? stream handler ???? requestId???/??????????? `AbstractStreamRequestAdapter` ??? `StreamP2PWrapper` ????????????????? canceled ??????`CoreCompatPubSubMain` ?????????subscribe?publish?receive?cancel?cancel ? subscriber_count=0????????`p2p-core/src/main/java/javax/net/p2p/channel/AbstractStreamRequestAdapter.java`?`p2p-core/src/main/java/javax/net/p2p/model/StreamP2PWrapper.java`?`p2p-ws-sdk-java/src/main/java/p2pws/sdk/demo/CoreCompatPubSubMain.java`?
 - ???auth.yaml ?? allowCommands ?? RPC_*???? allowCommands ??? `RPC_*`???????????? p2p-core RPC????? `.brain/`?`p2p-core/`???????`.brain/context/current-state.md`?`.brain/resources/changes/auth-yaml-allowcommands-rpc.md`?`.brain/resources/changes/c-demos-crypto-mode-client-random-server-random-plain-distill-proposal.md`?`.brain/resources/changes/c-demos-crypto-mode-client-random-server-random-plain.md`?`.brain/resources/changes/dsdb-count-db-row-count-distill-proposal.md`?`.brain/resources/changes/dsdb-count-db-row-count.md`?
@@ -82,12 +83,21 @@ This file is a deterministic snapshot of the repository state at the last refres
 
 ## Local Notes
 
+- Updated: 2026-05-17 00:00:00 +08:00
+- Progress: p2p-ws-sdk 的 core_compat RPC 已在 TS/Python/Dart/C 完成对齐 p2p-core 的 RPC_UNARY/RPC_STREAM/RPC_EVENT/CLIENT_STREAM/BIDI_STREAM 关键能力（含流控 WINDOW_UPDATE、chunk_index/end_of_message 分片重组、取消 RPC_CONTROL/CANCEL）。
+- Progress: TS/Python core_compat WS 客户端补齐生产级能力：心跳、自动重连（退避+jitter）、pending 上限、telemetry 回调；Dart core_compat 补齐 multi-frame 解析与 stream wrapper 路由。
+- Verification: TS 跑通 verify-wrapper 与 core_compat 自检脚本；Dart 通过 dart analyze；Python 通过导入校验与 stream wrapper 自检脚本。
+- Follow-up: C 侧需要在具备工具链的环境完成编译/运行验证（当前环境缺少 cmake/gcc/cl），建议优先跑 p2pws_core_ws_verify_stream_wrapper 与 core_ws_rpc_stream_collect_chat demo 做回归。
+
 - Updated: 2026-05-15 12:30:00 +08:00
 - Progress: `p2p-core` 的 QUIC/TCP/UDP 握手已支持 4 种 cryptoMode（PLAIN/CLIENT_RANDOM/SERVER_RANDOM/KEYFILE），并有对应端到端测试覆盖。
 - Resolved: UDP 侧握手闭环可用（放行 UDP 控制 ACK；UDP server 调用 channel-aware handler；UDP 大包启用分片 v2：datagram 自带 offset/index/count/seq，默认开关 `p2p.udp.segment.v2.enabled=true`，避免 datagram 截断与乱序风险）。
 
 - Updated: 2026-05-15 07:14:00 +08:00
 - Progress: `p2p-sync` 新增失败队列与 Web 监控：写冲突（write_conflict）等终止错误会进入 failed.* 队列；Web UI 可查看新增/修改/删除/失败队列并支持“重试(覆盖同步)/放弃”操作；配置项 `monitorPort`（默认 8090）。
+
+- Updated: 2026-05-16 07:37:00 +08:00
+- Progress: `p2p-sync` 队列框架抽象：`P2PSyncStateStore` 增加 `QueueKey/QueueStage` 统一访问入口；目录同步的启动表/活跃表消费与 inflight 推进由 `P2PSyncQueueEngine` 统一驱动；Web 监控改为通过统一 queue API 读取队列。
 
 - Updated: 2026-05-04 19:33:00 +08:00
 - `STD_ERROR(-1)` now supports a structured payload (`P2PStdError`) with stable error codes and message keys for core governance paths (auth/service/routing/task).
@@ -129,4 +139,3 @@ This file is a deterministic snapshot of the repository state at the last refres
 - RPC response governance is now wired end-to-end: `RpcRequestContext` can write response headers, response trailers, and status details; `RpcFrames` encodes them on the wire; stream observers receive them through `onResponseContext(...)`.
 - Service-side governance now has a shared interceptor chain: `RpcServerInterceptor` hooks `beforeHandle/afterComplete/afterError` across unary, discover, server-stream, client-stream, bidi, and event paths, and `RpcBootstrap` registers `RpcAuditInterceptor` by default to stamp audit fields and emit `rpc.audit` logs.
 - Upload-side backpressure is still intentionally minimal. The current stack now has much stronger correctness and observability coverage, but long-run stress, partial transport loss, interceptor policy composition, and richer production governance remain the main hardening gaps.
-

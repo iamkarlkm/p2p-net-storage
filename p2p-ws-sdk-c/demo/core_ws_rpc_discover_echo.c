@@ -30,6 +30,17 @@ static uint64_t now_ms(void) {
   return (uint64_t)time(NULL) * 1000ULL;
 }
 
+static int is_hex_64(const char* s) {
+  if (!s) return 0;
+  if (strlen(s) != 64) return 0;
+  for (int i = 0; i < 64; i++) {
+    const char c = s[i];
+    const int ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    if (!ok) return 0;
+  }
+  return 1;
+}
+
 int main(int argc, char** argv) {
   const char* ws_url = argc > 1 ? argv[1] : "ws://127.0.0.1:18089/p2p";
   int32_t magic = argc > 2 ? (int32_t)strtol(argv[2], NULL, 0) : (int32_t)-252702961;
@@ -45,18 +56,21 @@ int main(int argc, char** argv) {
   p2pws_ws_url_t u;
   p2pws_ws_client_t ws;
   memset(&ws, 0, sizeof(ws));
-  if (p2pws_ws_parse_url(ws_url, &u) != 0) {
-    fprintf(stderr, "bad ws url\n");
+  int rc = p2pws_ws_parse_url(ws_url, &u);
+  if (rc != 0) {
+    fprintf(stderr, "bad ws url: %d\n", rc);
     return 3;
   }
-  if (p2pws_ws_connect(&u, &ws) != 0) {
-    fprintf(stderr, "ws connect failed\n");
+  rc = p2pws_ws_connect(&u, &ws);
+  if (rc != 0) {
+    fprintf(stderr, "ws connect failed: %d\n", rc);
     return 4;
   }
 
   p2pws_rsa_t rsa;
-  if (p2pws_rsa_load_private_pem(priv_pem_path, &rsa) != 0) {
-    fprintf(stderr, "load private key failed\n");
+  rc = p2pws_rsa_load_private_pem(priv_pem_path, &rsa);
+  if (rc != 0) {
+    fprintf(stderr, "load private key failed: %d\n", rc);
     p2pws_ws_close(&ws);
     return 5;
   }
@@ -78,8 +92,14 @@ int main(int argc, char** argv) {
   uint64_t ts = now_ms();
   uint8_t ts_be[8];
   be_i64(ts, ts_be);
-  uint8_t* user_bytes = (uint8_t*)user_id;
-  size_t user_len = strlen(user_id);
+  char user_hex[65];
+  const char* user_for_auth = user_id;
+  if (!is_hex_64(user_id)) {
+    p2pws_sha256_hex((const uint8_t*)user_id, strlen(user_id), user_hex);
+    user_for_auth = user_hex;
+  }
+  uint8_t* user_bytes = (uint8_t*)user_for_auth;
+  size_t user_len = strlen(user_for_auth);
   p2pws_buf_t nonce_in;
   p2pws_buf_init(&nonce_in);
   p2pws_buf_append(&nonce_in, ts_be, 8);
@@ -128,12 +148,12 @@ int main(int argc, char** argv) {
 
   p2pws_buf_t hand_req;
   p2pws_buf_init(&hand_req);
-  p2pws_core_encode_handshake_request(user_id, ts, nonce16, xor_len, encrypted_xor_key.data, encrypted_xor_key.len, sig.data, sig.len, &hand_req);
+  p2pws_core_encode_handshake_request(user_for_auth, ts, nonce16, xor_len, encrypted_xor_key.data, encrypted_xor_key.len, sig.data, sig.len, &hand_req);
 
   p2pws_buf_t frame_payload;
   p2pws_buf_init(&frame_payload);
   p2pws_wrapper_view_t resp;
-  int rc = p2pws_core_request(&ws, magic, NULL, 0, 0, 1, P2PWS_P2P_COMMAND_ORDINAL_HAND, hand_req.data, hand_req.len, &frame_payload, &resp);
+  rc = p2pws_core_request(&ws, magic, NULL, 0, 0, 1, P2PWS_P2P_COMMAND_ORDINAL_HAND, hand_req.data, hand_req.len, &frame_payload, &resp);
   if (rc != 0) {
     fprintf(stderr, "HAND request failed: %d\n", rc);
     goto done;
@@ -167,7 +187,7 @@ int main(int argc, char** argv) {
 
   p2pws_buf_t login_req;
   p2pws_buf_init(&login_req);
-  p2pws_core_encode_login_request(user_id, lts, sig.data, sig.len, &login_req);
+  p2pws_core_encode_login_request(user_for_auth, lts, sig.data, sig.len, &login_req);
 
   rc = p2pws_core_request(&ws, magic, xor_key, (size_t)xor_len, 1, 2, P2PWS_P2P_COMMAND_ORDINAL_LOGIN, login_req.data, login_req.len, &frame_payload, &resp);
   if (rc != 0) {

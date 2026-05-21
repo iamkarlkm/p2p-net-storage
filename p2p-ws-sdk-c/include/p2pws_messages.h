@@ -10,6 +10,7 @@ extern "C" {
 #endif
 
 int p2pws_msg_encode_wrapper(int32_t seq, int32_t command, const uint8_t* data, size_t data_len, p2pws_buf_t* out);
+int p2pws_msg_encode_stream_wrapper(int32_t seq, int32_t command, const uint8_t* data, size_t data_len, int32_t index, int completed, int canceled, p2pws_buf_t* out);
 
 int p2pws_msg_encode_hand(const uint8_t* client_pub_spki_der, size_t client_pub_len, const uint8_t* key_id32, uint32_t max_frame_payload, const char* client_id, const char* crypto_mode, const uint8_t* client_random_key, size_t client_random_key_len, p2pws_buf_t* out);
 

@@ -7,8 +7,25 @@ class RpcFrameLite {
   final int statusCode;
   final String statusMessage;
   final Uint8List payload;
+  final int chunkIndex;
+  final bool endOfStream;
+  final bool endOfMessage;
+  final int permits;
+  final int maxInflightFrames;
+  final int maxFrameBytes;
 
-  RpcFrameLite({required this.frameType, required this.statusCode, required this.statusMessage, required this.payload});
+  RpcFrameLite({
+    required this.frameType,
+    required this.statusCode,
+    required this.statusMessage,
+    required this.payload,
+    this.chunkIndex = 0,
+    this.endOfStream = false,
+    this.endOfMessage = false,
+    this.permits = 0,
+    this.maxInflightFrames = 0,
+    this.maxFrameBytes = 0,
+  });
 }
 
 Uint8List encodeRpcMeta({
@@ -31,6 +48,12 @@ Uint8List encodeRpcMeta({
   return w.takeBytes();
 }
 
+Uint8List encodeRpcMetaMinimal({required int requestId}) {
+  final w = ProtoWriter();
+  w.writeUint64(1, requestId);
+  return w.takeBytes();
+}
+
 Uint8List encodeRpcFrameOpenUnary({required Uint8List metaBytes, required Uint8List payload, bool endOfStream = true}) {
   final w = ProtoWriter();
   w.writeEmbedded(1, metaBytes);
@@ -40,12 +63,84 @@ Uint8List encodeRpcFrameOpenUnary({required Uint8List metaBytes, required Uint8L
   return w.takeBytes();
 }
 
+Uint8List encodeRpcFlowControl({int permits = 0, int maxInflightFrames = 0, int maxFrameBytes = 0}) {
+  final w = ProtoWriter();
+  if (permits > 0) w.writeInt32(1, permits);
+  if (maxInflightFrames > 0) w.writeInt32(2, maxInflightFrames);
+  if (maxFrameBytes > 0) w.writeInt32(3, maxFrameBytes);
+  return w.takeBytes();
+}
+
+Uint8List encodeRpcFrameOpenStream({
+  required Uint8List metaBytes,
+  required Uint8List payload,
+  required int permits,
+  int maxInflightFrames = 0,
+  int maxFrameBytes = 0,
+  bool endOfStream = true,
+}) {
+  final w = ProtoWriter();
+  w.writeEmbedded(1, metaBytes);
+  w.writeInt32(2, 1);
+  if (payload.isNotEmpty) w.writeBytesField(3, payload);
+  w.writeEmbedded(7, encodeRpcFlowControl(permits: permits, maxInflightFrames: maxInflightFrames, maxFrameBytes: maxFrameBytes));
+  w.writeBool(6, endOfStream);
+  return w.takeBytes();
+}
+
+Uint8List encodeRpcFrameData({
+  required int requestId,
+  required Uint8List payload,
+  required int chunkIndex,
+  required bool endOfMessage,
+}) {
+  final w = ProtoWriter();
+  w.writeEmbedded(1, encodeRpcMetaMinimal(requestId: requestId));
+  w.writeInt32(2, 2);
+  if (payload.isNotEmpty) w.writeBytesField(3, payload);
+  w.writeInt32(5, chunkIndex);
+  w.writeBool(8, endOfMessage);
+  w.writeBool(6, false);
+  return w.takeBytes();
+}
+
+Uint8List encodeRpcFrameClose({required int requestId}) {
+  final w = ProtoWriter();
+  w.writeEmbedded(1, encodeRpcMetaMinimal(requestId: requestId));
+  w.writeInt32(2, 3);
+  w.writeBool(6, true);
+  return w.takeBytes();
+}
+
+Uint8List encodeRpcFrameCancel({required int requestId}) {
+  final w = ProtoWriter();
+  w.writeEmbedded(1, encodeRpcMetaMinimal(requestId: requestId));
+  w.writeInt32(2, 4);
+  w.writeBool(6, true);
+  return w.takeBytes();
+}
+
+Uint8List encodeRpcFrameWindowUpdate({required int requestId, required int permits}) {
+  final w = ProtoWriter();
+  w.writeEmbedded(1, encodeRpcMetaMinimal(requestId: requestId));
+  w.writeInt32(2, 6);
+  w.writeEmbedded(7, encodeRpcFlowControl(permits: permits));
+  w.writeBool(6, true);
+  return w.takeBytes();
+}
+
 RpcFrameLite decodeRpcFrame(Uint8List payload) {
   final r = ProtoReader(payload);
   var frameType = 0;
   Uint8List framePayload = Uint8List(0);
   var statusCode = 0;
   var statusMessage = "";
+  var chunkIndex = 0;
+  var endOfStream = false;
+  var endOfMessage = false;
+  var permits = 0;
+  var maxInflightFrames = 0;
+  var maxFrameBytes = 0;
   while (!r.isEOF) {
     final tag = r.readTag();
     switch (tag.fieldNumber) {
@@ -73,12 +168,53 @@ RpcFrameLite decodeRpcFrame(Uint8List payload) {
           }
         }
         break;
+      case 5:
+        chunkIndex = r.readVarint();
+        break;
+      case 6:
+        endOfStream = r.readVarint() != 0;
+        break;
+      case 7:
+        final fcBytes = r.readBytes();
+        final fc = ProtoReader(fcBytes);
+        while (!fc.isEOF) {
+          final fct = fc.readTag();
+          switch (fct.fieldNumber) {
+            case 1:
+              permits = fc.readVarint();
+              break;
+            case 2:
+              maxInflightFrames = fc.readVarint();
+              break;
+            case 3:
+              maxFrameBytes = fc.readVarint();
+              break;
+            default:
+              fc.skipField(fct.wireType);
+              break;
+          }
+        }
+        break;
+      case 8:
+        endOfMessage = r.readVarint() != 0;
+        break;
       default:
         r.skipField(tag.wireType);
         break;
     }
   }
-  return RpcFrameLite(frameType: frameType, statusCode: statusCode, statusMessage: statusMessage, payload: framePayload);
+  return RpcFrameLite(
+    frameType: frameType,
+    statusCode: statusCode,
+    statusMessage: statusMessage,
+    payload: framePayload,
+    chunkIndex: chunkIndex,
+    endOfStream: endOfStream,
+    endOfMessage: endOfMessage,
+    permits: permits,
+    maxInflightFrames: maxInflightFrames,
+    maxFrameBytes: maxFrameBytes,
+  );
 }
 
 Uint8List encodeHealthCheckRequest(String service) {
@@ -252,4 +388,3 @@ Uint8List encodeEchoRequest(String message) {
   }
   return (message: message, serverTime: serverTime);
 }
-

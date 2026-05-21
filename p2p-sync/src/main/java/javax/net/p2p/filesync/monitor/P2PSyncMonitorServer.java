@@ -17,8 +17,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import javax.net.p2p.filesync.sync.FileSyncEventType;
+import javax.net.p2p.filesync.sync.PersistentLongQueue;
 import javax.net.p2p.filesync.sync.P2PDirectorySyncService;
 import javax.net.p2p.filesync.sync.P2PSyncStateStore;
+import javax.net.p2p.filesync.sync.P2PSyncStateStore.QueueKey;
+import javax.net.p2p.filesync.sync.P2PSyncStateStore.QueueStage;
 
 public final class P2PSyncMonitorServer implements AutoCloseable {
 
@@ -125,41 +128,41 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
 
     private static Map<String, Object> queuesToMap(P2PSyncStateStore store, int limit) {
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("file_create", queue(store, store.fileCreatesActive(), FileSyncEventType.CREATE, false, limit));
-        out.put("file_modify", queue(store, store.fileModifiesActive(), FileSyncEventType.MODIFY, false, limit));
-        out.put("file_delete", queue(store, store.fileDeletesActive(), FileSyncEventType.DELETE, false, limit));
-        out.put("dir_create", queue(store, store.dirCreatesActive(), FileSyncEventType.CREATE, true, limit));
-        out.put("dir_delete", queue(store, store.dirDeletesActive(), FileSyncEventType.DELETE, true, limit));
-        out.put("failed_file_create", failedQueue(store, store.fileCreatesFailed(), FileSyncEventType.CREATE, false, limit));
-        out.put("failed_file_modify", failedQueue(store, store.fileModifiesFailed(), FileSyncEventType.MODIFY, false, limit));
-        out.put("failed_file_delete", failedQueue(store, store.fileDeletesFailed(), FileSyncEventType.DELETE, false, limit));
-        out.put("failed_dir_create", failedQueue(store, store.dirCreatesFailed(), FileSyncEventType.CREATE, true, limit));
-        out.put("failed_dir_delete", failedQueue(store, store.dirDeletesFailed(), FileSyncEventType.DELETE, true, limit));
+        out.put("file_create", queue(store, store.queueRef(QueueKey.FILE_CREATE, QueueStage.ACTIVE), FileSyncEventType.CREATE, false, limit));
+        out.put("file_modify", queue(store, store.queueRef(QueueKey.FILE_MODIFY, QueueStage.ACTIVE), FileSyncEventType.MODIFY, false, limit));
+        out.put("file_delete", queue(store, store.queueRef(QueueKey.FILE_DELETE, QueueStage.ACTIVE), FileSyncEventType.DELETE, false, limit));
+        out.put("dir_create", queue(store, store.queueRef(QueueKey.DIR_CREATE, QueueStage.ACTIVE), FileSyncEventType.CREATE, true, limit));
+        out.put("dir_delete", queue(store, store.queueRef(QueueKey.DIR_DELETE, QueueStage.ACTIVE), FileSyncEventType.DELETE, true, limit));
+        out.put("failed_file_create", failedQueue(store, store.queueRef(QueueKey.FILE_CREATE, QueueStage.FAILED), FileSyncEventType.CREATE, false, limit));
+        out.put("failed_file_modify", failedQueue(store, store.queueRef(QueueKey.FILE_MODIFY, QueueStage.FAILED), FileSyncEventType.MODIFY, false, limit));
+        out.put("failed_file_delete", failedQueue(store, store.queueRef(QueueKey.FILE_DELETE, QueueStage.FAILED), FileSyncEventType.DELETE, false, limit));
+        out.put("failed_dir_create", failedQueue(store, store.queueRef(QueueKey.DIR_CREATE, QueueStage.FAILED), FileSyncEventType.CREATE, true, limit));
+        out.put("failed_dir_delete", failedQueue(store, store.queueRef(QueueKey.DIR_DELETE, QueueStage.FAILED), FileSyncEventType.DELETE, true, limit));
         return out;
     }
 
-    private static Map<String, Object> queue(P2PSyncStateStore store, DsHashSet set, FileSyncEventType type, boolean dir, int limit) {
+    private static Map<String, Object> queue(P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir, int limit) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("size", set.size());
         out.put("items", sampleItems(store, set, type, dir, limit, false));
         return out;
     }
 
-    private static Map<String, Object> failedQueue(P2PSyncStateStore store, DsHashSet set, FileSyncEventType type, boolean dir, int limit) {
+    private static Map<String, Object> failedQueue(P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir, int limit) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("size", set.size());
         out.put("items", sampleItems(store, set, type, dir, limit, true));
         return out;
     }
 
-    private static List<Map<String, Object>> sampleItems(P2PSyncStateStore store, DsHashSet set, FileSyncEventType type, boolean dir, int limit, boolean includeReason) {
+    private static List<Map<String, Object>> sampleItems(P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir, int limit, boolean includeReason) {
         List<Map<String, Object>> items = new ArrayList<>();
         int count = 0;
-        for (Object o : set) {
+        for (Long o : set) {
             if (count >= limit) {
                 break;
             }
-            long fileId = ((Long) o).longValue();
+            long fileId = o.longValue();
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("fileId", fileId);
             m.put("dir", dir);

@@ -1,3 +1,6 @@
+---
+updated: "2026-05-17T21:36:31Z"
+---
 # Project Agent Contract
 
 <!-- brain:begin agents-contract -->
@@ -34,3 +37,6 @@ Read the linked context files before substantial work. Prefer the `brain` skill 
 ## Local Notes
 
 Add repo-specific notes here. `brain context refresh` preserves content outside managed blocks.
+
+- WebSocket 开发入口 `P2PServerWebSocketAuthDevMain` 的 auth allowCommands 需要包含 `RPC_STREAM` 才能跑 client-stream/bidi demo。
+- C core_compat 私钥文件允许两种格式：PKCS8 PEM，或仅 base64 的 PKCS8（无 PEM 头尾）。

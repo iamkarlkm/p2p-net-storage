@@ -25,6 +25,20 @@ int p2pws_core_send_wrapper(
   const uint8_t* data,
   size_t data_len);
 
+int p2pws_core_send_stream_wrapper(
+  p2pws_ws_client_t* ws,
+  int32_t magic,
+  const uint8_t* xor_key,
+  size_t xor_key_len,
+  int encrypt,
+  int32_t seq,
+  int32_t command_ordinal,
+  const uint8_t* data,
+  size_t data_len,
+  int32_t index,
+  int completed,
+  int canceled);
+
 int p2pws_core_recv_wrapper(
   p2pws_ws_client_t* ws,
   int32_t expected_magic,
@@ -32,6 +46,14 @@ int p2pws_core_recv_wrapper(
   size_t xor_key_len,
   p2pws_buf_t* io_frame_payload,
   p2pws_wrapper_view_t* out_view);
+
+int p2pws_core_recv_stream_wrapper(
+  p2pws_ws_client_t* ws,
+  int32_t expected_magic,
+  const uint8_t* xor_key,
+  size_t xor_key_len,
+  p2pws_buf_t* io_frame_payload,
+  p2pws_stream_wrapper_view_t* out_view);
 
 int p2pws_core_request(
   p2pws_ws_client_t* ws,
@@ -81,4 +103,3 @@ int p2pws_core_decode_login_response(
 #ifdef __cplusplus
 }
 #endif
-

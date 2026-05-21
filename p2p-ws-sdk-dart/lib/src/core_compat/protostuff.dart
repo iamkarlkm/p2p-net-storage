@@ -10,6 +10,21 @@ class CoreP2PWrapper {
   CoreP2PWrapper({required this.seq, required this.commandOrdinal, required this.data});
 }
 
+class CoreStreamP2PWrapper extends CoreP2PWrapper {
+  final int index;
+  final bool completed;
+  final bool canceled;
+
+  CoreStreamP2PWrapper({
+    required super.seq,
+    required super.commandOrdinal,
+    required super.data,
+    required this.index,
+    required this.completed,
+    required this.canceled,
+  });
+}
+
 Uint8List encodeCoreP2PWrapper(CoreP2PWrapper w) {
   final wr = ProtoWriter();
   wr.writeInt32(1, w.seq);
@@ -43,6 +58,60 @@ CoreP2PWrapper decodeCoreP2PWrapper(Uint8List payload) {
     }
   }
   return CoreP2PWrapper(seq: seq, commandOrdinal: cmd, data: data);
+}
+
+Uint8List encodeCoreStreamP2PWrapper(CoreStreamP2PWrapper w) {
+  final wr = ProtoWriter();
+  wr.writeInt32(1, w.seq);
+  wr.writeInt32(2, w.commandOrdinal);
+  if (w.data.isNotEmpty) {
+    wr.writeBytesField(3, w.data);
+  }
+  wr.writeInt32(4, w.index);
+  if (w.completed) {
+    wr.writeBool(5, true);
+  }
+  if (w.canceled) {
+    wr.writeBool(6, true);
+  }
+  return wr.takeBytes();
+}
+
+CoreStreamP2PWrapper decodeCoreStreamP2PWrapper(Uint8List payload) {
+  final r = ProtoReader(payload);
+  var seq = 0;
+  var cmd = 0;
+  Uint8List data = Uint8List(0);
+  var index = 0;
+  var completed = false;
+  var canceled = false;
+  while (!r.isEOF) {
+    final tag = r.readTag();
+    switch (tag.fieldNumber) {
+      case 1:
+        seq = r.readVarint();
+        break;
+      case 2:
+        cmd = r.readVarint();
+        break;
+      case 3:
+        data = r.readBytes();
+        break;
+      case 4:
+        index = r.readVarint();
+        break;
+      case 5:
+        completed = r.readVarint() != 0;
+        break;
+      case 6:
+        canceled = r.readVarint() != 0;
+        break;
+      default:
+        r.skipField(tag.wireType);
+        break;
+    }
+  }
+  return CoreStreamP2PWrapper(seq: seq, commandOrdinal: cmd, data: data, index: index, completed: completed, canceled: canceled);
 }
 
 class HandshakeRequestPs {
@@ -226,4 +295,3 @@ LoginResponsePs decodeLoginResponsePs(Uint8List payload) {
   }
   return LoginResponsePs(ok: ok, error: error, userId: userId, serverTime: serverTime, signature: signature);
 }
-

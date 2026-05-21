@@ -26,7 +26,8 @@ class CoreWsClient {
 
   WebSocket? _ws;
   int _seq = 1;
-  final _pending = <int, Completer<CoreP2PWrapper>>{};
+  final _pending = <int, Completer<CoreStreamP2PWrapper>>{};
+  final _streamHandlers = <int, void Function(CoreStreamP2PWrapper)>{};
   Uint8List? _xorKey;
 
   CoreWsClient(this._cfg, this._ordinals);
@@ -47,6 +48,7 @@ class CoreWsClient {
       }
     }
     _pending.clear();
+    _streamHandlers.clear();
     if (ws != null) {
       try {
         await ws.close();
@@ -60,13 +62,85 @@ class CoreWsClient {
       throw ArgumentError("unknown command: $commandName");
     }
     final seq = ++_seq;
-    final c = Completer<CoreP2PWrapper>();
+    final c = Completer<CoreStreamP2PWrapper>();
     _pending[seq] = c;
     await _sendWrapper(CoreP2PWrapper(seq: seq, commandOrdinal: cmd, data: data), encrypt: commandName != "HAND");
-    return c.future.timeout(timeout, onTimeout: () {
+    final sw = await c.future.timeout(timeout, onTimeout: () {
       _pending.remove(seq);
       throw TimeoutException("request timeout");
     });
+    return CoreP2PWrapper(seq: sw.seq, commandOrdinal: sw.commandOrdinal, data: sw.data);
+  }
+
+  Future<CoreP2PWrapper> sendAndAwait(CoreP2PWrapper w, {required bool encrypt, Duration timeout = const Duration(seconds: 10)}) async {
+    if (w.seq <= 0) {
+      throw ArgumentError("wrapper.seq required");
+    }
+    final c = Completer<CoreStreamP2PWrapper>();
+    _pending[w.seq] = c;
+    await send(w, encrypt: encrypt);
+    final sw = await c.future.timeout(timeout, onTimeout: () {
+      _pending.remove(w.seq);
+      throw TimeoutException("request timeout");
+    });
+    return CoreP2PWrapper(seq: sw.seq, commandOrdinal: sw.commandOrdinal, data: sw.data);
+  }
+
+  Future<CoreP2PWrapper> sendStreamOpen(CoreStreamP2PWrapper w, {Duration timeout = const Duration(seconds: 10)}) async {
+    if (w.seq <= 0) {
+      throw ArgumentError("wrapper.seq required");
+    }
+    final c = Completer<CoreStreamP2PWrapper>();
+    _pending[w.seq] = c;
+    await sendStream(w, encrypt: true);
+    final sw = await c.future.timeout(timeout, onTimeout: () {
+      _pending.remove(w.seq);
+      throw TimeoutException("request timeout");
+    });
+    return CoreP2PWrapper(seq: sw.seq, commandOrdinal: sw.commandOrdinal, data: sw.data);
+  }
+
+  int allocateSeq() {
+    _seq += 1;
+    return _seq;
+  }
+
+  int mustOrdinal(String name) {
+    final v = _ordinals[name];
+    if (v == null) {
+      throw ArgumentError("missing ordinal: $name");
+    }
+    return v;
+  }
+
+  void registerStreamHandler(int requestId, void Function(CoreStreamP2PWrapper)? handler) {
+    if (requestId <= 0) {
+      throw ArgumentError("requestId required");
+    }
+    if (handler == null) {
+      _streamHandlers.remove(requestId);
+      return;
+    }
+    _streamHandlers[requestId] = handler;
+  }
+
+  Future<void> send(CoreP2PWrapper w, {required bool encrypt}) async {
+    await _sendWrapper(w, encrypt: encrypt);
+  }
+
+  Future<void> sendStream(CoreStreamP2PWrapper w, {required bool encrypt}) async {
+    final ws = _ws;
+    if (ws == null) {
+      throw StateError("not connected");
+    }
+    final payload = encodeCoreStreamP2PWrapper(w);
+    if (encrypt) {
+      final key = _xorKey;
+      if (key != null && payload.isNotEmpty) {
+        xorRepeatInPlace(payload, key);
+      }
+    }
+    ws.add(encodeCoreFrame(magic: _cfg.magic, payload: payload));
   }
 
   Future<void> handshakeAndLogin({required String userId, required String clientPrivateKeyPem}) async {
@@ -139,27 +213,48 @@ class CoreWsClient {
       return;
     }
     final bytes = Uint8List.fromList(msg);
-    if (bytes.length < 8) {
-      return;
-    }
-    ({int magic, Uint8List payload}) f;
     try {
-      f = decodeCoreFrame(bytes);
+      final frames = decodeAllCoreFrames(bytes);
+      for (final f in frames) {
+        if (f.magic != _cfg.magic) {
+          continue;
+        }
+        final payload = Uint8List.fromList(f.payload);
+        final key = _xorKey;
+        if (key != null && payload.isNotEmpty) {
+          xorRepeatInPlace(payload, key);
+        }
+        final w = decodeCoreStreamP2PWrapper(payload);
+
+        final isAck = w.commandOrdinal == (_ordinals["STREAM_ACK"] ?? -999999) ||
+            w.commandOrdinal == (_ordinals["STD_OK"] ?? -999999) ||
+            w.commandOrdinal == (_ordinals["STD_ERROR"] ?? -999999) ||
+            w.commandOrdinal == (_ordinals["INVALID_PROTOCOL"] ?? -999999);
+        if (isAck) {
+          final c = _pending.remove(w.seq);
+          if (c != null && !c.isCompleted) {
+            c.complete(w);
+          }
+          continue;
+        }
+
+        final h = _streamHandlers[w.seq];
+        final isStream = w.commandOrdinal == (_ordinals["RPC_STREAM"] ?? -999999) || w.commandOrdinal == (_ordinals["RPC_EVENT"] ?? -999999);
+        if (h != null && isStream) {
+          h(w);
+          continue;
+        }
+        if (isStream) {
+          continue;
+        }
+
+        final c = _pending.remove(w.seq);
+        if (c != null && !c.isCompleted) {
+          c.complete(w);
+        }
+      }
     } catch (_) {
       return;
-    }
-    if (f.magic != _cfg.magic) {
-      return;
-    }
-    final payload = Uint8List.fromList(f.payload);
-    final key = _xorKey;
-    if (key != null && payload.isNotEmpty) {
-      xorRepeatInPlace(payload, key);
-    }
-    final w = decodeCoreP2PWrapper(payload);
-    final c = _pending.remove(w.seq);
-    if (c != null && !c.isCompleted) {
-      c.complete(w);
     }
   }
 }

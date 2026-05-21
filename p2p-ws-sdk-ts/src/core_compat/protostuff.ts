@@ -123,6 +123,35 @@ export function decodeP2PWrapper(payload: Uint8Array): P2PWrapper {
   return { seq: readInt(f, 1, 0), commandOrdinal: readInt(f, 2, 0), data: readBytes(f, 3) }
 }
 
+export type StreamP2PWrapper = {
+  seq: number
+  commandOrdinal: number
+  data: Uint8Array
+  index: number
+  completed: boolean
+  canceled: boolean
+}
+
+export function encodeStreamP2PWrapper(w: StreamP2PWrapper): Uint8Array {
+  const parts: Buffer[] = [writeInt32(1, w.seq), writeInt32(2, w.commandOrdinal), writeInt32(4, w.index)]
+  if (w.data.byteLength > 0) parts.push(writeBytes(3, w.data))
+  if (w.completed) parts.push(writeBool(5, true))
+  if (w.canceled) parts.push(writeBool(6, true))
+  return Buffer.concat(parts)
+}
+
+export function decodeStreamP2PWrapper(payload: Uint8Array): StreamP2PWrapper {
+  const f = readFields(payload)
+  return {
+    seq: readInt(f, 1, 0),
+    commandOrdinal: readInt(f, 2, 0),
+    data: readBytes(f, 3),
+    index: readInt(f, 4, 0),
+    completed: readBool(f, 5, false),
+    canceled: readBool(f, 6, false),
+  }
+}
+
 export type HandshakeRequest = {
   userId: string
   timestamp: bigint
@@ -190,4 +219,3 @@ export function decodeLoginResponse(payload: Uint8Array): LoginResponse {
     signature: readBytes(f, 5),
   }
 }
-

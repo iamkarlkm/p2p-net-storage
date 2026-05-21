@@ -1,7 +1,7 @@
-import "dart:math";
 import "dart:typed_data";
 
 import "core_ws_client.dart";
+import "protostuff.dart";
 import "rpc_proto_lite.dart";
 
 class CoreRpcClient {
@@ -38,10 +38,17 @@ class CoreRpcClient {
     required String method,
     required Uint8List requestPayload,
   }) async {
-    final reqId = _randU64();
-    final meta = encodeRpcMeta(requestId: reqId, service: service, method: method, callType: 1);
+    final reqId = _ws.allocateSeq();
+    final meta = encodeRpcMeta(
+      requestId: reqId,
+      service: service,
+      method: method,
+      callType: 1,
+      deadlineEpochMs: DateTime.now().millisecondsSinceEpoch + 10 * 1000,
+    );
     final open = encodeRpcFrameOpenUnary(metaBytes: meta, payload: requestPayload, endOfStream: true);
-    final resp = await _ws.request(commandName, open);
+    final cmd = _ws.mustOrdinal(commandName);
+    final resp = await _ws.sendAndAwait(CoreP2PWrapper(seq: reqId, commandOrdinal: cmd, data: open), encrypt: true);
     final frame = decodeRpcFrame(resp.data);
     if (frame.frameType == 5) {
       throw StateError(frame.statusMessage.isEmpty ? "RPC ERROR" : frame.statusMessage);
@@ -52,11 +59,3 @@ class CoreRpcClient {
     return frame;
   }
 }
-
-int _randU64() {
-  final rnd = Random.secure();
-  final hi = rnd.nextInt(1 << 30);
-  final lo = rnd.nextInt(1 << 30);
-  return (hi << 30) ^ lo;
-}
-
