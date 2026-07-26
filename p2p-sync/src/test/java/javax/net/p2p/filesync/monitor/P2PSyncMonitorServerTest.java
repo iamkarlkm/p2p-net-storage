@@ -88,6 +88,9 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("本次批量动作剩余失败预览"));
                 Assert.assertTrue(index.contains("renderBatchResultPreview"));
                 Assert.assertTrue(index.contains("window.lastBatchResult"));
+                Assert.assertTrue(index.contains("clearedFailedItems="));
+                Assert.assertTrue(index.contains("clearedCategories="));
+                Assert.assertTrue(index.contains("clearedPreviewPaths="));
                 Assert.assertTrue(index.contains(">replicaRecoveryClass</th>"));
                 Assert.assertTrue(index.contains(">replicaCategories</th>"));
                 Assert.assertTrue(index.contains(">replicaReasons</th>"));
@@ -309,6 +312,11 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(response.contains("\"ok\":true"));
                 Assert.assertTrue(response.contains("\"touchedFileCount\":1"));
                 Assert.assertTrue(response.contains("\"retriedReplicaCount\":2"));
+                Assert.assertTrue(response.contains("\"clearedFailedItemCount\":1"));
+                Assert.assertTrue(response.contains("\"clearedOutstandingReplicaCount\":2"));
+                Assert.assertTrue(response.contains("\"clearedReplicaCategorySummary\":\"STATE_MISMATCH=2\""));
+                Assert.assertTrue(response.contains("\"clearedFailedItemsPreview\""));
+                Assert.assertTrue(response.contains("\"path\":\"auto.txt\""));
                 Assert.assertTrue(response.contains("\"remainingFailedItemCount\":2"));
                 Assert.assertTrue(response.contains("\"remainingOutstandingReplicaCount\":2"));
                 Assert.assertTrue(response.contains("\"remainingReplicaCategorySummary\":\"CONFLICT=1, RETRY_LIMIT=1\""));
@@ -364,6 +372,10 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(response.contains("\"ok\":true"));
                 Assert.assertTrue(response.contains("\"touchedFileCount\":2"));
                 Assert.assertTrue(response.contains("\"discardedReplicaCount\":3"));
+                Assert.assertTrue(response.contains("\"clearedFailedItemCount\":2"));
+                Assert.assertTrue(response.contains("\"clearedOutstandingReplicaCount\":3"));
+                Assert.assertTrue(response.contains("\"clearedReplicaCategorySummary\":\"CONFLICT=2, RETRY_LIMIT=1\""));
+                Assert.assertTrue(response.contains("\"clearedFailedItemsPreview\""));
                 Assert.assertTrue(response.contains("\"remainingFailedItemCount\":1"));
                 Assert.assertTrue(response.contains("\"remainingOutstandingReplicaCount\":1"));
                 Assert.assertTrue(response.contains("\"remainingReplicaCategorySummary\":\"STATE_MISMATCH=1\""));
@@ -419,6 +431,11 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(retryResp.contains("\"touchedFileCount\":1"));
                 Assert.assertTrue(retryResp.contains("\"retriedReplicaCount\":1"));
                 Assert.assertTrue(retryResp.contains("\"categories\":[\"NETWORK\"]"));
+                Assert.assertTrue(retryResp.contains("\"clearedFailedItemCount\":1"));
+                Assert.assertTrue(retryResp.contains("\"clearedOutstandingReplicaCount\":1"));
+                Assert.assertTrue(retryResp.contains("\"clearedReplicaCategorySummary\":\"NETWORK=1\""));
+                Assert.assertTrue(retryResp.contains("\"clearedFailedItemsPreview\""));
+                Assert.assertTrue(retryResp.contains("\"path\":\"network.txt\""));
                 Assert.assertTrue(retryResp.contains("\"remainingFailedItemCount\":3"));
                 Assert.assertTrue(retryResp.contains("\"remainingOutstandingReplicaCount\":3"));
                 Assert.assertTrue(retryResp.contains("\"remainingReplicaCategorySummary\":\"CONFLICT=1, RETRY_LIMIT=1, STATE_MISMATCH=1\""));
@@ -438,6 +455,10 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(discardResp.contains("\"discardedReplicaCount\":2"));
                 Assert.assertTrue(discardResp.contains("\"CONFLICT\""));
                 Assert.assertTrue(discardResp.contains("\"RETRY_LIMIT\""));
+                Assert.assertTrue(discardResp.contains("\"clearedFailedItemCount\":2"));
+                Assert.assertTrue(discardResp.contains("\"clearedOutstandingReplicaCount\":2"));
+                Assert.assertTrue(discardResp.contains("\"clearedReplicaCategorySummary\":\"CONFLICT=1, RETRY_LIMIT=1\""));
+                Assert.assertTrue(discardResp.contains("\"clearedFailedItemsPreview\""));
                 Assert.assertTrue(discardResp.contains("\"remainingFailedItemCount\":1"));
                 Assert.assertTrue(discardResp.contains("\"remainingOutstandingReplicaCount\":1"));
                 Assert.assertTrue(discardResp.contains("\"remainingReplicaCategorySummary\":\"STATE_MISMATCH=1\""));
