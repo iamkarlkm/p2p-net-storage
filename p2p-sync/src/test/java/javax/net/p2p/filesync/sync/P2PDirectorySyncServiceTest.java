@@ -9,7 +9,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+
 import javax.net.p2p.filesync.config.P2PSyncConfig;
+
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -186,6 +188,72 @@ public class P2PDirectorySyncServiceTest {
 
         Assert.assertTrue(events.toString(), events.contains("DELETE:old.txt"));
         Assert.assertTrue(events.toString(), events.contains("CREATE:new.txt"));
+    }
+
+    @Test
+    public void shouldExcludeFilesDuringStartupScan() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_root_exclude_startup_");
+        Path state = Files.createTempDirectory("p2p_sync_state_exclude_startup_");
+        writeUtf8(root.resolve("keep.txt"), "v1");
+        writeUtf8(root.resolve("skip.tmp"), "v1");
+
+        P2PSyncConfig cfg = new P2PSyncConfig();
+        cfg.setTaskId(6L);
+        cfg.setLocalDir(root.toString());
+        cfg.setDsHome(state.toString());
+        cfg.setExcludeGlobs(Collections.singletonList("**/*.tmp"));
+
+        CountDownLatch latch = new CountDownLatch(1);
+        List<String> events = Collections.synchronizedList(new ArrayList<>());
+
+        try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, (type, fileId, rel, abs, dir, acker) -> {
+            if (!dir) {
+                events.add(type.name() + ":" + rel);
+                latch.countDown();
+            }
+            acker.ack();
+        })) {
+            svc.start();
+            Assert.assertTrue(latch.await(5, TimeUnit.SECONDS));
+        }
+
+        Assert.assertTrue(events.toString(), events.contains("CREATE:keep.txt"));
+        Assert.assertFalse(events.toString(), events.contains("CREATE:skip.tmp"));
+    }
+
+    @Test
+    public void shouldApplyIncludeGlobsToWatchEvents() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_root_include_watch_");
+        Path state = Files.createTempDirectory("p2p_sync_state_include_watch_");
+
+        P2PSyncConfig cfg = new P2PSyncConfig();
+        cfg.setTaskId(7L);
+        cfg.setLocalDir(root.toString());
+        cfg.setDsHome(state.toString());
+        cfg.setIncludeGlobs(Collections.singletonList("**/*.txt"));
+
+        CountDownLatch latch = new CountDownLatch(1);
+        List<String> events = Collections.synchronizedList(new ArrayList<>());
+
+        try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, (type, fileId, rel, abs, dir, acker) -> {
+            events.add(type.name() + ":" + rel);
+            if ("CREATE:allowed.txt".equals(type.name() + ":" + rel)) {
+                latch.countDown();
+            }
+            acker.ack();
+        })) {
+            svc.start();
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            writeUtf8(root.resolve("allowed.txt"), "v1");
+            writeUtf8(root.resolve("ignored.log"), "v1");
+
+            Assert.assertTrue(events.toString(), latch.await(5, TimeUnit.SECONDS));
+            Thread.sleep(300L);
+        }
+
+        Assert.assertTrue(events.toString(), events.contains("CREATE:allowed.txt"));
+        Assert.assertFalse(events.toString(), events.contains("CREATE:ignored.log"));
     }
 
     private static void writeUtf8(Path path, String value) throws Exception {

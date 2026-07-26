@@ -3,8 +3,10 @@ package javax.net.p2p.filesync.config;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+
 import javax.net.p2p.auth.config.AuthConfig;
 import javax.net.p2p.filesync.sync.rpc.server.SyncConflictPolicy;
+
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -19,6 +21,10 @@ public class P2PSyncConfigTest {
                 + "taskId: 1\n"
                 + "remoteEndpoints:\n"
                 + "  - \"127.0.0.1:9001\"\n"
+                + "includeGlobs:\n"
+                + "  - \"**/*.txt\"\n"
+                + "excludeGlobs:\n"
+                + "  - \"**/*.tmp\"\n"
                 + "localDir: \"./data\"\n"
                 + "dsHome: \"./state\"\n"
                 + "userInfo:\n"
@@ -35,6 +41,8 @@ public class P2PSyncConfigTest {
             Assert.assertEquals("u1", cfg.getUserInfo().get("userId"));
             Assert.assertEquals("u1", cfg.getLoginInfo().get("username"));
             Assert.assertEquals(1, cfg.getRemoteEndpoints().size());
+            Assert.assertEquals(1, cfg.getIncludeGlobs().size());
+            Assert.assertEquals(1, cfg.getExcludeGlobs().size());
             Assert.assertEquals(SyncConflictPolicy.FAIL_FAST, cfg.getConflictPolicy());
         } finally {
             System.clearProperty("p2p.sync.inlineYaml");

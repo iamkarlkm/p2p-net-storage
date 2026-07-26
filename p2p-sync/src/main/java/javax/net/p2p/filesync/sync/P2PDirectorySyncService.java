@@ -1,10 +1,12 @@
 package javax.net.p2p.filesync.sync;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.FileSystems;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.PathMatcher;
 import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardWatchEventKinds;
@@ -12,8 +14,10 @@ import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
@@ -42,6 +46,8 @@ public final class P2PDirectorySyncService implements AutoCloseable {
     private volatile P2PSyncStateStore store;
     private volatile Path rootDir;
     private final P2PSyncQueueEngine queueEngine = new P2PSyncQueueEngine();
+    private final List<PathMatcher> includeMatchers;
+    private final List<PathMatcher> excludeMatchers;
 
     public P2PSyncStateStore getStore() {
         return store;
@@ -57,6 +63,8 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         this.watchExecutor = Executors.newSingleThreadExecutor(r -> new Thread(r, "p2p-sync-watch"));
         this.eventExecutor = Executors.newSingleThreadExecutor(r -> new Thread(r, "p2p-sync-events"));
         this.heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "p2p-sync-heartbeat"));
+        this.includeMatchers = compileMatchers(config.getIncludeGlobs());
+        this.excludeMatchers = compileMatchers(config.getExcludeGlobs());
     }
 
     public void start() {
@@ -141,6 +149,9 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         if (absolutePath.equals(root)) {
             return;
         }
+        if (!shouldSyncPath(absolutePath)) {
+            return;
+        }
         if (Files.isDirectory(absolutePath)) {
             scanOneDir(localStore, root, absolutePath, lastRunMillis);
             return;
@@ -199,7 +210,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         Map<WatchKey, Path> keyToDir = new HashMap<>();
         try (WatchService ws = FileSystems.getDefault().newWatchService()) {
             this.watchService = ws;
-            registerAllDirs(rootDir, ws, keyToDir);
+            registerAllDirsFiltered(rootDir, ws, keyToDir);
             watchReady.set(true);
             while (running.get()) {
                 WatchKey key = ws.poll(500, TimeUnit.MILLISECONDS);
@@ -233,10 +244,13 @@ public final class P2PDirectorySyncService implements AutoCloseable {
             }
             Path name = (Path) event.context();
             Path child = dir.resolve(name);
+            if (!shouldSyncPath(child)) {
+                continue;
+            }
 
             if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
                 if (Files.isDirectory(child)) {
-                    registerAllDirs(child, ws, keyToDir);
+                    registerAllDirsFiltered(child, ws, keyToDir);
                     onDirCreate(child);
                     continue;
                 }
@@ -358,11 +372,18 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         }
     }
 
-    private static void registerAllDirs(Path start, WatchService ws, Map<WatchKey, Path> keyToDir) {
+    private void registerAllDirsFiltered(Path start, WatchService ws, Map<WatchKey, Path> keyToDir) {
+        registerAllDirs(start, ws, keyToDir, this);
+    }
+
+    private static void registerAllDirs(Path start, WatchService ws, Map<WatchKey, Path> keyToDir, P2PDirectorySyncService service) {
         try {
             Files.walkFileTree(start, new SimpleFileVisitor<Path>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+                    if (service != null && !dir.equals(service.rootDir) && !service.shouldSyncPath(dir)) {
+                        return FileVisitResult.SKIP_SUBTREE;
+                    }
                     WatchKey key = dir.register(ws,
                         StandardWatchEventKinds.ENTRY_CREATE,
                         StandardWatchEventKinds.ENTRY_MODIFY,
@@ -398,6 +419,60 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         } catch (IOException e) {
             return false;
         }
+    }
+
+    private boolean shouldSyncPath(Path absolutePath) {
+        Path root = this.rootDir;
+        if (root == null) {
+            return true;
+        }
+        Path normalized = absolutePath.toAbsolutePath().normalize();
+        if (normalized.equals(root)) {
+            return true;
+        }
+        String relativePath = toStableRelativePath(root, normalized);
+        if (matchesAny(excludeMatchers, relativePath, Files.isDirectory(normalized))) {
+            return false;
+        }
+        if (includeMatchers.isEmpty()) {
+            return true;
+        }
+        return matchesAny(includeMatchers, relativePath, Files.isDirectory(normalized));
+    }
+
+    private static List<PathMatcher> compileMatchers(List<String> globs) {
+        List<PathMatcher> matchers = new ArrayList<>();
+        if (globs == null) {
+            return matchers;
+        }
+        for (String glob : globs) {
+            if (glob == null || glob.trim().isEmpty()) {
+                continue;
+            }
+            String normalized = glob.trim().replace('/', File.separatorChar);
+            matchers.add(FileSystems.getDefault().getPathMatcher("glob:" + normalized));
+            String prefix = "**" + File.separator;
+            if (normalized.startsWith(prefix) && normalized.length() > prefix.length()) {
+                matchers.add(FileSystems.getDefault().getPathMatcher("glob:" + normalized.substring(prefix.length())));
+            }
+        }
+        return matchers;
+    }
+
+    private static boolean matchesAny(List<PathMatcher> matchers, String relativePath, boolean directory) {
+        if (matchers.isEmpty()) {
+            return false;
+        }
+        Path rel = Paths.get(relativePath.replace('/', File.separatorChar));
+        for (PathMatcher matcher : matchers) {
+            if (matcher.matches(rel)) {
+                return true;
+            }
+            if (directory && matcher.matches(Paths.get((relativePath + "/**").replace('/', File.separatorChar)))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public void stop() {

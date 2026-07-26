@@ -9,8 +9,10 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+
 import javax.net.p2p.auth.config.AuthConfig;
 import javax.net.p2p.filesync.sync.rpc.server.SyncConflictPolicy;
+
 import org.yaml.snakeyaml.Yaml;
 
 public class P2PSyncConfig {
@@ -20,6 +22,8 @@ public class P2PSyncConfig {
     private int listenPort;
     private int monitorPort;
     private List<String> remoteEndpoints = new ArrayList<>();
+    private List<String> includeGlobs = new ArrayList<>();
+    private List<String> excludeGlobs = new ArrayList<>();
     private String localDir;
     private String dsHome;
     private Map<String, String> userInfo;
@@ -77,6 +81,22 @@ public class P2PSyncConfig {
 
     public void setLocalDir(String localDir) {
         this.localDir = localDir;
+    }
+
+    public List<String> getIncludeGlobs() {
+        return includeGlobs;
+    }
+
+    public void setIncludeGlobs(List<String> includeGlobs) {
+        this.includeGlobs = includeGlobs;
+    }
+
+    public List<String> getExcludeGlobs() {
+        return excludeGlobs;
+    }
+
+    public void setExcludeGlobs(List<String> excludeGlobs) {
+        this.excludeGlobs = excludeGlobs;
     }
 
     public String getDsHome() {
@@ -168,6 +188,12 @@ public class P2PSyncConfig {
 
         if (cfg.remoteEndpoints == null) {
             cfg.remoteEndpoints = new ArrayList<>();
+        }
+        if (cfg.includeGlobs == null) {
+            cfg.includeGlobs = new ArrayList<>();
+        }
+        if (cfg.excludeGlobs == null) {
+            cfg.excludeGlobs = new ArrayList<>();
         }
 
         if (cfg.localDir != null && !cfg.localDir.trim().isEmpty()) {
