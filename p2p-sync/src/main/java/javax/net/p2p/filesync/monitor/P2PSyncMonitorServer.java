@@ -263,8 +263,11 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         int total = 0;
         for (Entry<String, Integer> entry : reasonCounts.entrySet()) {
             Map<String, Object> item = new LinkedHashMap<String, Object>();
-            item.put("reason", entry.getKey());
+            String reason = entry.getKey();
+            item.put("reason", reason);
             item.put("count", entry.getValue());
+            item.put("recommendedAction", recommendedActionForFailureReason(reason));
+            item.put("operatorHint", operatorHintForFailureReason(reason));
             items.add(item);
             total += entry.getValue().intValue();
         }
@@ -355,7 +358,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         Map<String, Object> out = new LinkedHashMap<String, Object>();
         out.put("size", Integer.valueOf(counts.size()));
         out.put("totalOutstandingReplicas", Integer.valueOf(totalCount(counts)));
-        out.put("items", reasonItems(counts));
+        out.put("items", replicaCategoryItems(counts));
         return out;
     }
 
@@ -680,6 +683,8 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             Map<String, Integer> replicaCategoryCounts = replicaReasonCategoryCounts(replicaReasonCounts);
             item.put("replicaCategorySummary", reasonSummary(replicaCategoryCounts));
             item.put("replicaCategoryItems", reasonItems(replicaCategoryCounts));
+            item.put("recommendedAction", recommendedActionForHotFailedItem(reason, replicaCategoryCounts, replicaStats));
+            item.put("operatorHint", operatorHintForHotFailedItem(reason, replicaCategoryCounts, replicaStats));
             items.add(item);
         }
     }
@@ -813,6 +818,20 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         return items;
     }
 
+    private List<Map<String, Object>> replicaCategoryItems(Map<String, Integer> counts) {
+        List<Map<String, Object>> items = new ArrayList<Map<String, Object>>();
+        for (Entry<String, Integer> entry : counts.entrySet()) {
+            String category = entry.getKey();
+            Map<String, Object> item = new LinkedHashMap<String, Object>();
+            item.put("reason", category);
+            item.put("count", entry.getValue());
+            item.put("recommendedAction", recommendedActionForReplicaCategory(category));
+            item.put("operatorHint", operatorHintForReplicaCategory(category));
+            items.add(item);
+        }
+        return items;
+    }
+
     private int totalCount(Map<String, Integer> counts) {
         int total = 0;
         for (Integer value : counts.values()) {
@@ -879,6 +898,124 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             return "NETWORK";
         }
         return "OTHER";
+    }
+
+    private String recommendedActionForFailureReason(String reason) {
+        String raw = normalizeReasonToken(reason);
+        if ("write_conflict".equals(raw) || raw.contains("conflict")) {
+            return "MANUAL_RETRY_OR_DISCARD";
+        }
+        if ("retry_limit_exceeded".equals(raw)) {
+            return "MANUAL_RETRY_OR_DISCARD";
+        }
+        if ("stale".equals(raw) || "replicas_pending".equals(raw) || raw.contains("pending")) {
+            return "RETRY_AFTER_STATE_CHECK";
+        }
+        if (raw.contains("network") || raw.contains("timeout") || raw.contains("connection")
+            || raw.contains("refused") || raw.contains("unreachable")) {
+            return "RESTORE_CONNECTIVITY_AND_RETRY";
+        }
+        if ("retry_scheduled".equals(raw)) {
+            return "WAIT_AUTO_RETRY";
+        }
+        return "INSPECT_AND_DECIDE";
+    }
+
+    private String operatorHintForFailureReason(String reason) {
+        String action = recommendedActionForFailureReason(reason);
+        if ("MANUAL_RETRY_OR_DISCARD".equals(action)) {
+            return "检查冲突或封顶原因后手动重试；确认无需保留时可放弃该项。";
+        }
+        if ("RETRY_AFTER_STATE_CHECK".equals(action)) {
+            return "先核对源端与目标端状态是否一致，再执行人工重试。";
+        }
+        if ("RESTORE_CONNECTIVITY_AND_RETRY".equals(action)) {
+            return "先恢复网络或目标节点可达性，再执行重试。";
+        }
+        if ("WAIT_AUTO_RETRY".equals(action)) {
+            return "当前仍处于自动重试调度中，优先观察下一轮执行结果。";
+        }
+        return "先查看失败明细与日志，再决定重试、放弃或人工修复。";
+    }
+
+    private String recommendedActionForReplicaCategory(String category) {
+        String raw = normalizeReasonToken(category).toUpperCase();
+        if ("NETWORK".equals(raw)) {
+            return "RETRY_NETWORK_REPLICAS";
+        }
+        if ("CONFLICT".equals(raw) || "RETRY_LIMIT".equals(raw)) {
+            return "MANUAL_RETRY_OR_DISCARD_REPLICAS";
+        }
+        if ("STATE_MISMATCH".equals(raw)) {
+            return "VERIFY_STATE_THEN_RETRY";
+        }
+        if ("RETRY_SCHEDULED".equals(raw)) {
+            return "WAIT_AUTO_RETRY";
+        }
+        return "INSPECT_REPLICA_DETAIL";
+    }
+
+    private String operatorHintForReplicaCategory(String category) {
+        String action = recommendedActionForReplicaCategory(category);
+        if ("RETRY_NETWORK_REPLICAS".equals(action)) {
+            return "优先修复网络后批量重试 NETWORK 副本。";
+        }
+        if ("MANUAL_RETRY_OR_DISCARD_REPLICAS".equals(action)) {
+            return "对冲突或封顶副本执行人工重试；确认无需同步时可批量放弃。";
+        }
+        if ("VERIFY_STATE_THEN_RETRY".equals(action)) {
+            return "先核对副本状态或 pending 情况，再按需重试。";
+        }
+        if ("WAIT_AUTO_RETRY".equals(action)) {
+            return "这些副本仍在自动调度中，先观察自动恢复。";
+        }
+        return "查看副本级失败明细后再决定下一步动作。";
+    }
+
+    private String recommendedActionForHotFailedItem(String reason, Map<String, Integer> replicaCategoryCounts, ReplicaRecoveryStats replicaStats) {
+        if (replicaCategoryCounts != null && !replicaCategoryCounts.isEmpty()) {
+            if (replicaCategoryCounts.containsKey("NETWORK")) {
+                return recommendedActionForReplicaCategory("NETWORK");
+            }
+            if (replicaCategoryCounts.containsKey("CONFLICT")) {
+                return recommendedActionForReplicaCategory("CONFLICT");
+            }
+            if (replicaCategoryCounts.containsKey("RETRY_LIMIT")) {
+                return recommendedActionForReplicaCategory("RETRY_LIMIT");
+            }
+            if (replicaCategoryCounts.containsKey("STATE_MISMATCH")) {
+                return recommendedActionForReplicaCategory("STATE_MISMATCH");
+            }
+        }
+        if (replicaStats != null && "AUTO_RECOVERABLE".equals(replicaStats.recoveryClass)) {
+            return "RETRY_FAILED_ITEM";
+        }
+        return recommendedActionForFailureReason(reason);
+    }
+
+    private String operatorHintForHotFailedItem(String reason, Map<String, Integer> replicaCategoryCounts, ReplicaRecoveryStats replicaStats) {
+        String action = recommendedActionForHotFailedItem(reason, replicaCategoryCounts, replicaStats);
+        if ("RETRY_FAILED_ITEM".equals(action)) {
+            return "该项仍可恢复，优先执行重试并继续观察副本收敛。";
+        }
+        if ("RETRY_NETWORK_REPLICAS".equals(action) || "MANUAL_RETRY_OR_DISCARD_REPLICAS".equals(action)
+            || "VERIFY_STATE_THEN_RETRY".equals(action) || "WAIT_AUTO_RETRY".equals(action)
+            || "INSPECT_REPLICA_DETAIL".equals(action)) {
+            String category = firstReplicaCategory(replicaCategoryCounts);
+            return operatorHintForReplicaCategory(category == null ? "" : category);
+        }
+        return operatorHintForFailureReason(reason);
+    }
+
+    private String firstReplicaCategory(Map<String, Integer> replicaCategoryCounts) {
+        if (replicaCategoryCounts == null || replicaCategoryCounts.isEmpty()) {
+            return null;
+        }
+        return replicaCategoryCounts.entrySet().iterator().next().getKey();
+    }
+
+    private String normalizeReasonToken(String value) {
+        return value == null ? "" : value.trim().toLowerCase();
     }
 
     private String extractReplicaLabel(String reason) {
@@ -1349,19 +1486,19 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "    }\n"
             + "    function renderReplicaFailureCategorySummary(s){\n"
             + "      let html = '<div class=\"card\"><h3>副本失败类别汇总 (size='+s.size+', outstanding='+s.totalOutstandingReplicas+')</h3>';\n"
-            + "      html += '<table><tr><th>category</th><th>count</th></tr>';\n"
+            + "      html += '<table><tr><th>category</th><th>count</th><th>recommendedAction</th><th>operatorHint</th></tr>';\n"
             + "      for(const it of s.items){\n"
-            + "        html += '<tr><td>'+esc(it.reason)+'</td><td>'+it.count+'</td></tr>';\n"
+            + "        html += '<tr><td>'+esc(it.reason)+'</td><td>'+it.count+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
             + "    }\n"
             + "    function renderHotFailedItems(h){\n"
             + "      let html = '<div class=\"card\"><h3>热点失败项 (size='+h.size+')</h3>';\n"
-            + "      html += '<table><tr><th>path</th><th>type</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>replicaRecoveryClass</th><th>replicas</th><th>replicaCategories</th><th>replicaReasons</th><th>outstandingReplicas</th><th>failedAtMillis</th><th>reason</th></tr>';\n"
+            + "      html += '<table><tr><th>path</th><th>type</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>replicaRecoveryClass</th><th>replicas</th><th>replicaCategories</th><th>replicaReasons</th><th>outstandingReplicas</th><th>failedAtMillis</th><th>reason</th><th>recommendedAction</th><th>operatorHint</th></tr>';\n"
             + "      for(const it of h.items){\n"
             + "        const outstandingReplicas = (it.outstandingReplicaCount || 0) + ' (auto=' + (it.autoRecoverableReplicaCount || 0) + ', manual=' + (it.manualReplicaCount || 0) + ')';\n"
-            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.type)+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+(it.retryable ? 'yes' : 'capped')+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaRecoveryClass || '')+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+esc(it.replicaCategorySummary || '')+'</td><td>'+esc(it.replicaReasonSummary || '')+'</td><td>'+esc(outstandingReplicas)+'</td><td>'+it.failedAtMillis+'</td><td>'+esc(it.reason)+'</td></tr>';\n"
+            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.type)+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+(it.retryable ? 'yes' : 'capped')+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaRecoveryClass || '')+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+esc(it.replicaCategorySummary || '')+'</td><td>'+esc(it.replicaReasonSummary || '')+'</td><td>'+esc(outstandingReplicas)+'</td><td>'+it.failedAtMillis+'</td><td>'+esc(it.reason)+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
@@ -1375,9 +1512,9 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "    }\n"
             + "    function renderFailureSummary(s){\n"
             + "      let html = '<div class=\"card\"><h3>失败原因汇总 (size='+s.size+', total='+s.totalFailedItems+')</h3>';\n"
-            + "      html += '<table><tr><th>reason</th><th>count</th></tr>';\n"
+            + "      html += '<table><tr><th>reason</th><th>count</th><th>recommendedAction</th><th>operatorHint</th></tr>';\n"
             + "      for(const it of s.items){\n"
-            + "        html += '<tr><td>'+esc(it.reason)+'</td><td>'+it.count+'</td></tr>';\n"
+            + "        html += '<tr><td>'+esc(it.reason)+'</td><td>'+it.count+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
