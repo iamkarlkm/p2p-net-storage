@@ -55,6 +55,12 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("/sync/api/queues?limit=200"));
                 Assert.assertTrue(index.contains("data-action"));
                 Assert.assertTrue(index.contains("document.addEventListener('click'"));
+                Assert.assertTrue(index.contains("class=\"page\""));
+                Assert.assertTrue(index.contains("class=\"section\""));
+                Assert.assertTrue(index.contains("总览区"));
+                Assert.assertTrue(index.contains("失败区"));
+                Assert.assertTrue(index.contains("上传区"));
+                Assert.assertTrue(index.contains("队列明细区"));
 
                 String json = send("GET", "http://127.0.0.1:" + server.getPort() + "/sync/api/queues?limit=20", null);
                 Assert.assertTrue(json.contains("\"ok\":true"));
