@@ -523,13 +523,17 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         body.put("remainingReplicaCategoryItems", result.remainingReplicaCategoryItems == null
             ? Collections.emptyList()
             : result.remainingReplicaCategoryItems);
+        body.put("remainingFailedItemsPreview", result.remainingFailedItemsPreview == null
+            ? Collections.emptyList()
+            : result.remainingFailedItemsPreview);
     }
 
     private String batchActionMessage(String prefix, BatchReplicaActionResult result) {
         return prefix
             + " remainingFailedItems=" + result.remainingFailedItemCount
             + " remainingOutstandingReplicas=" + result.remainingOutstandingReplicaCount
-            + " remainingCategories=" + (result.remainingReplicaCategorySummary == null ? "" : result.remainingReplicaCategorySummary);
+            + " remainingCategories=" + (result.remainingReplicaCategorySummary == null ? "" : result.remainingReplicaCategorySummary)
+            + " previewPaths=" + (result.remainingFailedPathsSummary == null ? "" : result.remainingFailedPathsSummary);
     }
 
     private Map<String, Object> operatorActionTimelineItem(P2PSyncStateStore store, MonitorActionRecord record) {
@@ -1272,6 +1276,29 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         result.remainingOutstandingReplicaCount = totalCount(remainingCategoryCounts);
         result.remainingReplicaCategorySummary = reasonSummary(remainingCategoryCounts);
         result.remainingReplicaCategoryItems = replicaCategoryItems(remainingCategoryCounts);
+        Map<String, Object> preview = hotFailedItemsToMap(store, 3);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> previewItems = (List<Map<String, Object>>) preview.get("items");
+        result.remainingFailedItemsPreview = previewItems == null ? Collections.<Map<String, Object>>emptyList() : previewItems;
+        result.remainingFailedPathsSummary = previewPathSummary(result.remainingFailedItemsPreview);
+    }
+
+    private String previewPathSummary(List<Map<String, Object>> items) {
+        if (items == null || items.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (Map<String, Object> item : items) {
+            String path = String.valueOf(item.get("path"));
+            if (path == null || path.isBlank()) {
+                continue;
+            }
+            if (sb.length() > 0) {
+                sb.append(',');
+            }
+            sb.append(path);
+        }
+        return sb.toString();
     }
 
     private void discardReplicasByCategory(BatchReplicaActionResult result, P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir, Set<String> categories) {
@@ -1982,6 +2009,8 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         private int remainingOutstandingReplicaCount;
         private String remainingReplicaCategorySummary = "";
         private List<Map<String, Object>> remainingReplicaCategoryItems = Collections.emptyList();
+        private List<Map<String, Object>> remainingFailedItemsPreview = Collections.emptyList();
+        private String remainingFailedPathsSummary = "";
     }
 
     private static final class MonitorActionRecord {

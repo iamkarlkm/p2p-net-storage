@@ -309,6 +309,9 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(response.contains("\"remainingFailedItemCount\":2"));
                 Assert.assertTrue(response.contains("\"remainingOutstandingReplicaCount\":2"));
                 Assert.assertTrue(response.contains("\"remainingReplicaCategorySummary\":\"CONFLICT=1, RETRY_LIMIT=1\""));
+                Assert.assertTrue(response.contains("\"remainingFailedItemsPreview\""));
+                Assert.assertTrue(response.contains("\"path\":\"manual.txt\""));
+                Assert.assertTrue(response.contains("\"path\":\"capped.txt\""));
 
                 Assert.assertFalse(store.fileCreatesFailed().contains(Long.valueOf(autoId)));
                 Assert.assertTrue(store.fileCreatesActive().contains(Long.valueOf(autoId)));
@@ -361,6 +364,8 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(response.contains("\"remainingFailedItemCount\":1"));
                 Assert.assertTrue(response.contains("\"remainingOutstandingReplicaCount\":1"));
                 Assert.assertTrue(response.contains("\"remainingReplicaCategorySummary\":\"STATE_MISMATCH=1\""));
+                Assert.assertTrue(response.contains("\"remainingFailedItemsPreview\""));
+                Assert.assertTrue(response.contains("\"path\":\"auto.txt\""));
 
                 Assert.assertFalse(store.fileCreatesFailed().contains(Long.valueOf(manualId)));
                 Assert.assertEquals(0, store.getReplicaStates(FileSyncEventType.CREATE, false, manualId).size());
@@ -414,6 +419,10 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(retryResp.contains("\"remainingFailedItemCount\":3"));
                 Assert.assertTrue(retryResp.contains("\"remainingOutstandingReplicaCount\":3"));
                 Assert.assertTrue(retryResp.contains("\"remainingReplicaCategorySummary\":\"CONFLICT=1, RETRY_LIMIT=1, STATE_MISMATCH=1\""));
+                Assert.assertTrue(retryResp.contains("\"remainingFailedItemsPreview\""));
+                Assert.assertTrue(retryResp.contains("\"path\":\"conflict.txt\""));
+                Assert.assertTrue(retryResp.contains("\"path\":\"capped.txt\""));
+                Assert.assertTrue(retryResp.contains("\"path\":\"other.txt\""));
                 Assert.assertFalse(store.fileCreatesFailed().contains(Long.valueOf(networkId)));
                 Assert.assertTrue(store.fileCreatesActive().contains(Long.valueOf(networkId)));
                 Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, false, networkId, "node-a", P2PSyncStateStore.REPLICA_TARGETED));
@@ -429,6 +438,8 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(discardResp.contains("\"remainingFailedItemCount\":1"));
                 Assert.assertTrue(discardResp.contains("\"remainingOutstandingReplicaCount\":1"));
                 Assert.assertTrue(discardResp.contains("\"remainingReplicaCategorySummary\":\"STATE_MISMATCH=1\""));
+                Assert.assertTrue(discardResp.contains("\"remainingFailedItemsPreview\""));
+                Assert.assertTrue(discardResp.contains("\"path\":\"other.txt\""));
 
                 Assert.assertFalse(store.fileModifiesFailed().contains(Long.valueOf(conflictId)));
                 Assert.assertEquals(0, store.getReplicaStates(FileSyncEventType.MODIFY, false, conflictId).size());
