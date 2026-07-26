@@ -134,6 +134,7 @@ final class P2PSyncQueueEngine {
             }
             inflight.remove(fileId);
             inflight.sync();
+            store.clearRetryCount(def.type, def.directory, fileId);
             if (def.type == FileSyncEventType.DELETE) {
                 store.removeKind(fileId);
                 store.fileIdToKindMap().sync();
@@ -146,6 +147,7 @@ final class P2PSyncQueueEngine {
                 return;
             }
             inflight.remove(fileId);
+            store.incrementRetryCount(def.type, def.directory, fileId);
             queue.add(fileId);
             inflight.sync();
             queue.sync();

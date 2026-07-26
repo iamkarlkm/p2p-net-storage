@@ -221,6 +221,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             m.put("type", type.name());
             String path = store.getRelativePath(fileId);
             m.put("path", path == null ? "" : path);
+            m.put("retryCount", Integer.valueOf(store.getRetryCount(type, dir, fileId)));
             if (includeReason) {
                 String reason = store.getFailedReason(type, dir, fileId);
                 m.put("reason", reason == null ? "" : reason);
@@ -265,7 +266,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
             + "    function renderQueue(title, q){\n"
             + "      let html = '<div class=\"card\"><h3>'+esc(title)+' (size='+q.size+')</h3>';\n"
-            + "      html += '<table><tr><th>fileId</th><th>dir</th><th>type</th><th>path</th><th>reason</th><th>action</th></tr>';\n"
+            + "      html += '<table><tr><th>fileId</th><th>dir</th><th>type</th><th>path</th><th>retryCount</th><th>reason</th><th>action</th></tr>';\n"
             + "      for(const it of q.items){\n"
             + "        const reason = it.reason ? esc(it.reason) : '';\n"
             + "        let action = '';\n"
@@ -273,7 +274,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "          action = '<button class=\"btn\" data-action=\"retry\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">重试(覆盖同步)</button> ' +\n"
             + "                   '<button class=\"btn\" data-action=\"discard\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">放弃</button>';\n"
             + "        }\n"
-            + "        html += '<tr><td>'+it.fileId+'</td><td>'+it.dir+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.path)+'</td><td>'+reason+'</td><td>'+action+'</td></tr>';\n"
+            + "        html += '<tr><td>'+it.fileId+'</td><td>'+it.dir+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.path)+'</td><td>'+it.retryCount+'</td><td>'+reason+'</td><td>'+action+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"

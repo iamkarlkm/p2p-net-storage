@@ -36,6 +36,7 @@ public final class P2PSyncStateStore implements AutoCloseable {
     private final DsHashMap fileIdToLastModified;
     private final DsHashMap fileIdToKind;
     private final DsHashMap failedKeyToReasonId;
+    private final DsHashMap failedKeyToRetryCount;
 
     private DsHashSet fileCreatesActive;
     private DsHashSet fileModifiesActive;
@@ -81,6 +82,8 @@ public final class P2PSyncStateStore implements AutoCloseable {
             this.fileIdToKind = new DsHashMap(this.dsHome.resolve("id_kind.map").toFile());
             this.failedKeyToReasonId = new DsHashMap(this.dsHome.resolve("failed_reason.map").toFile());
             this.failedKeyToReasonId.setSyncModeStrong100ms();
+            this.failedKeyToRetryCount = new DsHashMap(this.dsHome.resolve("failed_retry_count.map").toFile());
+            this.failedKeyToRetryCount.setSyncModeStrong100ms();
             this.fileCreatesActive = new DsHashSet(this.dsHome.resolve("events_file_create.active.set").toFile());
             this.fileModifiesActive = new DsHashSet(this.dsHome.resolve("events_file_modify.active.set").toFile());
             this.fileDeletesActive = new DsHashSet(this.dsHome.resolve("events_file_delete.active.set").toFile());
@@ -349,6 +352,46 @@ public final class P2PSyncStateStore implements AutoCloseable {
         }
     }
 
+    public int getRetryCount(FileSyncEventType type, boolean directory, long fileId) {
+        int code = codeFor(type, directory);
+        if (code < 0) {
+            return 0;
+        }
+        Long count = failedKeyToRetryCount.get(Long.valueOf(failedKey(code, fileId)));
+        if (count == null || count.longValue() <= 0L) {
+            return 0;
+        }
+        if (count.longValue() > Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        return count.intValue();
+    }
+
+    public int incrementRetryCount(FileSyncEventType type, boolean directory, long fileId) {
+        int code = codeFor(type, directory);
+        if (code < 0) {
+            return 0;
+        }
+        long key = failedKey(code, fileId);
+        Long current = failedKeyToRetryCount.get(Long.valueOf(key));
+        long next = current == null ? 1L : current.longValue() + 1L;
+        failedKeyToRetryCount.put(Long.valueOf(key), Long.valueOf(next));
+        failedKeyToRetryCount.sync();
+        if (next > Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        return (int) next;
+    }
+
+    public void clearRetryCount(FileSyncEventType type, boolean directory, long fileId) {
+        int code = codeFor(type, directory);
+        if (code < 0) {
+            return;
+        }
+        failedKeyToRetryCount.remove(Long.valueOf(failedKey(code, fileId)));
+        failedKeyToRetryCount.sync();
+    }
+
     public boolean retryFailed(FileSyncEventType type, boolean directory, long fileId) {
         int code = codeFor(type, directory);
         if (code < 0) {
@@ -366,6 +409,7 @@ public final class P2PSyncStateStore implements AutoCloseable {
         failed.sync();
         active.sync();
         removeFailedReason(code, fileId);
+        incrementRetryCount(type, directory, fileId);
         return true;
     }
 
@@ -383,6 +427,7 @@ public final class P2PSyncStateStore implements AutoCloseable {
         }
         failed.sync();
         removeFailedReason(code, fileId);
+        clearRetryCount(type, directory, fileId);
         return true;
     }
 

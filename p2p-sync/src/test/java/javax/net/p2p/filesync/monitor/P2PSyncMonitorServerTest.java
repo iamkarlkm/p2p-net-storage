@@ -41,6 +41,7 @@ public class P2PSyncMonitorServerTest {
             P2PSyncStateStore store = svc.getStore();
             long fileId = store.getOrCreateFileId("failed.txt");
             store.markFailed(FileSyncEventType.CREATE, false, fileId, "write_conflict");
+            store.incrementRetryCount(FileSyncEventType.CREATE, false, fileId);
 
             try (P2PSyncMonitorServer server = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
                 server.start();
@@ -55,6 +56,7 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"failed_file_create\""));
                 Assert.assertTrue(json.contains("\"fileId\":\""));
                 Assert.assertTrue(json.contains("\"path\":\"failed.txt\""));
+                Assert.assertTrue(json.contains("\"retryCount\":1"));
                 Assert.assertTrue(json.contains("\"reason\":\"write_conflict\""));
                 Assert.assertTrue(json.contains("\"uploads\""));
                 Assert.assertTrue(json.contains("\"uploadPolicy\""));
@@ -88,6 +90,8 @@ public class P2PSyncMonitorServerTest {
             long discardId = store.getOrCreateFileId("discard.txt");
             store.markFailed(FileSyncEventType.MODIFY, false, retryId, "write_conflict");
             store.markFailed(FileSyncEventType.DELETE, false, discardId, "stale");
+            store.incrementRetryCount(FileSyncEventType.MODIFY, false, retryId);
+            store.incrementRetryCount(FileSyncEventType.DELETE, false, discardId);
 
             try (P2PSyncMonitorServer server = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
                 server.start();
@@ -96,12 +100,14 @@ public class P2PSyncMonitorServerTest {
                     "");
                 Assert.assertTrue(retryResp.contains("\"ok\":true"));
                 Assert.assertFalse(store.fileModifiesFailed().contains(Long.valueOf(retryId)));
+                Assert.assertEquals(2, store.getRetryCount(FileSyncEventType.MODIFY, false, retryId));
 
                 String discardResp = send("POST",
                     "http://127.0.0.1:" + server.getPort() + "/sync/api/failed/discard?fileId=" + discardId + "&dir=false&type=DELETE",
                     "");
                 Assert.assertTrue(discardResp.contains("\"ok\":true"));
                 Assert.assertFalse(store.fileDeletesFailed().contains(Long.valueOf(discardId)));
+                Assert.assertEquals(0, store.getRetryCount(FileSyncEventType.DELETE, false, discardId));
             }
         }
     }
