@@ -37,6 +37,8 @@ public final class P2PSyncStateStore implements AutoCloseable {
     private final DsHashMap fileIdToKind;
     private final DsHashMap failedKeyToReasonId;
     private final DsHashMap failedKeyToRetryCount;
+    private final DsHashMap failedKeyToFailedAtMillis;
+    private final DsHashMap failedKeyToLastRetriedAtMillis;
 
     private DsHashSet fileCreatesActive;
     private DsHashSet fileModifiesActive;
@@ -84,6 +86,10 @@ public final class P2PSyncStateStore implements AutoCloseable {
             this.failedKeyToReasonId.setSyncModeStrong100ms();
             this.failedKeyToRetryCount = new DsHashMap(this.dsHome.resolve("failed_retry_count.map").toFile());
             this.failedKeyToRetryCount.setSyncModeStrong100ms();
+            this.failedKeyToFailedAtMillis = new DsHashMap(this.dsHome.resolve("failed_at.map").toFile());
+            this.failedKeyToFailedAtMillis.setSyncModeStrong100ms();
+            this.failedKeyToLastRetriedAtMillis = new DsHashMap(this.dsHome.resolve("last_retried_at.map").toFile());
+            this.failedKeyToLastRetriedAtMillis.setSyncModeStrong100ms();
             this.fileCreatesActive = new DsHashSet(this.dsHome.resolve("events_file_create.active.set").toFile());
             this.fileModifiesActive = new DsHashSet(this.dsHome.resolve("events_file_modify.active.set").toFile());
             this.fileDeletesActive = new DsHashSet(this.dsHome.resolve("events_file_delete.active.set").toFile());
@@ -330,6 +336,8 @@ public final class P2PSyncStateStore implements AutoCloseable {
             long reasonId = failureReasonStrings.add(reason);
             failedKeyToReasonId.put(Long.valueOf(key), Long.valueOf(reasonId));
             failedKeyToReasonId.sync();
+            failedKeyToFailedAtMillis.put(Long.valueOf(key), Long.valueOf(System.currentTimeMillis()));
+            failedKeyToFailedAtMillis.sync();
         } catch (Exception e) {
             log.warn("store failed reason error: {}", e.getMessage());
         }
@@ -367,6 +375,24 @@ public final class P2PSyncStateStore implements AutoCloseable {
         return count.intValue();
     }
 
+    public long getFailedAtMillis(FileSyncEventType type, boolean directory, long fileId) {
+        int code = codeFor(type, directory);
+        if (code < 0) {
+            return 0L;
+        }
+        Long v = failedKeyToFailedAtMillis.get(Long.valueOf(failedKey(code, fileId)));
+        return v == null ? 0L : v.longValue();
+    }
+
+    public long getLastRetriedAtMillis(FileSyncEventType type, boolean directory, long fileId) {
+        int code = codeFor(type, directory);
+        if (code < 0) {
+            return 0L;
+        }
+        Long v = failedKeyToLastRetriedAtMillis.get(Long.valueOf(failedKey(code, fileId)));
+        return v == null ? 0L : v.longValue();
+    }
+
     public int incrementRetryCount(FileSyncEventType type, boolean directory, long fileId) {
         int code = codeFor(type, directory);
         if (code < 0) {
@@ -383,6 +409,15 @@ public final class P2PSyncStateStore implements AutoCloseable {
         return (int) next;
     }
 
+    public void markRetriedNow(FileSyncEventType type, boolean directory, long fileId) {
+        int code = codeFor(type, directory);
+        if (code < 0) {
+            return;
+        }
+        failedKeyToLastRetriedAtMillis.put(Long.valueOf(failedKey(code, fileId)), Long.valueOf(System.currentTimeMillis()));
+        failedKeyToLastRetriedAtMillis.sync();
+    }
+
     public void clearRetryCount(FileSyncEventType type, boolean directory, long fileId) {
         int code = codeFor(type, directory);
         if (code < 0) {
@@ -390,6 +425,10 @@ public final class P2PSyncStateStore implements AutoCloseable {
         }
         failedKeyToRetryCount.remove(Long.valueOf(failedKey(code, fileId)));
         failedKeyToRetryCount.sync();
+        failedKeyToFailedAtMillis.remove(Long.valueOf(failedKey(code, fileId)));
+        failedKeyToFailedAtMillis.sync();
+        failedKeyToLastRetriedAtMillis.remove(Long.valueOf(failedKey(code, fileId)));
+        failedKeyToLastRetriedAtMillis.sync();
     }
 
     public boolean retryFailed(FileSyncEventType type, boolean directory, long fileId) {
@@ -410,6 +449,9 @@ public final class P2PSyncStateStore implements AutoCloseable {
         active.sync();
         removeFailedReason(code, fileId);
         incrementRetryCount(type, directory, fileId);
+        markRetriedNow(type, directory, fileId);
+        failedKeyToFailedAtMillis.remove(Long.valueOf(failedKey(code, fileId)));
+        failedKeyToFailedAtMillis.sync();
         return true;
     }
 

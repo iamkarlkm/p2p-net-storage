@@ -42,18 +42,28 @@ public class P2PSyncQueueEngineTest {
             Assert.assertEquals(1, engine.processBatch(store, P2PSyncStateStore.QueueStage.ACTIVE, 10, root, handler, running));
             Assert.assertEquals(1, store.getRetryCount(FileSyncEventType.MODIFY, false, fileId));
             Assert.assertTrue(store.fileModifiesActive().contains(Long.valueOf(fileId)));
+            long firstRetriedAt = store.getLastRetriedAtMillis(FileSyncEventType.MODIFY, false, fileId);
+            Assert.assertTrue(firstRetriedAt > 0L);
 
             Assert.assertEquals(1, engine.processBatch(store, P2PSyncStateStore.QueueStage.ACTIVE, 10, root, handler, running));
             Assert.assertTrue(store.fileModifiesFailed().contains(Long.valueOf(fileId)));
             Assert.assertEquals("network", store.getFailedReason(FileSyncEventType.MODIFY, false, fileId));
             Assert.assertEquals(1, store.getRetryCount(FileSyncEventType.MODIFY, false, fileId));
+            long failedAt = store.getFailedAtMillis(FileSyncEventType.MODIFY, false, fileId);
+            Assert.assertTrue(failedAt > 0L);
+            Assert.assertTrue(store.getLastRetriedAtMillis(FileSyncEventType.MODIFY, false, fileId) >= firstRetriedAt);
 
             Assert.assertTrue(store.retryFailed(FileSyncEventType.MODIFY, false, fileId));
             Assert.assertEquals(2, store.getRetryCount(FileSyncEventType.MODIFY, false, fileId));
             Assert.assertTrue(store.fileModifiesActive().contains(Long.valueOf(fileId)));
+            Assert.assertEquals(0L, store.getFailedAtMillis(FileSyncEventType.MODIFY, false, fileId));
+            long secondRetriedAt = store.getLastRetriedAtMillis(FileSyncEventType.MODIFY, false, fileId);
+            Assert.assertTrue(secondRetriedAt >= firstRetriedAt);
 
             Assert.assertEquals(1, engine.processBatch(store, P2PSyncStateStore.QueueStage.ACTIVE, 10, root, handler, running));
             Assert.assertEquals(0, store.getRetryCount(FileSyncEventType.MODIFY, false, fileId));
+            Assert.assertEquals(0L, store.getFailedAtMillis(FileSyncEventType.MODIFY, false, fileId));
+            Assert.assertEquals(0L, store.getLastRetriedAtMillis(FileSyncEventType.MODIFY, false, fileId));
             Assert.assertFalse(store.fileModifiesActive().contains(Long.valueOf(fileId)));
             Assert.assertFalse(store.fileModifiesFailed().contains(Long.valueOf(fileId)));
         }

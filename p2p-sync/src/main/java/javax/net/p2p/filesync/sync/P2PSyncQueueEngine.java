@@ -148,6 +148,7 @@ final class P2PSyncQueueEngine {
             }
             inflight.remove(fileId);
             store.incrementRetryCount(def.type, def.directory, fileId);
+            store.markRetriedNow(def.type, def.directory, fileId);
             queue.add(fileId);
             inflight.sync();
             queue.sync();

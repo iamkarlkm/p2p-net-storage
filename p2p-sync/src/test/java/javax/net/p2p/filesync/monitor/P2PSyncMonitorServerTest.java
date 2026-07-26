@@ -42,6 +42,7 @@ public class P2PSyncMonitorServerTest {
             long fileId = store.getOrCreateFileId("failed.txt");
             store.markFailed(FileSyncEventType.CREATE, false, fileId, "write_conflict");
             store.incrementRetryCount(FileSyncEventType.CREATE, false, fileId);
+            store.markRetriedNow(FileSyncEventType.CREATE, false, fileId);
 
             try (P2PSyncMonitorServer server = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
                 server.start();
@@ -57,6 +58,8 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"fileId\":\""));
                 Assert.assertTrue(json.contains("\"path\":\"failed.txt\""));
                 Assert.assertTrue(json.contains("\"retryCount\":1"));
+                Assert.assertTrue(json.contains("\"failedAtMillis\":"));
+                Assert.assertTrue(json.contains("\"lastRetriedAtMillis\":"));
                 Assert.assertTrue(json.contains("\"reason\":\"write_conflict\""));
                 Assert.assertTrue(json.contains("\"uploads\""));
                 Assert.assertTrue(json.contains("\"uploadPolicy\""));
