@@ -77,6 +77,8 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("副本恢复分级汇总"));
                 Assert.assertTrue(index.contains("副本失败原因汇总"));
                 Assert.assertTrue(index.contains("副本失败类别汇总"));
+                Assert.assertTrue(index.contains("失败趋势"));
+                Assert.assertTrue(index.contains("恢复成功率"));
                 Assert.assertTrue(index.contains(">replicaRecoveryClass</th>"));
                 Assert.assertTrue(index.contains(">replicaCategories</th>"));
                 Assert.assertTrue(index.contains(">replicaReasons</th>"));
@@ -111,11 +113,22 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"label\":\"node-a\""));
                 Assert.assertTrue(json.contains("\"status\":\"FAILED\""));
                 Assert.assertTrue(json.contains("\"healthSummary\""));
+                Assert.assertTrue(json.contains("\"failureTrend\""));
+                Assert.assertTrue(json.contains("\"recoverySuccessSummary\""));
                 Assert.assertTrue(json.contains("\"activeCount\":1"));
                 Assert.assertTrue(json.contains("\"failedCount\":2"));
                 Assert.assertTrue(json.contains("\"uploadingCount\":1"));
                 Assert.assertTrue(json.contains("\"oldestFailedAtMillis\":"));
                 Assert.assertTrue(json.contains("\"maxRetryCount\":3"));
+                Assert.assertTrue(json.contains("\"recentFailedCount\":1"));
+                Assert.assertTrue(json.contains("\"failedLast5MinutesCount\":1"));
+                Assert.assertTrue(json.contains("\"failedLast60MinutesCount\":1"));
+                Assert.assertTrue(json.contains("\"outstandingFailedCount\":2"));
+                Assert.assertTrue(json.contains("\"completedCount\":1"));
+                Assert.assertTrue(json.contains("\"totalCount\":2"));
+                Assert.assertTrue(json.contains("\"successRatePercent\":50"));
+                Assert.assertTrue(json.contains("\"avgCompletedDurationMillis\":200"));
+                Assert.assertTrue(json.contains("\"avgFailedDurationMillis\":300"));
                 Assert.assertTrue(json.contains("\"failureSummary\""));
                 Assert.assertTrue(json.contains("\"totalFailedItems\":2"));
                 Assert.assertTrue(json.contains("\"failureRecoverySummary\""));
@@ -429,6 +442,8 @@ public class P2PSyncMonitorServerTest {
     }
 
     private static final class StaticUploadStatusHandler implements FileSyncEventHandler, SyncUploadStatusProvider {
+        private final long nowMillis = System.currentTimeMillis();
+
         @Override
         public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
             acker.ack();
@@ -438,21 +453,21 @@ public class P2PSyncMonitorServerTest {
         public List<SyncUploadStatus> snapshotActiveUploads(int limit) {
             return Collections.singletonList(new SyncUploadStatus(
                 1001L, 1002L, "big.bin", "uploading", 16L * 1024L * 1024L, true, 2, 1,
-                System.currentTimeMillis() - 500L, System.currentTimeMillis()));
+                nowMillis - 500L, nowMillis));
         }
 
         @Override
         public List<SyncUploadStatus> snapshotRecentCompletedUploads(int limit) {
             return Collections.singletonList(new SyncUploadStatus(
                 2001L, 2002L, "done.bin", "completed", 8L * 1024L, false, 1, 1,
-                System.currentTimeMillis() - 1000L, System.currentTimeMillis() - 800L, ""));
+                nowMillis - 1000L, nowMillis - 800L, ""));
         }
 
         @Override
         public List<SyncUploadStatus> snapshotRecentFailedUploads(int limit) {
             return Collections.singletonList(new SyncUploadStatus(
                 3001L, 3002L, "fail.bin", "failed", 4L * 1024L, false, 1, 0,
-                System.currentTimeMillis() - 1500L, System.currentTimeMillis() - 1200L, "write_conflict"));
+                nowMillis - 1500L, nowMillis - 1200L, "write_conflict"));
         }
     }
 }
