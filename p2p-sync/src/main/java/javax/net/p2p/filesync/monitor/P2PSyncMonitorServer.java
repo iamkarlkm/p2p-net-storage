@@ -327,7 +327,10 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             item.put("type", type.name());
             String path = store.getRelativePath(fileId);
             item.put("path", path == null ? "" : path);
-            item.put("retryCount", Integer.valueOf(store.getRetryCount(type, dir, fileId)));
+            int retryCount = store.getRetryCount(type, dir, fileId);
+            item.put("retryCount", Integer.valueOf(retryCount));
+            item.put("remainingRetries", Integer.valueOf(remainingRetries(retryCount)));
+            item.put("retryable", Boolean.valueOf(isRetryable(retryCount)));
             item.put("failedAtMillis", Long.valueOf(store.getFailedAtMillis(type, dir, fileId)));
             String reason = store.getFailedReason(type, dir, fileId);
             item.put("reason", reason == null ? "" : reason);
@@ -366,7 +369,17 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         return item;
     }
 
-    private static Map<String, Object> queuesToMap(P2PSyncStateStore store, int limit) {
+    private int remainingRetries(int retryCount) {
+        int maxRetryCount = syncService.getConfig().getMaxRetryCount();
+        int remaining = maxRetryCount - retryCount;
+        return remaining <= 0 ? 0 : remaining;
+    }
+
+    private boolean isRetryable(int retryCount) {
+        return remainingRetries(retryCount) > 0;
+    }
+
+    private Map<String, Object> queuesToMap(P2PSyncStateStore store, int limit) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("file_create", queue(store, store.queueRef(QueueKey.FILE_CREATE, QueueStage.ACTIVE), FileSyncEventType.CREATE, false, limit));
         out.put("file_modify", queue(store, store.queueRef(QueueKey.FILE_MODIFY, QueueStage.ACTIVE), FileSyncEventType.MODIFY, false, limit));
@@ -381,21 +394,21 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         return out;
     }
 
-    private static Map<String, Object> queue(P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir, int limit) {
+    private Map<String, Object> queue(P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir, int limit) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("size", set.size());
         out.put("items", sampleItems(store, set, type, dir, limit, false));
         return out;
     }
 
-    private static Map<String, Object> failedQueue(P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir, int limit) {
+    private Map<String, Object> failedQueue(P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir, int limit) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("size", set.size());
         out.put("items", sampleItems(store, set, type, dir, limit, true));
         return out;
     }
 
-    private static List<Map<String, Object>> sampleItems(P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir, int limit, boolean includeReason) {
+    private List<Map<String, Object>> sampleItems(P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir, int limit, boolean includeReason) {
         List<Map<String, Object>> items = new ArrayList<>();
         int count = 0;
         for (Long o : set) {
@@ -409,7 +422,10 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             m.put("type", type.name());
             String path = store.getRelativePath(fileId);
             m.put("path", path == null ? "" : path);
-            m.put("retryCount", Integer.valueOf(store.getRetryCount(type, dir, fileId)));
+            int retryCount = store.getRetryCount(type, dir, fileId);
+            m.put("retryCount", Integer.valueOf(retryCount));
+            m.put("remainingRetries", Integer.valueOf(remainingRetries(retryCount)));
+            m.put("retryable", Boolean.valueOf(isRetryable(retryCount)));
             m.put("failedAtMillis", Long.valueOf(store.getFailedAtMillis(type, dir, fileId)));
             m.put("lastRetriedAtMillis", Long.valueOf(store.getLastRetriedAtMillis(type, dir, fileId)));
             if (includeReason) {
@@ -459,15 +475,17 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
             + "    function renderQueue(title, q){\n"
             + "      let html = '<div class=\"card\"><h3>'+esc(title)+' (size='+q.size+')</h3>';\n"
-            + "      html += '<table><tr><th>fileId</th><th>dir</th><th>type</th><th>path</th><th>retryCount</th><th>failedAtMillis</th><th>lastRetriedAtMillis</th><th>reason</th><th>action</th></tr>';\n"
+            + "      html += '<table><tr><th>fileId</th><th>dir</th><th>type</th><th>path</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>failedAtMillis</th><th>lastRetriedAtMillis</th><th>reason</th><th>action</th></tr>';\n"
             + "      for(const it of q.items){\n"
             + "        const reason = it.reason ? esc(it.reason) : '';\n"
+            + "        const retryable = !!it.retryable;\n"
+            + "        const retryState = retryable ? 'yes' : 'capped';\n"
             + "        let action = '';\n"
             + "        if(reason){\n"
             + "          action = '<button class=\"btn\" data-action=\"retry\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">重试(覆盖同步)</button> ' +\n"
             + "                   '<button class=\"btn\" data-action=\"discard\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">放弃</button>';\n"
             + "        }\n"
-            + "        html += '<tr><td>'+it.fileId+'</td><td>'+it.dir+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.path)+'</td><td>'+it.retryCount+'</td><td>'+it.failedAtMillis+'</td><td>'+it.lastRetriedAtMillis+'</td><td>'+reason+'</td><td>'+action+'</td></tr>';\n"
+            + "        html += '<tr><td>'+it.fileId+'</td><td>'+it.dir+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.path)+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+retryState+'</td><td>'+it.failedAtMillis+'</td><td>'+it.lastRetriedAtMillis+'</td><td>'+reason+'</td><td>'+action+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
@@ -515,9 +533,9 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "    }\n"
             + "    function renderHotFailedItems(h){\n"
             + "      let html = '<div class=\"card\"><h3>热点失败项 (size='+h.size+')</h3>';\n"
-            + "      html += '<table><tr><th>path</th><th>type</th><th>retryCount</th><th>failedAtMillis</th><th>reason</th></tr>';\n"
+            + "      html += '<table><tr><th>path</th><th>type</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>failedAtMillis</th><th>reason</th></tr>';\n"
             + "      for(const it of h.items){\n"
-            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.type)+'</td><td>'+it.retryCount+'</td><td>'+it.failedAtMillis+'</td><td>'+esc(it.reason)+'</td></tr>';\n"
+            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.type)+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+(it.retryable ? 'yes' : 'capped')+'</td><td>'+it.failedAtMillis+'</td><td>'+esc(it.reason)+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
