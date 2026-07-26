@@ -45,6 +45,8 @@ public class P2PSyncMonitorServerTest {
             long staleId = store.getOrCreateFileId("stale.txt");
             store.markFailed(FileSyncEventType.CREATE, false, fileId, "write_conflict");
             store.markFailed(FileSyncEventType.DELETE, false, staleId, "stale");
+            store.markReplicaState(FileSyncEventType.CREATE, false, fileId, "node-a", "ACKED");
+            store.markReplicaState(FileSyncEventType.CREATE, false, fileId, "node-b", "FAILED");
             store.incrementRetryCount(FileSyncEventType.CREATE, false, fileId);
             store.incrementRetryCount(FileSyncEventType.CREATE, false, fileId);
             store.markRetriedNow(FileSyncEventType.CREATE, false, fileId);
@@ -65,6 +67,7 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("失败区"));
                 Assert.assertTrue(index.contains("上传区"));
                 Assert.assertTrue(index.contains("队列明细区"));
+                Assert.assertTrue(index.contains(">replicas</th>"));
 
                 String json = send("GET", "http://127.0.0.1:" + server.getPort() + "/sync/api/queues?limit=20", null);
                 Assert.assertTrue(json.contains("\"ok\":true"));
@@ -83,6 +86,10 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"failedAtMillis\":"));
                 Assert.assertTrue(json.contains("\"lastRetriedAtMillis\":"));
                 Assert.assertTrue(json.contains("\"reason\":\"write_conflict\""));
+                Assert.assertTrue(json.contains("\"replicaStates\""));
+                Assert.assertTrue(json.contains("\"replicaSummary\":\"node-a=ACKED, node-b=FAILED\""));
+                Assert.assertTrue(json.contains("\"label\":\"node-a\""));
+                Assert.assertTrue(json.contains("\"status\":\"FAILED\""));
                 Assert.assertTrue(json.contains("\"healthSummary\""));
                 Assert.assertTrue(json.contains("\"activeCount\":1"));
                 Assert.assertTrue(json.contains("\"failedCount\":2"));

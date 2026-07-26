@@ -7,6 +7,10 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import javax.net.p2p.utils.XXHashUtil;
 import lombok.extern.slf4j.Slf4j;
 
@@ -31,11 +35,13 @@ public final class P2PSyncStateStore implements AutoCloseable {
     private final Path dsHome;
     private final DsString fileIdStrings;
     private final DsString failureReasonStrings;
+    private final DsString replicaStateStrings;
     private final DsHashMap pathHashToFileId;
     private final DsHashMap meta;
     private final DsHashMap fileIdToLastModified;
     private final DsHashMap fileIdToKind;
     private final DsHashMap failedKeyToReasonId;
+    private final DsHashMap eventKeyToReplicaStateId;
     private final DsHashMap failedKeyToRetryCount;
     private final DsHashMap failedKeyToFailedAtMillis;
     private final DsHashMap failedKeyToLastRetriedAtMillis;
@@ -77,6 +83,9 @@ public final class P2PSyncStateStore implements AutoCloseable {
             Path failedStringsHome = this.dsHome.resolve("strings_failed");
             Files.createDirectories(failedStringsHome);
             this.failureReasonStrings = new DsString(failedStringsHome.toString());
+            Path replicaStringsHome = this.dsHome.resolve("strings_replica");
+            Files.createDirectories(replicaStringsHome);
+            this.replicaStateStrings = new DsString(replicaStringsHome.toString());
             this.pathHashToFileId = new DsHashMap(this.dsHome.resolve("path_to_id.map").toFile());
             this.meta = new DsHashMap(this.dsHome.resolve("meta.map").toFile());
             this.fileIdToLastModified = new DsHashMap(this.dsHome.resolve("last_modified.map").toFile());
@@ -84,6 +93,8 @@ public final class P2PSyncStateStore implements AutoCloseable {
             this.fileIdToKind = new DsHashMap(this.dsHome.resolve("id_kind.map").toFile());
             this.failedKeyToReasonId = new DsHashMap(this.dsHome.resolve("failed_reason.map").toFile());
             this.failedKeyToReasonId.setSyncModeStrong100ms();
+            this.eventKeyToReplicaStateId = new DsHashMap(this.dsHome.resolve("replica_state.map").toFile());
+            this.eventKeyToReplicaStateId.setSyncModeStrong100ms();
             this.failedKeyToRetryCount = new DsHashMap(this.dsHome.resolve("failed_retry_count.map").toFile());
             this.failedKeyToRetryCount.setSyncModeStrong100ms();
             this.failedKeyToFailedAtMillis = new DsHashMap(this.dsHome.resolve("failed_at.map").toFile());
@@ -404,6 +415,39 @@ public final class P2PSyncStateStore implements AutoCloseable {
         return v == null ? 0L : v.longValue();
     }
 
+    public List<ReplicaState> getReplicaStates(FileSyncEventType type, boolean directory, long fileId) {
+        int code = codeFor(type, directory);
+        if (code < 0) {
+            return new ArrayList<ReplicaState>();
+        }
+        Map<String, String> states = readReplicaStateMap(failedKey(code, fileId));
+        List<ReplicaState> out = new ArrayList<ReplicaState>(states.size());
+        for (Map.Entry<String, String> entry : states.entrySet()) {
+            out.add(new ReplicaState(entry.getKey(), entry.getValue()));
+        }
+        return out;
+    }
+
+    public void markReplicaState(FileSyncEventType type, boolean directory, long fileId, String label, String status) {
+        int code = codeFor(type, directory);
+        if (code < 0 || label == null || label.trim().isEmpty()) {
+            return;
+        }
+        long key = failedKey(code, fileId);
+        Map<String, String> states = readReplicaStateMap(key);
+        states.put(sanitizeReplicaToken(label), sanitizeReplicaToken(status));
+        writeReplicaStateMap(key, states);
+    }
+
+    public void clearReplicaStates(FileSyncEventType type, boolean directory, long fileId) {
+        int code = codeFor(type, directory);
+        if (code < 0) {
+            return;
+        }
+        eventKeyToReplicaStateId.remove(Long.valueOf(failedKey(code, fileId)));
+        eventKeyToReplicaStateId.sync();
+    }
+
     public int incrementRetryCount(FileSyncEventType type, boolean directory, long fileId) {
         int code = codeFor(type, directory);
         if (code < 0) {
@@ -481,6 +525,7 @@ public final class P2PSyncStateStore implements AutoCloseable {
         failed.sync();
         removeFailedReason(code, fileId);
         clearRetryCount(type, directory, fileId);
+        clearReplicaStates(type, directory, fileId);
         return true;
     }
 
@@ -554,6 +599,69 @@ public final class P2PSyncStateStore implements AutoCloseable {
         long key = failedKey(code, fileId);
         failedKeyToReasonId.remove(Long.valueOf(key));
         failedKeyToReasonId.sync();
+    }
+
+    private Map<String, String> readReplicaStateMap(long key) {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        Long stateId = eventKeyToReplicaStateId.get(Long.valueOf(key));
+        if (stateId == null) {
+            return out;
+        }
+        String raw;
+        try {
+            raw = replicaStateStrings.get(stateId.longValue());
+        } catch (Exception e) {
+            return out;
+        }
+        if (raw == null || raw.isEmpty()) {
+            return out;
+        }
+        for (String line : raw.split("\n")) {
+            if (line == null || line.isEmpty()) {
+                continue;
+            }
+            int idx = line.indexOf('\t');
+            if (idx <= 0) {
+                continue;
+            }
+            String label = line.substring(0, idx);
+            String status = line.substring(idx + 1);
+            if (!label.isEmpty()) {
+                out.put(label, status);
+            }
+        }
+        return out;
+    }
+
+    private void writeReplicaStateMap(long key, Map<String, String> states) {
+        if (states == null || states.isEmpty()) {
+            eventKeyToReplicaStateId.remove(Long.valueOf(key));
+            eventKeyToReplicaStateId.sync();
+            return;
+        }
+        StringBuilder raw = new StringBuilder();
+        for (Map.Entry<String, String> entry : states.entrySet()) {
+            if (raw.length() > 0) {
+                raw.append('\n');
+            }
+            raw.append(sanitizeReplicaToken(entry.getKey()));
+            raw.append('\t');
+            raw.append(sanitizeReplicaToken(entry.getValue()));
+        }
+        try {
+            long stateId = replicaStateStrings.add(raw.toString());
+            eventKeyToReplicaStateId.put(Long.valueOf(key), Long.valueOf(stateId));
+            eventKeyToReplicaStateId.sync();
+        } catch (Exception e) {
+            log.warn("store replica state error: {}", e.getMessage());
+        }
+    }
+
+    private static String sanitizeReplicaToken(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim();
     }
 
     private static int codeFor(FileSyncEventType type, boolean directory) {
@@ -684,9 +792,30 @@ public final class P2PSyncStateStore implements AutoCloseable {
         fileIdToKind.close();
         failedKeyToReasonId.sync();
         failedKeyToReasonId.close();
+        eventKeyToReplicaStateId.sync();
+        eventKeyToReplicaStateId.close();
         pathHashToFileId.sync();
         pathHashToFileId.close();
         fileIdStrings.close();
         failureReasonStrings.close();
+        replicaStateStrings.close();
+    }
+
+    public static final class ReplicaState {
+        private final String label;
+        private final String status;
+
+        public ReplicaState(String label, String status) {
+            this.label = label == null ? "" : label;
+            this.status = status == null ? "" : status;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+
+        public String getStatus() {
+            return status;
+        }
     }
 }

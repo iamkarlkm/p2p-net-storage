@@ -380,6 +380,9 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             String reason = store.getFailedReason(type, dir, fileId);
             item.put("reason", reason == null ? "" : reason);
             item.put("recoveryClass", recoveryClass(reason, retryCount));
+            List<Map<String, Object>> replicaStates = replicaStatesToMap(store, type, dir, fileId);
+            item.put("replicaStates", replicaStates);
+            item.put("replicaSummary", replicaSummary(replicaStates));
             items.add(item);
         }
     }
@@ -488,11 +491,41 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
                 String reason = store.getFailedReason(type, dir, fileId);
                 m.put("reason", reason == null ? "" : reason);
                 m.put("recoveryClass", recoveryClass(reason, retryCount));
+                List<Map<String, Object>> replicaStates = replicaStatesToMap(store, type, dir, fileId);
+                m.put("replicaStates", replicaStates);
+                m.put("replicaSummary", replicaSummary(replicaStates));
             }
             items.add(m);
             count++;
         }
         return items;
+    }
+
+    private List<Map<String, Object>> replicaStatesToMap(P2PSyncStateStore store, FileSyncEventType type, boolean dir, long fileId) {
+        List<Map<String, Object>> items = new ArrayList<Map<String, Object>>();
+        for (P2PSyncStateStore.ReplicaState replicaState : store.getReplicaStates(type, dir, fileId)) {
+            Map<String, Object> item = new LinkedHashMap<String, Object>();
+            item.put("label", replicaState.getLabel());
+            item.put("status", replicaState.getStatus());
+            items.add(item);
+        }
+        return items;
+    }
+
+    private String replicaSummary(List<Map<String, Object>> replicaStates) {
+        if (replicaStates == null || replicaStates.isEmpty()) {
+            return "";
+        }
+        StringBuilder summary = new StringBuilder();
+        for (Map<String, Object> replicaState : replicaStates) {
+            if (summary.length() > 0) {
+                summary.append(", ");
+            }
+            summary.append(String.valueOf(replicaState.get("label")));
+            summary.append('=');
+            summary.append(String.valueOf(replicaState.get("status")));
+        }
+        return summary.toString();
     }
 
     private static String indexHtml() {
@@ -532,7 +565,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
             + "    function renderQueue(title, q){\n"
             + "      let html = '<div class=\"card\"><h3>'+esc(title)+' (size='+q.size+')</h3>';\n"
-            + "      html += '<table><tr><th>fileId</th><th>dir</th><th>type</th><th>path</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>failedAtMillis</th><th>lastRetriedAtMillis</th><th>reason</th><th>action</th></tr>';\n"
+            + "      html += '<table><tr><th>fileId</th><th>dir</th><th>type</th><th>path</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>replicas</th><th>failedAtMillis</th><th>lastRetriedAtMillis</th><th>reason</th><th>action</th></tr>';\n"
             + "      for(const it of q.items){\n"
             + "        const reason = it.reason ? esc(it.reason) : '';\n"
             + "        const retryable = !!it.retryable;\n"
@@ -542,7 +575,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "          action = '<button class=\"btn\" data-action=\"retry\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">重试(覆盖同步)</button> ' +\n"
             + "                   '<button class=\"btn\" data-action=\"discard\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">放弃</button>';\n"
             + "        }\n"
-            + "        html += '<tr><td>'+it.fileId+'</td><td>'+it.dir+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.path)+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+retryState+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+it.failedAtMillis+'</td><td>'+it.lastRetriedAtMillis+'</td><td>'+reason+'</td><td>'+action+'</td></tr>';\n"
+            + "        html += '<tr><td>'+it.fileId+'</td><td>'+it.dir+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.path)+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+retryState+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+it.failedAtMillis+'</td><td>'+it.lastRetriedAtMillis+'</td><td>'+reason+'</td><td>'+action+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
@@ -599,9 +632,9 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "    }\n"
             + "    function renderHotFailedItems(h){\n"
             + "      let html = '<div class=\"card\"><h3>热点失败项 (size='+h.size+')</h3>';\n"
-            + "      html += '<table><tr><th>path</th><th>type</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>failedAtMillis</th><th>reason</th></tr>';\n"
+            + "      html += '<table><tr><th>path</th><th>type</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>replicas</th><th>failedAtMillis</th><th>reason</th></tr>';\n"
             + "      for(const it of h.items){\n"
-            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.type)+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+(it.retryable ? 'yes' : 'capped')+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+it.failedAtMillis+'</td><td>'+esc(it.reason)+'</td></tr>';\n"
+            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.type)+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+(it.retryable ? 'yes' : 'capped')+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+it.failedAtMillis+'</td><td>'+esc(it.reason)+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"

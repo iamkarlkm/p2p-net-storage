@@ -103,6 +103,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
 
         Path dsHome = resolveDsHome(config, rootDir);
         this.store = new P2PSyncStateStore(dsHome);
+        this.eventHandler.bindStateStore(this.store);
 
         store.requeueInflightToActive();
         initialScan();

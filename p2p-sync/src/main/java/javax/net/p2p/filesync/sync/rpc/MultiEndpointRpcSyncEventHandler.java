@@ -14,6 +14,7 @@ import javax.net.p2p.client.P2PClientTcp;
 import javax.net.p2p.filesync.sync.FileSyncAcker;
 import javax.net.p2p.filesync.sync.FileSyncEventHandler;
 import javax.net.p2p.filesync.sync.FileSyncEventType;
+import javax.net.p2p.filesync.sync.P2PSyncStateStore;
 import javax.net.p2p.filesync.sync.transport.P2PFallbackConnector;
 import javax.net.p2p.filesync.sync.transport.P2PTransport;
 import javax.net.p2p.filesync.sync.transport.P2PTransportClient;
@@ -26,9 +27,13 @@ import javax.net.p2p.utils.P2PUtils;
 public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHandler, AutoCloseable {
 
     private static final String WRITE_CONFLICT = "write_conflict";
+    private static final String REPLICA_ACKED = "ACKED";
+    private static final String REPLICA_RETRY = "RETRY";
+    private static final String REPLICA_FAILED = "FAILED";
     private final long taskId;
     private final List<EndpointClient> clients;
     private final Map<EventKey, DeliveryState> deliveryStates;
+    private volatile P2PSyncStateStore stateStore;
 
     public MultiEndpointRpcSyncEventHandler(long taskId, List<InetSocketAddress> endpoints) {
         Objects.requireNonNull(endpoints, "endpoints");
@@ -61,13 +66,19 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
     }
 
     @Override
+    public void bindStateStore(P2PSyncStateStore store) {
+        this.stateStore = store;
+    }
+
+    @Override
     public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
         Objects.requireNonNull(acker, "acker");
         EventKey eventKey = new EventKey(type, directory, fileId);
-        DeliveryState deliveryState = deliveryStates.computeIfAbsent(eventKey, key -> new DeliveryState(clients.size()));
+        DeliveryState deliveryState = deliveryStates.computeIfAbsent(eventKey, key -> loadDeliveryState(type, directory, fileId));
         List<PendingDispatch> pending = pendingDispatches(deliveryState);
         if (pending.isEmpty()) {
             deliveryStates.remove(eventKey, deliveryState);
+            clearReplicaStates(type, directory, fileId);
             acker.ack();
             return;
         }
@@ -80,16 +91,19 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
                     @Override
                     public void ack() {
                         deliveryState.markAcked(dispatch.index);
+                        markReplicaState(type, directory, fileId, client.label, REPLICA_ACKED);
                         finish(AggregateAction.ACK, "");
                     }
 
                     @Override
                     public void retry() {
+                        markReplicaState(type, directory, fileId, client.label, REPLICA_RETRY);
                         finish(AggregateAction.RETRY, "");
                     }
 
                     @Override
                     public void fail(String reason) {
+                        markReplicaState(type, directory, fileId, client.label, REPLICA_FAILED);
                         finish(AggregateAction.FAIL, decorateReason(client.label, reason));
                     }
 
@@ -106,11 +120,13 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
                                 return;
                             }
                             deliveryStates.remove(eventKey, deliveryState);
+                            clearReplicaStates(type, directory, fileId);
                             acker.ack();
                         }
                     }
                 });
             } catch (Exception e) {
+                markReplicaState(type, directory, fileId, client.label, REPLICA_RETRY);
                 result.getAndUpdate(prev -> choose(prev, AggregateAction.RETRY, decorateReason(client.label, e.getMessage())));
                 if (remaining.decrementAndGet() == 0) {
                     AggregateResult finalResult = result.get();
@@ -120,6 +136,7 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
                         acker.retry();
                     } else {
                         deliveryStates.remove(eventKey, deliveryState);
+                        clearReplicaStates(type, directory, fileId);
                         acker.ack();
                     }
                 }
@@ -166,6 +183,33 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
         return clients;
     }
 
+    private DeliveryState loadDeliveryState(FileSyncEventType type, boolean directory, long fileId) {
+        DeliveryState state = new DeliveryState(clients.size());
+        P2PSyncStateStore store = stateStore;
+        if (store == null) {
+            return state;
+        }
+        for (P2PSyncStateStore.ReplicaState replicaState : store.getReplicaStates(type, directory, fileId)) {
+            if (REPLICA_ACKED.equals(replicaState.getStatus())) {
+                markAckedByLabel(state, replicaState.getLabel());
+            }
+        }
+        return state;
+    }
+
+    private void markAckedByLabel(DeliveryState state, String label) {
+        if (label == null || label.trim().isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < clients.size(); i++) {
+            EndpointClient client = clients.get(i);
+            if (label.equals(client.label)) {
+                state.markAcked(i);
+                return;
+            }
+        }
+    }
+
     private List<PendingDispatch> pendingDispatches(DeliveryState deliveryState) {
         List<PendingDispatch> pending = new ArrayList<>(clients.size());
         for (int i = 0; i < clients.size(); i++) {
@@ -174,6 +218,22 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
             }
         }
         return pending;
+    }
+
+    private void markReplicaState(FileSyncEventType type, boolean directory, long fileId, String label, String status) {
+        P2PSyncStateStore store = stateStore;
+        if (store == null) {
+            return;
+        }
+        store.markReplicaState(type, directory, fileId, label, status);
+    }
+
+    private void clearReplicaStates(FileSyncEventType type, boolean directory, long fileId) {
+        P2PSyncStateStore store = stateStore;
+        if (store == null) {
+            return;
+        }
+        store.clearReplicaStates(type, directory, fileId);
     }
 
     private static String decorateReason(String label, String reason) {
