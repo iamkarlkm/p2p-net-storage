@@ -6,7 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
-import java.util.Map;
+import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 
 import javax.net.p2p.client.P2PClientTcp;
@@ -15,9 +15,6 @@ import javax.net.p2p.filesync.sync.rpc.MultiEndpointRpcSyncEventHandler;
 import javax.net.p2p.filesync.sync.rpc.RpcSyncEventHandler;
 import javax.net.p2p.filesync.sync.rpc.server.SyncApplyEventRpcRegistration;
 import javax.net.p2p.rpc.client.P2PRpcClient;
-import javax.net.p2p.rpc.model.RpcMethodKey;
-import javax.net.p2p.rpc.server.RpcBootstrap;
-import javax.net.p2p.rpc.server.SyncRpcServices;
 import javax.net.p2p.server.P2PServerTcp;
 import javax.net.p2p.utils.P2PUtils;
 
@@ -45,6 +42,31 @@ public class P2PDirectorySyncE2ETest {
 
                 assertFileSynced(receiver.root.resolve("nested").resolve("hello.txt"), "hello sync", ts);
             }
+        }
+    }
+
+    @Test
+    public void shouldFanOutFileToMultipleReceiversOverTcp() throws Exception {
+        long taskId = 102L;
+        Path senderRoot = Files.createTempDirectory("p2p_sync_sender_root_fanout_");
+        Path senderState = Files.createTempDirectory("p2p_sync_sender_state_fanout_");
+        try (ReceiverNode receiver1 = ReceiverNode.start(taskId, 511);
+             ReceiverNode receiver2 = ReceiverNode.start(taskId, 512);
+             ManagedTcpHandler handler1 = ManagedTcpHandler.connect(taskId, receiver1.port);
+             ManagedTcpHandler handler2 = ManagedTcpHandler.connect(taskId, receiver2.port);
+             MultiEndpointRpcSyncEventHandler fanOut = MultiEndpointRpcSyncEventHandler.forHandlers(taskId, Arrays.asList(handler1, handler2));
+             P2PDirectorySyncService svc = new P2PDirectorySyncService(senderConfig(taskId, senderRoot, senderState), fanOut)) {
+            svc.start();
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            Path senderFile = senderRoot.resolve("fanout").resolve("hello.txt");
+            Files.createDirectories(senderFile.getParent());
+            long ts = System.currentTimeMillis() - 5_000L;
+            writeUtf8(senderFile, "fanout sync");
+            Files.setLastModifiedTime(senderFile, FileTime.fromMillis(ts));
+
+            assertFileSynced(receiver1.root.resolve("fanout").resolve("hello.txt"), "fanout sync", ts);
+            assertFileSynced(receiver2.root.resolve("fanout").resolve("hello.txt"), "fanout sync", ts);
         }
     }
 
@@ -182,7 +204,6 @@ public class P2PDirectorySyncE2ETest {
         }
 
         private static ReceiverNode start(long taskId, int storeId) throws Exception {
-            resetSyncRpcRegistrations();
             int port = randomTcpPort();
             Path receiverRoot = Files.createTempDirectory("p2p_sync_receiver_root_");
             Path receiverState = Files.createTempDirectory("p2p_sync_receiver_state_");
@@ -220,15 +241,6 @@ public class P2PDirectorySyncE2ETest {
                 }
             }
         }
-    }
-
-    @SuppressWarnings("unchecked")
-    private static void resetSyncRpcRegistrations() throws Exception {
-        java.lang.reflect.Field methodsField = RpcBootstrap.registry().getClass().getDeclaredField("methods");
-        methodsField.setAccessible(true);
-        Map<RpcMethodKey, ?> methods = (Map<RpcMethodKey, ?>) methodsField.get(RpcBootstrap.registry());
-        methods.remove(new RpcMethodKey(SyncRpcServices.SYNC_SERVICE, SyncRpcServices.APPLY_EVENT, "v1"));
-        methods.remove(new RpcMethodKey(SyncRpcServices.SYNC_SERVICE, SyncRpcServices.FINALIZE_EVENT, "v1"));
     }
 
     @FunctionalInterface
