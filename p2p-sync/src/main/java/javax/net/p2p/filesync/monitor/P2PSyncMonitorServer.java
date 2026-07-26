@@ -256,7 +256,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         root.put("replicaFailureCategorySummary", replicaFailureCategorySummaryToMap(store));
         root.put("hotFailedItems", hotFailedItemsToMap(store, limit));
         root.put("recentOperatorActions", recentOperatorActionsToMap(limit));
-        root.put("recentTimeline", recentTimelineToMap(limit));
+        root.put("recentTimeline", recentTimelineToMap(store, limit));
         root.put("uploads", uploadsToMap(limit));
         root.put("uploadPolicy", uploadPolicyToMap());
         root.put("retryPolicy", retryPolicyToMap());
@@ -446,22 +446,37 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         return row;
     }
 
-    private Map<String, Object> recentTimelineToMap(int limit) {
-        List<SyncUploadStatus> timeline = new ArrayList<SyncUploadStatus>();
-        timeline.addAll(syncService.snapshotRecentCompletedUploads(limit));
-        timeline.addAll(syncService.snapshotRecentFailedUploads(limit));
-        Collections.sort(timeline, new Comparator<SyncUploadStatus>() {
+    private Map<String, Object> recentTimelineToMap(P2PSyncStateStore store, int limit) {
+        List<Map<String, Object>> timeline = new ArrayList<Map<String, Object>>();
+        for (SyncUploadStatus upload : syncService.snapshotRecentCompletedUploads(limit)) {
+            timeline.add(uploadToMap(upload));
+        }
+        for (SyncUploadStatus upload : syncService.snapshotRecentFailedUploads(limit)) {
+            timeline.add(uploadToMap(upload));
+        }
+        int operatorCount = 0;
+        for (MonitorActionRecord record : recentOperatorActions) {
+            if (operatorCount >= limit) {
+                break;
+            }
+            timeline.add(operatorActionTimelineItem(store, record));
+            operatorCount++;
+        }
+        Collections.sort(timeline, new Comparator<Map<String, Object>>() {
             @Override
-            public int compare(SyncUploadStatus left, SyncUploadStatus right) {
-                long leftTime = left.getUpdatedAtMillis();
-                long rightTime = right.getUpdatedAtMillis();
+            public int compare(Map<String, Object> left, Map<String, Object> right) {
+                long leftTime = ((Long) left.get("updatedAtMillis")).longValue();
+                long rightTime = ((Long) right.get("updatedAtMillis")).longValue();
                 return leftTime < rightTime ? 1 : (leftTime == rightTime ? 0 : -1);
             }
         });
         if (timeline.size() > limit) {
-            timeline = new ArrayList<SyncUploadStatus>(timeline.subList(0, limit));
+            timeline = new ArrayList<Map<String, Object>>(timeline.subList(0, limit));
         }
-        return uploadHistoryToMap(timeline);
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("size", Integer.valueOf(timeline.size()));
+        out.put("items", timeline);
+        return out;
     }
 
     private Map<String, Object> recentOperatorActionsToMap(int limit) {
@@ -490,6 +505,49 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         out.put("size", Integer.valueOf(items.size()));
         out.put("items", items);
         return out;
+    }
+
+    private Map<String, Object> operatorActionTimelineItem(P2PSyncStateStore store, MonitorActionRecord record) {
+        Map<String, Object> item = new LinkedHashMap<String, Object>();
+        item.put("path", resolveOperatorActionPath(store, record));
+        item.put("phase", "operator_action");
+        item.put("updatedAtMillis", Long.valueOf(record.updatedAtMillis));
+        item.put("message", operatorActionTimelineMessage(record));
+        item.put("action", record.action);
+        item.put("success", Boolean.valueOf(record.success));
+        item.put("fileId", record.fileId > 0L ? Long.toString(record.fileId) : "");
+        return item;
+    }
+
+    private String resolveOperatorActionPath(P2PSyncStateStore store, MonitorActionRecord record) {
+        if (record.fileId > 0L) {
+            String path = store.getRelativePath(record.fileId);
+            if (path != null && !path.isBlank()) {
+                return path;
+            }
+        }
+        if (record.categories != null && !record.categories.isEmpty()) {
+            return String.join(",", record.categories);
+        }
+        return record.action;
+    }
+
+    private String operatorActionTimelineMessage(MonitorActionRecord record) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(record.action);
+        sb.append(" success=").append(record.success);
+        sb.append(" touchedFiles=").append(record.touchedFileCount);
+        sb.append(" touchedReplicas=").append(record.touchedReplicaCount);
+        if (record.replica != null && !record.replica.isBlank()) {
+            sb.append(" replica=").append(record.replica);
+        }
+        if (record.categories != null && !record.categories.isEmpty()) {
+            sb.append(" categories=").append(String.join(",", record.categories));
+        }
+        if (record.message != null && !record.message.isBlank()) {
+            sb.append(" message=").append(record.message);
+        }
+        return sb.toString();
     }
 
     private void recordOperatorAction(String action, boolean success, int touchedFileCount, int touchedReplicaCount,

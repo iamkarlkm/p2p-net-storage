@@ -264,6 +264,10 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(queuesJson.contains("\"replica\":\"node-b\""));
                 Assert.assertTrue(queuesJson.contains("\"replica\":\"node-c\""));
                 Assert.assertTrue(queuesJson.contains("\"message\":\"manual_action_applied\""));
+                Assert.assertTrue(queuesJson.contains("\"phase\":\"operator_action\""));
+                Assert.assertTrue(queuesJson.contains("\"path\":\"retry.txt\""));
+                Assert.assertTrue(queuesJson.contains("\"path\":\"targeted.txt\""));
+                Assert.assertTrue(queuesJson.contains("RETRY_REPLICA success=true"));
             }
         }
     }
