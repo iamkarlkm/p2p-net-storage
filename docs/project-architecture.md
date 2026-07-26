@@ -11,4 +11,5 @@ Use this file for the structural shape of the repository.
 
 ## Local Notes
 
-Add repo-specific notes here. `brain context refresh` preserves content outside managed blocks.
+- `lib/bin/` stores checked-in native runtime assets, including the Windows UDT JNI DLL set under `lib/bin/lib/amd64-Windows-gpp/jni/`.
+- Treat these binaries as runtime dependencies owned by the repo, not as generated build output.

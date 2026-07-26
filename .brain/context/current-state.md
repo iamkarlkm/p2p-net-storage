@@ -1,5 +1,6 @@
 ---
-updated: "2026-05-04T17:50:52Z"
+title: Current State
+updated: "2026-07-26T01:55:25Z"
 ---
 # Current State
 
@@ -19,16 +20,9 @@ This file is a deterministic snapshot of the repository state at the last refres
 ## Docs
 
 - `README.md`
-
-## Work Notes
-
-- `p2p-db` 新增 columnar（零行头）存储与表/复合列元数据落盘（见 `.brain/resources/changes/dsdb-columnar-store.md`）。
-- 复合列组（`@DsCompositeField.group`）也作为“列”注册：每个 group 绑定一个 colId（colKey=`<entity>#@composite:<group>`），并可按列读写该 group 的 packed bytes。
-- 验证：`mvn -pl p2p-db test`。
-- Gotcha：Windows 下 YAML 元数据文件需用独立 `*.lock` 文件做串行化更新，避免自锁读失败（已修复并回归）。
-- Gotcha：复合列组读取固定 `group.length` 字节，因此首次分配 valueId 时必须按 `group.length` 申请 bucket（避免 “data overflow bucket unit”）。
-- Resolved：复合列 group 写入现使用 `colKey=<entity>#@composite:<group>` 注册并分配 colId；首次写入按 `group.length` 分配 valueId，读写回归通过。
-- Resolved：元数据校验增强：拒绝重复 `@DsField` 同名但类型/长度不一致；拒绝 `@DsCompositeField` 同 group 但 length 不一致；拒绝复合位段越界/重叠/同名 item。
+- `docs/project-architecture.md`
+- `docs/project-overview.md`
+- `docs/project-workflows.md`
 <!-- brain:end context-current-state -->
 
 ## Local Notes
@@ -43,10 +37,10 @@ This file is a deterministic snapshot of the repository state at the last refres
 - Gotcha: `mvn -pl p2p-transfer -am -DskipTests=true test` currently pulls `p2p-db` compilation, which may fail due to unrelated broken sources in this workspace snapshot.
 - RPC unary, health, discover, server stream, event stream, client stream, and bidi stream paths are implemented in `p2p-core`.
 - `p2p-db` now has a working local ORM database entrypoint: `DsDatabaseLoclal` stores `DsTableAdapter` rows via `DsFixedBucketStore`, and persists relation fields (1-1/1-N/N-N/Map) via `DsHashMap` + var-bytes payloads in the same store.
-- Local DB root can be loaded from YAML: `SystemConfig.yaml` key `DbHome` (or system properties `p2p.system.yaml` / `p2p.db.home`).
-- `p2p-db` adds a remote client `DsDatabaseServer` using new `P2PCommand` pair `DB_ENTITY_PUT/GET` to store/load `DsTableAdapter` rows on a server that has `p2p-db` on its classpath.
-- Remote `DB_ENTITY_PUT/GET` now transfers row bytes plus optional relation payload bytes (encoded/decoded via `DbEntityRelationsCodec`) when `withRelations=true`.
-- Remote DS_DB commands now also cover `DB_ENTITY_EXISTS/REMOVE/QUERY_IDS`, and server handlers maintain the same per-entity `ids.set` index so exists/query works after remote PUT/REMOVE.
+- Local DB root can be loaded from the system YAML (for example `p2p-core/src/main/resources/SystemConfig.yaml`) via key `DbHome` (or the JVM properties p2p.system.yaml / p2p.db.home).
+- `p2p-db` adds a remote client `DsDatabaseServer` using the new `P2PCommand` pair `DB_ENTITY_PUT` and `DB_ENTITY_GET` to store/load `DsTableAdapter` rows on a server that has `p2p-db` on its classpath.
+- Remote `DB_ENTITY_PUT` and `DB_ENTITY_GET` now transfer row bytes plus optional relation payload bytes (encoded/decoded via `DbEntityRelationsCodec`) when `withRelations=true`.
+- Remote DS_DB commands now also cover `DB_ENTITY_EXISTS`, `DB_ENTITY_REMOVE`, and `DB_ENTITY_QUERY_IDS`, and server handlers maintain the same per-entity `ids.set` index so exists/query works after remote PUT/REMOVE.
 - `p2p-db` adds a `GenericManager<T extends DsTableAdapter>` query+CRUD service: per-entity `DsHashSet` id index under `indexes/<entityClassPath>/ids.set` (legacy) or `ids_<schemaId>.set` (schema isolation), scan+filter via `QueryWrapper`, sort via wrapper orders, and range slicing for pagination.
 - Schema isolation: if legacy `ids.set` does not exist, per-entity indexes and row buckets use `ids_<schemaId>.set` + row type `rows_<schemaId>` so column-store field changes can be introduced without corrupting old fixed-size rows.
 - `p2p-db` 新增稀疏列存储（零行头）基础设施：每个 colId 一张 `DsHashMap(rowId->valueId)`，value 使用 `DsFixedBucketStore`，并按列隔离为 `type=col_<colId>`；表/复合列元数据落盘为 `table.meta.yaml/columns.meta.yaml`。
@@ -76,3 +70,7 @@ This file is a deterministic snapshot of the repository state at the last refres
 - RPC response governance is now wired end-to-end: `RpcRequestContext` can write response headers, response trailers, and status details; `RpcFrames` encodes them on the wire; stream observers receive them through `onResponseContext(...)`.
 - Service-side governance now has a shared interceptor chain: `RpcServerInterceptor` hooks `beforeHandle/afterComplete/afterError` across unary, discover, server-stream, client-stream, bidi, and event paths, and `RpcBootstrap` registers `RpcAuditInterceptor` by default to stamp audit fields and emit `rpc.audit` logs.
 - Upload-side backpressure is still intentionally minimal. The current stack now has much stronger correctness and observability coverage, but long-run stress, partial transport loss, interceptor policy composition, and richer production governance remain the main hardening gaps.
+- Updated: 2026-07-25 00:00:00 +08:00
+- Brain repo onboarding docs were enriched: `AGENTS.md`, `.brain/context/workflows.md`, and `docs/project-workflows.md` now distinguish project docs, require `brain context audit` for docs/config surface changes, and describe post-adoption repo scanning more explicitly.
+- Architecture docs now record that `lib/bin/` contains checked-in native runtime assets, including the Windows UDT JNI DLL set.
+- Follow-up: `git diff --check` still fails on `.vscode/settings.json` due trailing whitespace in a user-restricted file; clearing that diff requires a direct user edit before `brain session finish` can go clean.
