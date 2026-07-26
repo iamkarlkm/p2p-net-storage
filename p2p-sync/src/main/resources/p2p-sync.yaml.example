@@ -3,6 +3,7 @@ storeId: 12345
 listenPort: 6060
 monitorPort: 8090
 uploadBlockSizeBytes: 8388608
+maxRetryCount: 3
 remoteEndpoints:
   - "127.0.0.1:9001"
   - "10.0.0.2:9001"

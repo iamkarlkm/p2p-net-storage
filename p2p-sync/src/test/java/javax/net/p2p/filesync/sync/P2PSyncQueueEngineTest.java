@@ -68,4 +68,44 @@ public class P2PSyncQueueEngineTest {
             Assert.assertFalse(store.fileModifiesFailed().contains(Long.valueOf(fileId)));
         }
     }
+
+    @Test
+    public void shouldStopAutoRetryWhenMaxRetryCountReached() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_queue_retry_limit_root_");
+        Path state = Files.createTempDirectory("p2p_sync_queue_retry_limit_state_");
+        Files.write(root.resolve("b.txt"), "v1".getBytes(StandardCharsets.UTF_8));
+
+        try (P2PSyncStateStore store = new P2PSyncStateStore(state)) {
+            long fileId = store.getOrCreateFileId("b.txt");
+            store.putKind(fileId, false);
+            store.enqueueFileModify(fileId);
+
+            AtomicInteger calls = new AtomicInteger();
+            FileSyncEventHandler handler = (type, id, rel, abs, dir, acker) -> {
+                calls.incrementAndGet();
+                acker.retry();
+            };
+
+            P2PSyncQueueEngine engine = new P2PSyncQueueEngine(2);
+            AtomicBoolean running = new AtomicBoolean(true);
+
+            Assert.assertEquals(1, engine.processBatch(store, P2PSyncStateStore.QueueStage.ACTIVE, 10, root, handler, running));
+            Assert.assertEquals(1, store.getRetryCount(FileSyncEventType.MODIFY, false, fileId));
+            Assert.assertTrue(store.fileModifiesActive().contains(Long.valueOf(fileId)));
+            Assert.assertFalse(store.fileModifiesFailed().contains(Long.valueOf(fileId)));
+
+            Assert.assertEquals(1, engine.processBatch(store, P2PSyncStateStore.QueueStage.ACTIVE, 10, root, handler, running));
+            Assert.assertEquals(2, store.getRetryCount(FileSyncEventType.MODIFY, false, fileId));
+            Assert.assertTrue(store.fileModifiesActive().contains(Long.valueOf(fileId)));
+            Assert.assertFalse(store.fileModifiesFailed().contains(Long.valueOf(fileId)));
+
+            Assert.assertEquals(1, engine.processBatch(store, P2PSyncStateStore.QueueStage.ACTIVE, 10, root, handler, running));
+            Assert.assertEquals(2, store.getRetryCount(FileSyncEventType.MODIFY, false, fileId));
+            Assert.assertFalse(store.fileModifiesActive().contains(Long.valueOf(fileId)));
+            Assert.assertTrue(store.fileModifiesFailed().contains(Long.valueOf(fileId)));
+            Assert.assertEquals("retry_limit_exceeded", store.getFailedReason(FileSyncEventType.MODIFY, false, fileId));
+            Assert.assertTrue(store.getFailedAtMillis(FileSyncEventType.MODIFY, false, fileId) > 0L);
+            Assert.assertEquals(3, calls.get());
+        }
+    }
 }

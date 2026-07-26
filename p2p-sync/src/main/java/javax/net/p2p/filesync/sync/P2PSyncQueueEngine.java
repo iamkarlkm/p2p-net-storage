@@ -10,6 +10,8 @@ import javax.net.p2p.filesync.sync.P2PSyncStateStore.QueueStage;
 
 final class P2PSyncQueueEngine {
 
+    private static final String RETRY_LIMIT_EXCEEDED = "retry_limit_exceeded";
+
     private static final QueueDef[] ORDER = new QueueDef[] {
         new QueueDef(QueueKey.DIR_CREATE, FileSyncEventType.CREATE, true),
         new QueueDef(QueueKey.FILE_CREATE, FileSyncEventType.CREATE, false),
@@ -17,6 +19,16 @@ final class P2PSyncQueueEngine {
         new QueueDef(QueueKey.FILE_DELETE, FileSyncEventType.DELETE, false),
         new QueueDef(QueueKey.DIR_DELETE, FileSyncEventType.DELETE, true)
     };
+
+    private final int maxRetryCount;
+
+    P2PSyncQueueEngine() {
+        this(3);
+    }
+
+    P2PSyncQueueEngine(int maxRetryCount) {
+        this.maxRetryCount = maxRetryCount <= 0 ? 3 : maxRetryCount;
+    }
 
     boolean isEmpty(P2PSyncStateStore store, QueueStage stage) {
         Objects.requireNonNull(store, "store");
@@ -78,7 +90,7 @@ final class P2PSyncQueueEngine {
             it.remove();
             String relativePath = store.getRelativePath(fileId);
             Path abs = relativePath == null ? null : rootDir.resolve(relativePath);
-            handler.handle(def.type, fileId, relativePath, abs, def.directory, new InflightAcker(store, def, queue, inflight, fileId));
+            handler.handle(def.type, fileId, relativePath, abs, def.directory, new InflightAcker(store, def, queue, inflight, fileId, maxRetryCount));
             processed++;
         }
         return processed;
@@ -117,14 +129,16 @@ final class P2PSyncQueueEngine {
         private final PersistentLongQueue queue;
         private final PersistentLongQueue inflight;
         private final long fileId;
+        private final int retryLimit;
         private final AtomicBoolean done = new AtomicBoolean(false);
 
-        private InflightAcker(P2PSyncStateStore store, QueueDef def, PersistentLongQueue queue, PersistentLongQueue inflight, long fileId) {
+        private InflightAcker(P2PSyncStateStore store, QueueDef def, PersistentLongQueue queue, PersistentLongQueue inflight, long fileId, int retryLimit) {
             this.store = store;
             this.def = def;
             this.queue = queue;
             this.inflight = inflight;
             this.fileId = fileId;
+            this.retryLimit = retryLimit;
         }
 
         @Override
@@ -147,6 +161,12 @@ final class P2PSyncQueueEngine {
                 return;
             }
             inflight.remove(fileId);
+            int currentRetryCount = store.getRetryCount(def.type, def.directory, fileId);
+            if (currentRetryCount >= retryLimit) {
+                inflight.sync();
+                store.markFailed(def.type, def.directory, fileId, RETRY_LIMIT_EXCEEDED);
+                return;
+            }
             store.incrementRetryCount(def.type, def.directory, fileId);
             store.markRetriedNow(def.type, def.directory, fileId);
             queue.add(fileId);
@@ -163,5 +183,6 @@ final class P2PSyncQueueEngine {
             inflight.sync();
             store.markFailed(def.type, def.directory, fileId, reason == null ? "" : reason);
         }
+
     }
 }
