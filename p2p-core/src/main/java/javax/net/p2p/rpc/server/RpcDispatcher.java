@@ -33,7 +33,7 @@ public final class RpcDispatcher {
             }
             if (context.isDeadlineExceeded(System.currentTimeMillis())) {
                 afterError(context, RpcStatusCode.DEADLINE_EXCEEDED, "deadline exceeded");
-                return RpcFrames.error(requestFrame, RpcStatusCode.DEADLINE_EXCEEDED, "deadline exceeded", false);
+                return RpcFrames.error(requestFrame, RpcStatusCode.DEADLINE_EXCEEDED, "deadline exceeded", false, context);
             }
             RpcMethodDescriptor descriptor = registry.find(new RpcMethodKey(
                 context.service(),
@@ -42,11 +42,11 @@ public final class RpcDispatcher {
             ));
             if (descriptor == null) {
                 afterError(context, RpcStatusCode.NOT_FOUND, "RPC 方法不存在");
-                return RpcFrames.error(requestFrame, RpcStatusCode.NOT_FOUND, "RPC 方法不存在", false);
+                return RpcFrames.error(requestFrame, RpcStatusCode.NOT_FOUND, "RPC 方法不存在", false, context);
             }
             if (descriptor.callType() != RpcCallType.UNARY) {
                 afterError(context, RpcStatusCode.METHOD_NOT_ALLOWED, "仅支持 unary 方法");
-                return RpcFrames.error(requestFrame, RpcStatusCode.METHOD_NOT_ALLOWED, "仅支持 unary 方法", false);
+                return RpcFrames.error(requestFrame, RpcStatusCode.METHOD_NOT_ALLOWED, "仅支持 unary 方法", false, context);
             }
             Message request = parseMessage(descriptor.requestType(), requestFrame.getPayload().toByteArray());
             @SuppressWarnings("unchecked")

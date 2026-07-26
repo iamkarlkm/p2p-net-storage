@@ -68,6 +68,48 @@ public final class ColumnarStore {
         return newValueId;
     }
 
+    public long putValue(String entityClassName, String logicalName, long rowId, byte[] valueBytes) throws IOException {
+        if (entityClassName == null || entityClassName.isBlank()) {
+            throw new IllegalArgumentException("entityClassName is blank");
+        }
+        if (logicalName == null || logicalName.isBlank()) {
+            throw new IllegalArgumentException("logicalName is blank");
+        }
+        if (rowId <= 0L) {
+            throw new IllegalArgumentException("rowId must be > 0");
+        }
+        valueBytes = normalizeBytes(valueBytes);
+
+        TableMetaStore.TableMeta meta = tableMetaStore.getMeta(entityClassName);
+        ResolvedColumn c = resolveColumn(entityClassName, logicalName, meta);
+        validateValueLength(logicalName, valueBytes, c.length);
+        if (registry.isDeleted(entityClassName, c.colId)) {
+            throw new MetaDeletedColumnException("column is deleted: " + c.colKey);
+        }
+        if (c.length > 0 && valueBytes.length < c.length) {
+            byte[] padded = new byte[c.length];
+            System.arraycopy(valueBytes, 0, padded, 0, valueBytes.length);
+            valueBytes = padded;
+        }
+
+        DsHashMap map = colMap(entityClassName, c.colId);
+        long oldValueId = map.getOrDefault(rowId, 0L);
+        String type = valueType(c.colId);
+        long newValueId;
+        if (oldValueId == 0L) {
+            int allocLen = c.length > 0 ? c.length : valueBytes.length;
+            newValueId = bucketStore.getNewId(entityClassName, type, allocLen);
+            bucketStore.overwrite(entityClassName, type, newValueId, valueBytes);
+            map.put(rowId, newValueId);
+            return newValueId;
+        }
+        newValueId = bucketStore.update(entityClassName, type, oldValueId, valueBytes, DsFixedBucketStore.UpdatePolicy.KEEP_BUCKET);
+        if (newValueId != oldValueId) {
+            map.put(rowId, newValueId);
+        }
+        return newValueId;
+    }
+
     public <T extends DsTableAdapter> byte[] getValue(Class<T> entityClass, String logicalName, long rowId, int length) throws IOException {
         Objects.requireNonNull(entityClass, "entityClass cannot be null");
         if (logicalName == null || logicalName.isBlank()) {
@@ -94,6 +136,87 @@ public final class ColumnarStore {
             return null;
         }
         return bucketStore.get(entityClass.getName(), valueType(colId), valueId, 0, length);
+    }
+
+    public byte[] getValue(String entityClassName, String logicalName, long rowId) throws IOException {
+        if (entityClassName == null || entityClassName.isBlank()) {
+            throw new IllegalArgumentException("entityClassName is blank");
+        }
+        if (logicalName == null || logicalName.isBlank()) {
+            return null;
+        }
+        if (rowId <= 0L) {
+            return null;
+        }
+
+        TableMetaStore.TableMeta meta = tableMetaStore.getMeta(entityClassName);
+        ResolvedColumn c = resolveColumn(entityClassName, logicalName, meta);
+        if (registry.isDeleted(entityClassName, c.colId)) {
+            return null;
+        }
+        DsHashMap map = colMap(entityClassName, c.colId);
+        long valueId = map.getOrDefault(rowId, 0L);
+        if (valueId == 0L) {
+            return null;
+        }
+        int len = c.length;
+        if (len <= 0) {
+            return new byte[0];
+        }
+        return bucketStore.get(entityClassName, valueType(c.colId), valueId, 0, len);
+    }
+
+    public boolean removeValue(String entityClassName, String logicalName, long rowId) throws IOException {
+        if (entityClassName == null || entityClassName.isBlank()) {
+            throw new IllegalArgumentException("entityClassName is blank");
+        }
+        if (logicalName == null || logicalName.isBlank()) {
+            throw new IllegalArgumentException("logicalName is blank");
+        }
+        if (rowId <= 0L) {
+            throw new IllegalArgumentException("rowId must be > 0");
+        }
+
+        TableMetaStore.TableMeta meta = tableMetaStore.getMeta(entityClassName);
+        ResolvedColumn c = resolveColumn(entityClassName, logicalName, meta);
+        if (registry.isDeleted(entityClassName, c.colId)) {
+            return false;
+        }
+        return removeValueByColId(entityClassName, c.colId, rowId);
+    }
+
+    public boolean removeRow(String entityClassName, long rowId) throws IOException {
+        if (entityClassName == null || entityClassName.isBlank()) {
+            throw new IllegalArgumentException("entityClassName is blank");
+        }
+        if (rowId <= 0L) {
+            throw new IllegalArgumentException("rowId must be > 0");
+        }
+        TableMetaStore.TableMeta meta = tableMetaStore.getMeta(entityClassName);
+        boolean removedAny = false;
+        if (meta.columns != null) {
+            for (TableMetaStore.ColumnDef c : meta.columns) {
+                if (c == null || c.colId <= 0L) {
+                    continue;
+                }
+                if (registry.isDeleted(entityClassName, c.colId)) {
+                    continue;
+                }
+                removedAny |= removeValueByColId(entityClassName, c.colId, rowId);
+            }
+        }
+        if (meta.compositeGroups != null) {
+            for (TableMetaStore.CompositeGroup g : meta.compositeGroups.values()) {
+                if (g == null || g.colId <= 0L) {
+                    continue;
+                }
+                if (registry.isDeleted(entityClassName, g.colId)) {
+                    continue;
+                }
+                removedAny |= removeValueByColId(entityClassName, g.colId, rowId);
+            }
+        }
+        return removedAny;
     }
 
     public <T extends DsTableAdapter> long putCompositeGroup(Class<T> entityClass, String groupName, long rowId, byte[] valueBytes) throws IOException {
@@ -163,6 +286,17 @@ public final class ColumnarStore {
         return bucketStore.get(entityClass.getName(), valueType(g.colId), valueId, 0, g.length);
     }
 
+    private boolean removeValueByColId(String entityClassName, long colId, long rowId) throws IOException {
+        DsHashMap map = colMap(entityClassName, colId);
+        long valueId = map.getOrDefault(rowId, 0L);
+        if (valueId == 0L) {
+            return false;
+        }
+        bucketStore.remove(entityClassName, valueType(colId), valueId);
+        map.remove(rowId);
+        return true;
+    }
+
     public <T extends DsTableAdapter> void deleteColumnHard(Class<T> entityClass, String logicalName, int batchSize) throws IOException {
         Objects.requireNonNull(entityClass, "entityClass cannot be null");
         if (logicalName == null || logicalName.isBlank()) {
@@ -213,8 +347,12 @@ public final class ColumnarStore {
     }
 
     private <T extends DsTableAdapter> DsHashMap colMap(Class<T> entityClass, long colId) {
-        String key = colMapCacheKey(entityClass, colId);
-        return colMaps.computeIfAbsent(key, k -> new DsHashMap(colMapFile(entityClass, colId)));
+        return colMap(entityClass.getName(), colId);
+    }
+
+    private DsHashMap colMap(String entityClassName, long colId) {
+        String key = colMapCacheKey(entityClassName, colId);
+        return colMaps.computeIfAbsent(key, k -> new DsHashMap(colMapFile(entityClassName, colId)));
     }
 
     private static String valueType(long colId) {
@@ -222,11 +360,19 @@ public final class ColumnarStore {
     }
 
     private static <T extends DsTableAdapter> String colMapCacheKey(Class<T> entityClass, long colId) {
-        return entityClass.getName() + ":" + colId;
+        return colMapCacheKey(entityClass.getName(), colId);
+    }
+
+    private static String colMapCacheKey(String entityClassName, long colId) {
+        return entityClassName + ":" + colId;
     }
 
     private <T extends DsTableAdapter> File colMapFile(Class<T> entityClass, long colId) {
-        String spacePath = DsPathUtil.dottedToLinuxPath(entityClass.getName(), "entityClass");
+        return colMapFile(entityClass.getName(), colId);
+    }
+
+    private File colMapFile(String entityClassName, long colId) {
+        String spacePath = DsPathUtil.dottedToLinuxPath(entityClassName, "entityClass");
         File dir = new File(dbRoot, "indexes/" + spacePath + "/cols");
         if (!dir.exists()) {
             dir.mkdirs();
@@ -237,5 +383,58 @@ public final class ColumnarStore {
     private <T extends DsTableAdapter> void deleteColumnMapFiles(Class<T> entityClass, long colId) {
         File base = colMapFile(entityClass, colId);
         DsHashMapFiles.deleteAll(base);
+    }
+
+    private static byte[] normalizeBytes(byte[] valueBytes) {
+        return valueBytes == null ? new byte[0] : valueBytes;
+    }
+
+    private static void validateValueLength(String logicalName, byte[] valueBytes, int expectedLen) {
+        if (expectedLen <= 0) {
+            return;
+        }
+        if (valueBytes.length > expectedLen) {
+            throw new IllegalArgumentException("valueBytes overflow column length: name=" + logicalName + ", " + valueBytes.length + " > " + expectedLen);
+        }
+    }
+
+    private static ResolvedColumn resolveColumn(String entityClassName, String logicalName, TableMetaStore.TableMeta meta) {
+        if (meta == null) {
+            throw new IllegalArgumentException("missing table meta: entityClass=" + entityClassName);
+        }
+        if (logicalName.startsWith("@composite:")) {
+            String groupName = logicalName.substring("@composite:".length());
+            if (meta.compositeGroups == null) {
+                throw new IllegalArgumentException("unknown composite group: " + groupName);
+            }
+            TableMetaStore.CompositeGroup g = meta.compositeGroups.get(groupName);
+            if (g == null) {
+                throw new IllegalArgumentException("unknown composite group: " + groupName);
+            }
+            return new ResolvedColumn(g.colId, g.length, g.colKey);
+        }
+        if (meta.columns != null) {
+            for (TableMetaStore.ColumnDef c : meta.columns) {
+                if (c == null) {
+                    continue;
+                }
+                if (logicalName.equals(c.name)) {
+                    return new ResolvedColumn(c.colId, c.length, c.colKey);
+                }
+            }
+        }
+        throw new IllegalArgumentException("unknown column: " + logicalName);
+    }
+
+    private static final class ResolvedColumn {
+        final long colId;
+        final int length;
+        final String colKey;
+
+        ResolvedColumn(long colId, int length, String colKey) {
+            this.colId = colId;
+            this.length = length;
+            this.colKey = colKey == null ? "" : colKey;
+        }
     }
 }

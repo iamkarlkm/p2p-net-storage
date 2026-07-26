@@ -1,0 +1,7 @@
+---
+updated: "2026-05-14T15:51:48Z"
+---
+﻿## Verification for p2p-sync ????/?????????
+
+- `mvn -pl p2p-sync test`
+

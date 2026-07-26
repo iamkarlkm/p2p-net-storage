@@ -1,7 +1,6 @@
 package com.q3lives.ds.core;
 
 import com.q3lives.ds.fs.Ds128SuperInode;
-import jdk.internal.access.foreign.UnmapperProxy;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -1402,15 +1401,18 @@ public class DsObject {
      * @throws IOException IO异常
      */
     protected short loadShortOffset(long position) throws IOException {
-        Long bufferIndex = position / BLOCK_SIZE;
-        int offset = (int) (position % BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
-        try {
-            return buffer.getShort(offset);
-        } finally {
-            unlockBufferForRead(bufferIndex);
+        long bufferIndex = bufferIndexFromPosition(position);
+        int offset = bufferOffsetFromPosition(position);
+        if (!willCrossBoundary(offset, 2)) {
+            MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+            try {
+                return buffer.getShort(offset);
+            } finally {
+                unlockBufferForRead(bufferIndex);
+            }
         }
-
+        int v = loadU16ByOffset(position);
+        return (short) v;
     }
 
     /**
@@ -1518,12 +1520,13 @@ public class DsObject {
 
     protected MappedByteBuffer loadBufferForRead(Long bufferIndex) throws IOException {
         ReentrantReadWriteLock lock = getDataBufferLock(bufferIndex);
+        lock.readLock().lock();
         MappedByteBuffer buffer = datatBuffers.get(bufferIndex);
         if (buffer != null) {
             touchDataBuffer(bufferIndex);
-            lock.readLock().lock();
             return buffer;
         }
+        lock.readLock().unlock();
 
         lock.writeLock().lock();
         try {
@@ -1531,12 +1534,11 @@ public class DsObject {
             if (buffer == null) {
                 buffer = loadBuffer(bufferIndex);
             }
-
+            touchDataBuffer(bufferIndex);
+            lock.readLock().lock();
         } finally {
             lock.writeLock().unlock();
         }
-        touchDataBuffer(bufferIndex);
-        lock.readLock().lock();
         return buffer;
     }
 
@@ -1898,15 +1900,18 @@ public class DsObject {
      * @throws IOException IO异常
      */
     protected int loadIntOffset(long position) throws IOException {
-        long bufferIndex = position / BLOCK_SIZE;
-        int offset = (int) (position % BLOCK_SIZE);
-        MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
-        try {
-            return buffer.getInt(offset);
-        } finally {
-            unlockBufferForRead(bufferIndex);
+        long bufferIndex = bufferIndexFromPosition(position);
+        int offset = bufferOffsetFromPosition(position);
+        if (!willCrossBoundary(offset, 4)) {
+            MappedByteBuffer buffer = loadBufferForRead(bufferIndex);
+            try {
+                return buffer.getInt(offset);
+            } finally {
+                unlockBufferForRead(bufferIndex);
+            }
         }
-
+        long v = loadU32ByOffset(position);
+        return (int) v;
     }
 
 
@@ -2304,22 +2309,18 @@ public class DsObject {
      */
     protected MappedByteBuffer loadBufferForUpdate(Long bufferIndex) throws IOException {
         ReentrantReadWriteLock lock = getDataBufferLock(bufferIndex);
-        
-        MappedByteBuffer buffer = datatBuffers.get(bufferIndex);
-        if (buffer != null) {
-            touchDataBuffer(bufferIndex);
-            lock.writeLock().lock();
-            return buffer;
-        }
+        lock.writeLock().lock();
         try {
-            buffer = loadBuffer(bufferIndex);
+            MappedByteBuffer buffer = datatBuffers.get(bufferIndex);
+            if (buffer == null) {
+                buffer = loadBuffer(bufferIndex);
+            }
             touchDataBuffer(bufferIndex);
-            lock.writeLock().lock();
             return buffer;
         } catch (IOException e) {
+            lock.writeLock().unlock();
             throw e;
         }
-        
     }
 
     /**
@@ -2424,7 +2425,11 @@ public class DsObject {
                 UNMAPPER_METHOD = MappedByteBuffer.class.getDeclaredMethod("unmapper");
                 UNMAPPER_METHOD.setAccessible(true);
             }
-            ((UnmapperProxy) UNMAPPER_METHOD.invoke(buffer)).unmap();
+            Object unmapper = UNMAPPER_METHOD.invoke(buffer);
+            if (unmapper != null) {
+                Method unmap = unmapper.getClass().getMethod("unmap");
+                unmap.invoke(unmapper);
+            }
             return;
         } catch (Throwable t) {
         }

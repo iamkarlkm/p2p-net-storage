@@ -7,10 +7,19 @@
 字段：
 - `user_id`：用户/节点标识（字符串）。强管控网络下，建议对应注册系统的用户标识。
 - `ws_url`：目标 WebSocket 地址，例如 `ws://ip:port/p2p`
+- `ws_urls`：可选；目标 WebSocket 地址数组。设置后会按顺序尝试连接（用于“固定服务器组模式”的最小实现）。
+- `network_mode`：可选；网络模式：
+  - `p2p`：强管控 P2P（center 控制平面入网 + 获取拓扑 + connect-hint/relay）
+  - `server_group`：固定服务器组（只做握手协商 + 直接请求/响应）
 - `keyfile_path`：离线 keyfile 路径（相对路径相对于 YAML 文件所在目录解析）
 - `key_id_sha256_hex`：可选；期望的 keyfile sha256(hex)。设置后客户端必须校验本地文件是否匹配。
 - `rsa_private_key_pem_path`：可选；客户端 RSA 私钥 pem 路径（PKCS8）。设置后客户端复用该私钥；未设置则临时生成 keypair。
-- `crypto_mode`：可选；控制平面入网声明的加密/协商模式字符串（强管控网络可用于白名单校验）。
+- `encryption_enabled`：可选；是否启用数据平面混淆/加密。默认 true。
+- `encryption_mode`：可选；三种模式：
+  - `keyfile`：离线 keyfile XOR（默认，对应 `crypto_mode=KEYFILE_XOR_RSA_OAEP`）
+  - `client_random`：客户端生成随机 key（对应 `crypto_mode=CLIENT_RANDOM_XOR_RSA_OAEP`）
+  - `server_random`：服务端下发随机 key（对应 `crypto_mode=SERVER_RANDOM_XOR_RSA_OAEP`）
+- `crypto_mode`：可选；控制平面入网声明的协商模式字符串（强管控网络可用于白名单校验）。若设置，会覆盖 `encryption_mode` 推导的默认值。
 - `reported_endpoints`：可选；控制平面入网时自报 endpoints（对象数组：`{transport, addr}`）。
 - `presence_cache_path`：可选；客户端本地缓存文件路径（JSON）。用于持久化保存 `observed_endpoint`，下次启动作为初始 `reported_endpoints` 一部分上报。
 - `renew_seconds`：可选；控制平面续租周期（秒）。设置后客户端会定时发送 `CENTER_HELLO` 刷新 Presence TTL。

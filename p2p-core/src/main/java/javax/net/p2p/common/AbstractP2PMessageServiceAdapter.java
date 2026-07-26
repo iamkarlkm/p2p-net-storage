@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.auth.config.AuthConfig;
+import javax.net.p2p.auth.model.HandshakeCryptoMode;
 import javax.net.p2p.auth.model.HandshakeRequest;
 import javax.net.p2p.auth.model.HandshakeResponse;
 import javax.net.p2p.auth.model.LoginRequest;
@@ -122,8 +123,18 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
     
     @Override
     public void cancelExcute(int requestId)  {
+        P2PWrapper cancel = P2PWrapper.build(requestId, P2PCommand.STD_CANCEL, null);
         try {
-            excute(new CancelP2PWrapper(requestId), DEFAULT_TIMEOUT, TimeUnit.SECONDS);
+            AbstractSendMesageExecutor executor = pollMesageExecutor(1, TimeUnit.SECONDS);
+            if (executor == null) {
+                return;
+            }
+            Channel channel = executor.getChannel();
+            if (channel != null && channel.isActive()) {
+                channel.writeAndFlush(cancel);
+                return;
+            }
+            executor.sendMessage(cancel);
         } catch (Exception ex) {
             log.error(ex.getMessage());
         }
@@ -154,7 +165,9 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
      @Override
     public P2PWrapper excute(P2PWrapper request, long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
         checkConnectionFaile();
-        request.setSeq(messageSequence.incrementAndGet());
+        if(request.getSeq()==0){
+            request.setSeq(messageSequence.incrementAndGet());
+        }
         AbstractSendMesageExecutor mesageExecutor = null;
         try {
             //从已有业务处理器集或对应连接池获取一个空闲业务处理器
@@ -312,6 +325,11 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
      */
     @Override
     public AbstractSendMesageExecutor pollMesageExecutor(long timeout, TimeUnit unit) throws InterruptedException, ExecutionException, TimeoutException {
+        return pollMesageExecutorInternal(timeout, unit, true);
+    }
+
+    private AbstractSendMesageExecutor pollMesageExecutorInternal(long timeout, TimeUnit unit, boolean ensureAuth)
+        throws InterruptedException, ExecutionException, TimeoutException {
         checkConnectionFaile();
         final long deadline = timeout > 0 ? System.nanoTime() + unit.toNanos(timeout) : 0L;
         while (true) {
@@ -330,7 +348,9 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
             AbstractSendMesageExecutor executor = sendMesageExecutors.isEmpty() ? null : sendMesageExecutors.get(current);
             try {
                 if (executor != null && executor.isConnected()) {
-                    ensureChannelAuth(executor);
+                    if (ensureAuth) {
+                        ensureChannelAuth(executor);
+                    }
                     return executor;
                 }
                 mesageExecutorSyncLock.lock();
@@ -388,7 +408,10 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
         if (secureUserId != null) {
             executor.getChannel().attr(ChannelUtils.AUTH_USER_ID).set(secureUserId);
         }
-        if (executor.getChannel().attr(ChannelUtils.XOR_KEY).get() == null) {
+        Boolean handshakeDone = executor.getChannel().attr(ChannelUtils.AUTH_HANDSHAKE_DONE).get();
+        byte[] key = executor.getChannel().attr(ChannelUtils.XOR_KEY).get();
+        boolean hasKey = key != null && key.length > 0;
+        if ((handshakeDone == null || !handshakeDone) && !hasKey) {
             int keyLen = cfg.getXorKeyLength() > 0 ? cfg.getXorKeyLength() : 4096;
             handshakeOnExecutor(executor, cfg, secureUserId, keyLen);
         }
@@ -478,6 +501,10 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
 
     @Override
     public void complete( P2PWrapper response) {
+        P2PCommand cmd = response.getCommand();
+        if (cmd == P2PCommand.UDP_FRAME_ACK || cmd == P2PCommand.UDP_FRAME_RESET || cmd == P2PCommand.UDP_RELIABILITY_ACK || cmd == P2PCommand.UDP_STREAM_ACK2) {
+            return;
+        }
         log.info("complete response:{}", response);
         if (checkStreamMessage(response)) {//非流消息或流结束,返回调用者
             ChannelAwaitOnMessage<P2PWrapper> responseFuture = RESPONSE_FUTURE_MAP.remove(response.getSeq());
@@ -491,36 +518,33 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
     }
     
     private boolean checkStreamMessage(P2PWrapper response){
-        if (response instanceof StreamP2PWrapper) {//(文件上传/发布)流消息请求处理,异步回调
-            log.info("StreamMessage :{}", response);
+        if (response instanceof StreamP2PWrapper) {
             StreamP2PWrapper message = (StreamP2PWrapper) response;
-            AbstractStreamResponseAdapter callback;
-            if(message.isCanceled()){
-                callback = STREAM_RESPONSE_HANDLER_MAP.remove(((StreamP2PWrapper) response).getSeq());
-                callback.asyncProcess(callback, message);
+            AbstractStreamResponseAdapter callback = STREAM_RESPONSE_HANDLER_MAP.get(message.getSeq());
+            if (callback == null) {
                 return true;
-            }else if(message.isCompleted()){
-                callback = STREAM_RESPONSE_HANDLER_MAP.remove(((StreamP2PWrapper) response).getSeq());
-                callback.asyncProcess(callback, message);
-                return true;
-            }else{
-                callback = STREAM_RESPONSE_HANDLER_MAP.get(((StreamP2PWrapper) response).getSeq());
-                //异步线程处理
-                callback.asyncProcess(callback, message);
-                return false;
             }
-             
+            log.info("StreamMessage :{}", response);
+            if (message.isCanceled() || message.isCompleted()) {
+                STREAM_RESPONSE_HANDLER_MAP.remove(message.getSeq());
+                callback.asyncProcess(callback, message);
+                return true;
+            }
+            callback.asyncProcess(callback, message);
+            return false;
         }
         return true;
     }
     
     private void checkAndRemoveStreamMessage(P2PWrapper response){
         
-        if (response instanceof StreamP2PWrapper) {//(文件上传/发布)流消息请求处理,异步回调
+        if (response instanceof StreamP2PWrapper) {
             log.info("StreamMessage :{}", response);
             StreamP2PWrapper message = (StreamP2PWrapper) response;
-            StreamResponse callback = STREAM_RESPONSE_HANDLER_MAP.remove(((StreamP2PWrapper) response).getSeq());
-            callback.cancel(message);
+            StreamResponse callback = STREAM_RESPONSE_HANDLER_MAP.remove(message.getSeq());
+            if (callback != null) {
+                callback.cancel(message);
+            }
         }
     }
 
@@ -549,17 +573,21 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
         int keyLen = cfg.getXorKeyLength() > 0 ? cfg.getXorKeyLength() : 4096;
         secureUserId = userId;
         secureLoggedIn = false;
+        AbstractSendMesageExecutor executor = pollMesageExecutorInternal(30, TimeUnit.SECONDS, false);
         secureHandshakeDone = true;
-
-        AbstractSendMesageExecutor executor = pollMesageExecutor(30, TimeUnit.SECONDS);
-        if (executor.getChannel() != null && executor.getChannel().attr(ChannelUtils.XOR_KEY).get() != null) {
-            HandshakeResponse resp = new HandshakeResponse();
-            resp.setOk(true);
-            resp.setUserId(userId);
-            resp.setServerTime(System.currentTimeMillis());
-            resp.setNonce(new byte[0]);
-            resp.setXorKeyLength(keyLen);
-            return resp;
+        if (executor.getChannel() != null) {
+            Boolean handshakeDone = executor.getChannel().attr(ChannelUtils.AUTH_HANDSHAKE_DONE).get();
+            byte[] key = executor.getChannel().attr(ChannelUtils.XOR_KEY).get();
+            if ((handshakeDone != null && handshakeDone) || (key != null && key.length > 0)) {
+                HandshakeResponse resp = new HandshakeResponse();
+                resp.setOk(true);
+                resp.setUserId(userId);
+                resp.setServerTime(System.currentTimeMillis());
+                resp.setNonce(new byte[0]);
+                resp.setXorKeyLength(keyLen);
+                resp.setCryptoMode(HandshakeCryptoMode.parse(cfg.getCryptoMode()));
+                return resp;
+            }
         }
         return handshakeOnExecutor(executor, cfg, userId, keyLen);
     }
@@ -572,10 +600,15 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
         if (!secureHandshakeDone || secureUserId == null || secureUserId.isBlank()) {
             throw new IllegalStateException("handshake required");
         }
-        AbstractSendMesageExecutor executor = pollMesageExecutor(30, TimeUnit.SECONDS);
-        if (executor.getChannel() != null && executor.getChannel().attr(ChannelUtils.XOR_KEY).get() == null) {
-            int keyLen = cfg.getXorKeyLength() > 0 ? cfg.getXorKeyLength() : 4096;
-            handshakeOnExecutor(executor, cfg, secureUserId, keyLen);
+        AbstractSendMesageExecutor executor = pollMesageExecutorInternal(30, TimeUnit.SECONDS, false);
+        if (executor.getChannel() != null) {
+            Boolean handshakeDone = executor.getChannel().attr(ChannelUtils.AUTH_HANDSHAKE_DONE).get();
+            byte[] key = executor.getChannel().attr(ChannelUtils.XOR_KEY).get();
+            boolean hasKey = key != null && key.length > 0;
+            if ((handshakeDone == null || !handshakeDone) && !hasKey) {
+                int keyLen = cfg.getXorKeyLength() > 0 ? cfg.getXorKeyLength() : 4096;
+                handshakeOnExecutor(executor, cfg, secureUserId, keyLen);
+            }
         }
         LoginResponse resp = loginOnExecutor(executor, cfg, secureUserId);
         secureLoggedIn = true;
@@ -583,16 +616,32 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
     }
 
     private HandshakeResponse handshakeOnExecutor(AbstractSendMesageExecutor executor, AuthConfig cfg, String userId, int keyLen) throws Exception {
-        byte[] xorKey = AuthCrypto.randomBytes(keyLen);
-        byte[] encryptedXorKey = AuthCrypto.rsaEncryptLargeWithPrivate(xorKey, cfg.getClient().getPrivateKey());
-
+        int mode = HandshakeCryptoMode.parse(cfg.getCryptoMode());
         HandshakeRequest req = new HandshakeRequest();
         req.setUserId(userId);
         req.setTimestamp(System.currentTimeMillis());
         req.setNonce(AuthCrypto.randomBytes(32));
         req.setXorKeyLength(keyLen);
-        req.setEncryptedXorKey(encryptedXorKey);
-        req.setSignature(AuthCrypto.signSha256Rsa(HandshakePayloads.requestSigPayload(req), cfg.getClient().getPrivateKey()));
+        req.setSigVersion(2);
+        req.setCryptoMode(mode);
+        byte[] xorKey = null;
+        Integer xorOffset = null;
+        if (mode == HandshakeCryptoMode.CLIENT_RANDOM) {
+            xorKey = AuthCrypto.randomBytes(keyLen);
+            req.setEncryptedXorKey(AuthCrypto.rsaEncryptLargeWithPrivate(xorKey, cfg.getClient().getPrivateKey()));
+        } else if (mode == HandshakeCryptoMode.SERVER_RANDOM || mode == HandshakeCryptoMode.PLAIN) {
+            xorKey = null;
+        } else if (mode == HandshakeCryptoMode.KEYFILE) {
+            if (cfg.getXorKeyFile() == null || cfg.getXorKeyFile().isBlank()) {
+                throw new IllegalStateException("missing xorKeyFile");
+            }
+            byte[] fileBytes = AuthCrypto.readKeyFileBytes(cfg.getXorKeyFile());
+            req.setKeyFileId(AuthCrypto.sha256Hex(fileBytes));
+            xorKey = fileBytes;
+        } else {
+            throw new IllegalStateException("unknown cryptoMode");
+        }
+        req.setSignature(AuthCrypto.signSha256Rsa(HandshakePayloads.requestSigPayloadV2(req), cfg.getClient().getPrivateKey()));
 
         byte[] reqBytes = SerializationUtil.serialize(req);
         P2PWrapper request = P2PWrapper.build(P2PCommand.HAND, reqBytes);
@@ -615,15 +664,50 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
             }
         }
         if (cfg.getClient().getServerPublicKey() != null && !cfg.getClient().getServerPublicKey().isBlank()) {
-            boolean ok = AuthCrypto.verifySha256Rsa(HandshakePayloads.responseSigPayload(resp), cfg.getClient().getServerPublicKey(), resp.getSignature());
+            boolean ok = AuthCrypto.verifySha256Rsa(HandshakePayloads.responseSigPayloadV2(resp), cfg.getClient().getServerPublicKey(), resp.getSignature());
             if (!ok) {
                 throw new IllegalStateException("bad server signature");
             }
         }
+        if (mode != resp.getCryptoMode()) {
+            throw new IllegalStateException("cryptoMode mismatch");
+        }
+        if (mode == HandshakeCryptoMode.SERVER_RANDOM) {
+            if (resp.getEncryptedSeed() == null || resp.getEncryptedSeed().length == 0) {
+                throw new IllegalStateException("missing encryptedSeed");
+            }
+            if (cfg.getClient().getServerPublicKey() == null || cfg.getClient().getServerPublicKey().isBlank()) {
+                throw new IllegalStateException("missing serverPublicKey");
+            }
+            xorKey = AuthCrypto.rsaDecryptLargeWithPublic(resp.getEncryptedSeed(), cfg.getClient().getServerPublicKey());
+            if (xorKey.length != keyLen) {
+                throw new IllegalStateException("xorKeyLength mismatch");
+            }
+        } else if (mode == HandshakeCryptoMode.KEYFILE) {
+            if (resp.getKeyFileId() == null || !resp.getKeyFileId().equals(req.getKeyFileId())) {
+                throw new IllegalStateException("keyFileId mismatch");
+            }
+            int off = resp.getKeyFileOffset();
+            if (xorKey == null || xorKey.length == 0) {
+                throw new IllegalStateException("missing xorKeyFile bytes");
+            }
+            if (off < 0 || off >= xorKey.length) {
+                throw new IllegalStateException("invalid keyFileOffset");
+            }
+            xorOffset = off;
+        }
         Channel ch = executor.getChannel();
         if (ch != null) {
             ch.attr(ChannelUtils.AUTH_USER_ID).set(userId);
-            ch.attr(ChannelUtils.XOR_KEY).set(xorKey);
+            ch.attr(ChannelUtils.AUTH_HANDSHAKE_DONE).set(true);
+            ch.attr(ChannelUtils.AUTH_CRYPTO_MODE).set(mode);
+            if (xorKey != null && xorKey.length > 0) {
+                ch.attr(ChannelUtils.XOR_KEY).set(xorKey);
+                ch.attr(ChannelUtils.XOR_OFFSET).set(xorOffset == null ? 0 : xorOffset);
+            } else {
+                ch.attr(ChannelUtils.XOR_KEY).set(null);
+                ch.attr(ChannelUtils.XOR_OFFSET).set(null);
+            }
             ch.attr(ChannelUtils.AUTH_LOGGED_IN).set(false);
         }
         return resp;
@@ -715,7 +799,7 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
         log.info("ReferencedSingleton singletonFinalized -> {}", this.toString());
         
          if (io_work_group != null) {//客户端模式:否则重新建立连接
-            io_work_group.close();
+            io_work_group.shutdownGracefully();
         }
        // ExecutorServicePool.releaseP2PClientPools();
     }

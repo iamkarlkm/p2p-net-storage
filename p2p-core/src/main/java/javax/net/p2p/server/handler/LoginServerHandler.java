@@ -1,6 +1,7 @@
 package javax.net.p2p.server.handler;
 
 import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.auth.AuthClientPublicKeyResolver;
 import javax.net.p2p.auth.config.AuthConfig;
 import javax.net.p2p.auth.model.LoginRequest;
 import javax.net.p2p.auth.model.LoginResponse;
@@ -44,7 +45,10 @@ public class LoginServerHandler implements P2PChannelAwareCommandHandler {
                 resp.setError("auth disabled");
                 return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, resp);
             }
-            if (ctx.channel().attr(ChannelUtils.XOR_KEY).get() == null) {
+            Boolean handshakeDone = ctx.channel().attr(ChannelUtils.AUTH_HANDSHAKE_DONE).get();
+            byte[] key = ctx.channel().attr(ChannelUtils.XOR_KEY).get();
+            boolean hasKey = key != null && key.length > 0;
+            if ((handshakeDone == null || !handshakeDone) && !hasKey) {
                 resp.setOk(false);
                 resp.setError("handshake required");
                 return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, resp);
@@ -61,7 +65,7 @@ public class LoginServerHandler implements P2PChannelAwareCommandHandler {
                 resp.setError("userId mismatch");
                 return P2PWrapper.build(request.getSeq(), P2PCommand.STD_ERROR, resp);
             }
-            String clientPubKey = cfg.getServer().getClientPublicKeys().get(userId);
+            String clientPubKey = AuthClientPublicKeyResolver.resolve(cfg.getServer(), userId);
             if (clientPubKey == null || clientPubKey.isBlank()) {
                 resp.setOk(false);
                 resp.setError("unknown userId");

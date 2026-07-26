@@ -21,12 +21,15 @@ void p2pws_keyfile_free(p2pws_keyfile_t* k);
 int p2pws_sha256_hex(const uint8_t* data, size_t len, char* out_hex65);
 int p2pws_sha256_bytes(const uint8_t* data, size_t len, uint8_t out32[32]);
 
+int p2pws_rand_bytes(uint8_t* out, size_t len);
+
 typedef struct p2pws_rsa {
   void* prov;
   void* key;
   uint8_t* pub_spki_der;
   size_t pub_spki_der_len;
   uint8_t node_key32[32];
+  int key_kind;
 } p2pws_rsa_t;
 
 int p2pws_rsa_load_private_pem(const char* path, p2pws_rsa_t* out);
@@ -36,6 +39,9 @@ void p2pws_rsa_free(p2pws_rsa_t* r);
 int p2pws_rsa_oaep_sha256_decrypt(p2pws_rsa_t* r, const uint8_t* cipher, size_t cipher_len, p2pws_buf_t* out_plain);
 int p2pws_rsa_oaep_sha256_encrypt_spki_der(const uint8_t* pub_spki_der, size_t pub_spki_len, const uint8_t* plain, size_t plain_len, p2pws_buf_t* out_cipher);
 int p2pws_rsa_sign_sha256(p2pws_rsa_t* r, const uint8_t* msg, size_t msg_len, p2pws_buf_t* out_sig);
+int p2pws_rsa_pkcs1v15_private_encrypt_large(p2pws_rsa_t* r, const uint8_t* plain, size_t plain_len, p2pws_buf_t* out_cipher);
+int p2pws_rsa_verify_sha256_spki_der(const uint8_t* pub_spki_der, size_t pub_spki_len, const uint8_t* msg, size_t msg_len, const uint8_t* sig, size_t sig_len, int* out_ok);
+int p2pws_rsa_pkcs1v15_public_decrypt_large_spki_der(const uint8_t* pub_spki_der, size_t pub_spki_len, const uint8_t* cipher, size_t cipher_len, p2pws_buf_t* out_plain);
 
 #ifdef __cplusplus
 }

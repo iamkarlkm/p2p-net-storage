@@ -24,33 +24,47 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11p2p_control.proto\x12\x05p2pws\"\\\n\x04Hand\x12\x15\n\rclient_pubkey\x18\x01 \x01(\x0c\x12\x0f\n\x07key_ids\x18\x02 \x03(\x0c\x12\x19\n\x11max_frame_payload\x18\x03 \x01(\r\x12\x11\n\tclient_id\x18\x04 \x01(\t\"\x80\x01\n\x0cHandAckPlain\x12\x12\n\nsession_id\x18\x01 \x01(\x0c\x12\x17\n\x0fselected_key_id\x18\x02 \x01(\x0c\x12\x0e\n\x06offset\x18\x03 \x01(\r\x12\x19\n\x11max_frame_payload\x18\x04 \x01(\r\x12\x18\n\x10header_policy_id\x18\x05 \x01(\r\"I\n\x0b\x43ryptUpdate\x12\x0e\n\x06key_id\x18\x01 \x01(\x0c\x12\x0e\n\x06offset\x18\x02 \x01(\r\x12\x1a\n\x12\x65\x66\x66\x65\x63tive_from_seq\x18\x03 \x01(\x05\"D\n\x0cHeaderUpdate\x12\x1a\n\x12\x65\x66\x66\x65\x63tive_from_seq\x18\x01 \x01(\x05\x12\x18\n\x10header_policy_id\x18\x02 \x01(\r\"+\n\x08\x45ndpoint\x12\x11\n\ttransport\x18\x01 \x01(\t\x12\x0c\n\x04\x61\x64\x64r\x18\x02 \x01(\t\"s\n\x08NodeCaps\x12\x19\n\x11max_frame_payload\x18\x01 \x01(\r\x12\r\n\x05magic\x18\x02 \x01(\r\x12\x0f\n\x07version\x18\x03 \x01(\r\x12\x13\n\x0b\x66lags_plain\x18\x04 \x01(\r\x12\x17\n\x0f\x66lags_encrypted\x18\x05 \x01(\r\"\xb4\x01\n\x0f\x43\x65nterHelloBody\x12\x11\n\tnode_id64\x18\x01 \x01(\x06\x12\x17\n\x0fpubkey_spki_der\x18\x02 \x01(\x0c\x12+\n\x12reported_endpoints\x18\x03 \x03(\x0b\x32\x0f.p2pws.Endpoint\x12\x1d\n\x04\x63\x61ps\x18\x04 \x01(\x0b\x32\x0f.p2pws.NodeCaps\x12\x14\n\x0ctimestamp_ms\x18\x05 \x01(\x04\x12\x13\n\x0b\x63rypto_mode\x18\x06 \x01(\t\"F\n\x0b\x43\x65nterHello\x12$\n\x04\x62ody\x18\x01 \x01(\x0b\x32\x16.p2pws.CenterHelloBody\x12\x11\n\tsignature\x18\x02 \x01(\x0c\"{\n\x0e\x43\x65nterHelloAck\x12\x10\n\x08node_key\x18\x01 \x01(\x0c\x12*\n\x11observed_endpoint\x18\x02 \x01(\x0b\x32\x0f.p2pws.Endpoint\x12\x13\n\x0bttl_seconds\x18\x03 \x01(\r\x12\x16\n\x0eserver_time_ms\x18\x04 \x01(\x04\".\n\x07GetNode\x12\x11\n\tnode_id64\x18\x01 \x01(\x06\x12\x10\n\x08node_key\x18\x02 \x01(\x0c\"\x9a\x01\n\nGetNodeAck\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\x10\n\x08node_key\x18\x02 \x01(\x0c\x12\x11\n\tnode_id64\x18\x03 \x01(\x06\x12\"\n\tendpoints\x18\x04 \x03(\x0b\x32\x0f.p2pws.Endpoint\x12\x1d\n\x04\x63\x61ps\x18\x05 \x01(\x0b\x32\x0f.p2pws.NodeCaps\x12\x15\n\rexpires_at_ms\x18\x06 \x01(\x04\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x11p2p_control.proto\x12\x05p2pws\"\x8c\x01\n\x04Hand\x12\x15\n\rclient_pubkey\x18\x01 \x01(\x0c\x12\x0f\n\x07key_ids\x18\x02 \x03(\x0c\x12\x19\n\x11max_frame_payload\x18\x03 \x01(\r\x12\x11\n\tclient_id\x18\x04 \x01(\t\x12\x13\n\x0b\x63rypto_mode\x18\x05 \x01(\t\x12\x19\n\x11\x63lient_random_key\x18\x06 \x01(\x0c\"\xb0\x01\n\x0cHandAckPlain\x12\x12\n\nsession_id\x18\x01 \x01(\x0c\x12\x17\n\x0fselected_key_id\x18\x02 \x01(\x0c\x12\x0e\n\x06offset\x18\x03 \x01(\r\x12\x19\n\x11max_frame_payload\x18\x04 \x01(\r\x12\x18\n\x10header_policy_id\x18\x05 \x01(\r\x12\x13\n\x0b\x63rypto_mode\x18\x06 \x01(\t\x12\x19\n\x11server_random_key\x18\x07 \x01(\x0c\"I\n\x0b\x43ryptUpdate\x12\x0e\n\x06key_id\x18\x01 \x01(\x0c\x12\x0e\n\x06offset\x18\x02 \x01(\r\x12\x1a\n\x12\x65\x66\x66\x65\x63tive_from_seq\x18\x03 \x01(\x05\"D\n\x0cHeaderUpdate\x12\x1a\n\x12\x65\x66\x66\x65\x63tive_from_seq\x18\x01 \x01(\x05\x12\x18\n\x10header_policy_id\x18\x02 \x01(\r\"+\n\x08\x45ndpoint\x12\x11\n\ttransport\x18\x01 \x01(\t\x12\x0c\n\x04\x61\x64\x64r\x18\x02 \x01(\t\"s\n\x08NodeCaps\x12\x19\n\x11max_frame_payload\x18\x01 \x01(\r\x12\r\n\x05magic\x18\x02 \x01(\r\x12\x0f\n\x07version\x18\x03 \x01(\r\x12\x13\n\x0b\x66lags_plain\x18\x04 \x01(\r\x12\x17\n\x0f\x66lags_encrypted\x18\x05 \x01(\r\"\xb4\x01\n\x0f\x43\x65nterHelloBody\x12\x11\n\tnode_id64\x18\x01 \x01(\x06\x12\x17\n\x0fpubkey_spki_der\x18\x02 \x01(\x0c\x12+\n\x12reported_endpoints\x18\x03 \x03(\x0b\x32\x0f.p2pws.Endpoint\x12\x1d\n\x04\x63\x61ps\x18\x04 \x01(\x0b\x32\x0f.p2pws.NodeCaps\x12\x14\n\x0ctimestamp_ms\x18\x05 \x01(\x04\x12\x13\n\x0b\x63rypto_mode\x18\x06 \x01(\t\"F\n\x0b\x43\x65nterHello\x12$\n\x04\x62ody\x18\x01 \x01(\x0b\x32\x16.p2pws.CenterHelloBody\x12\x11\n\tsignature\x18\x02 \x01(\x0c\"{\n\x0e\x43\x65nterHelloAck\x12\x10\n\x08node_key\x18\x01 \x01(\x0c\x12*\n\x11observed_endpoint\x18\x02 \x01(\x0b\x32\x0f.p2pws.Endpoint\x12\x13\n\x0bttl_seconds\x18\x03 \x01(\r\x12\x16\n\x0eserver_time_ms\x18\x04 \x01(\x04\".\n\x07GetNode\x12\x11\n\tnode_id64\x18\x01 \x01(\x06\x12\x10\n\x08node_key\x18\x02 \x01(\x0c\"\x9a\x01\n\nGetNodeAck\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\x10\n\x08node_key\x18\x02 \x01(\x0c\x12\x11\n\tnode_id64\x18\x03 \x01(\x06\x12\"\n\tendpoints\x18\x04 \x03(\x0b\x32\x0f.p2pws.Endpoint\x12\x1d\n\x04\x63\x61ps\x18\x05 \x01(\x0b\x32\x0f.p2pws.NodeCaps\x12\x15\n\rexpires_at_ms\x18\x06 \x01(\x04\"f\n\rPeerHelloBody\x12\x11\n\tnode_id64\x18\x01 \x01(\x06\x12\x17\n\x0fpubkey_spki_der\x18\x02 \x01(\x0c\x12\x14\n\x0ctimestamp_ms\x18\x03 \x01(\x04\x12\x13\n\x0b\x63rypto_mode\x18\x04 \x01(\t\"B\n\tPeerHello\x12\"\n\x04\x62ody\x18\x01 \x01(\x0b\x32\x14.p2pws.PeerHelloBody\x12\x11\n\tsignature\x18\x02 \x01(\x0c\"8\n\x0cPeerHelloAck\x12\x10\n\x08node_key\x18\x01 \x01(\x0c\x12\x16\n\x0eserver_time_ms\x18\x02 \x01(\x04\"\x82\x01\n\tRelayData\x12\x18\n\x10target_node_id64\x18\x01 \x01(\x06\x12\x17\n\x0ftarget_node_key\x18\x02 \x01(\x0c\x12\x18\n\x10source_node_id64\x18\x03 \x01(\x06\x12\x17\n\x0fsource_node_key\x18\x04 \x01(\x0c\x12\x0f\n\x07payload\x18\x05 \x01(\x0c\"@\n\x0b\x43onnectHint\x12\x18\n\x10target_node_id64\x18\x01 \x01(\x06\x12\x17\n\x0ftarget_node_key\x18\x02 \x01(\x0c\"\x8c\x01\n\x0e\x43onnectHintAck\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\x18\n\x10target_node_id64\x18\x02 \x01(\x06\x12\x17\n\x0ftarget_node_key\x18\x03 \x01(\x0c\x12)\n\x10target_endpoints\x18\x04 \x03(\x0b\x32\x0f.p2pws.Endpoint\x12\r\n\x05token\x18\x05 \x01(\x04\"{\n\x0cIncomingHint\x12\x18\n\x10source_node_id64\x18\x01 \x01(\x06\x12\x17\n\x0fsource_node_key\x18\x02 \x01(\x0c\x12)\n\x10source_endpoints\x18\x03 \x03(\x0b\x32\x0f.p2pws.Endpoint\x12\r\n\x05token\x18\x04 \x01(\x04\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'p2p_control_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_HAND']._serialized_start=28
-  _globals['_HAND']._serialized_end=120
-  _globals['_HANDACKPLAIN']._serialized_start=123
-  _globals['_HANDACKPLAIN']._serialized_end=251
-  _globals['_CRYPTUPDATE']._serialized_start=253
-  _globals['_CRYPTUPDATE']._serialized_end=326
-  _globals['_HEADERUPDATE']._serialized_start=328
-  _globals['_HEADERUPDATE']._serialized_end=396
-  _globals['_ENDPOINT']._serialized_start=398
-  _globals['_ENDPOINT']._serialized_end=441
-  _globals['_NODECAPS']._serialized_start=443
-  _globals['_NODECAPS']._serialized_end=558
-  _globals['_CENTERHELLOBODY']._serialized_start=561
-  _globals['_CENTERHELLOBODY']._serialized_end=741
-  _globals['_CENTERHELLO']._serialized_start=743
-  _globals['_CENTERHELLO']._serialized_end=813
-  _globals['_CENTERHELLOACK']._serialized_start=815
-  _globals['_CENTERHELLOACK']._serialized_end=938
-  _globals['_GETNODE']._serialized_start=940
-  _globals['_GETNODE']._serialized_end=986
-  _globals['_GETNODEACK']._serialized_start=989
-  _globals['_GETNODEACK']._serialized_end=1143
+  _globals['_HAND']._serialized_start=29
+  _globals['_HAND']._serialized_end=169
+  _globals['_HANDACKPLAIN']._serialized_start=172
+  _globals['_HANDACKPLAIN']._serialized_end=348
+  _globals['_CRYPTUPDATE']._serialized_start=350
+  _globals['_CRYPTUPDATE']._serialized_end=423
+  _globals['_HEADERUPDATE']._serialized_start=425
+  _globals['_HEADERUPDATE']._serialized_end=493
+  _globals['_ENDPOINT']._serialized_start=495
+  _globals['_ENDPOINT']._serialized_end=538
+  _globals['_NODECAPS']._serialized_start=540
+  _globals['_NODECAPS']._serialized_end=655
+  _globals['_CENTERHELLOBODY']._serialized_start=658
+  _globals['_CENTERHELLOBODY']._serialized_end=838
+  _globals['_CENTERHELLO']._serialized_start=840
+  _globals['_CENTERHELLO']._serialized_end=910
+  _globals['_CENTERHELLOACK']._serialized_start=912
+  _globals['_CENTERHELLOACK']._serialized_end=1035
+  _globals['_GETNODE']._serialized_start=1037
+  _globals['_GETNODE']._serialized_end=1083
+  _globals['_GETNODEACK']._serialized_start=1086
+  _globals['_GETNODEACK']._serialized_end=1240
+  _globals['_PEERHELLOBODY']._serialized_start=1242
+  _globals['_PEERHELLOBODY']._serialized_end=1344
+  _globals['_PEERHELLO']._serialized_start=1346
+  _globals['_PEERHELLO']._serialized_end=1412
+  _globals['_PEERHELLOACK']._serialized_start=1414
+  _globals['_PEERHELLOACK']._serialized_end=1470
+  _globals['_RELAYDATA']._serialized_start=1473
+  _globals['_RELAYDATA']._serialized_end=1603
+  _globals['_CONNECTHINT']._serialized_start=1605
+  _globals['_CONNECTHINT']._serialized_end=1669
+  _globals['_CONNECTHINTACK']._serialized_start=1672
+  _globals['_CONNECTHINTACK']._serialized_end=1812
+  _globals['_INCOMINGHINT']._serialized_start=1814
+  _globals['_INCOMINGHINT']._serialized_end=1937
 # @@protoc_insertion_point(module_scope)

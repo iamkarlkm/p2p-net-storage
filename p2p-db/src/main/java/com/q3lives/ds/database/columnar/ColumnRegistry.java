@@ -29,11 +29,18 @@ public final class ColumnRegistry {
 
     public long getOrCreateColId(Class<? extends DsTableAdapter> entityClass, String colKey) {
         Objects.requireNonNull(entityClass, "entityClass cannot be null");
+        return getOrCreateColId(entityClass.getName(), colKey);
+    }
+
+    public long getOrCreateColId(String entityClassName, String colKey) {
+        if (entityClassName == null || entityClassName.isBlank()) {
+            throw new IllegalArgumentException("entityClassName is blank");
+        }
         if (colKey == null || colKey.isBlank()) {
             throw new IllegalArgumentException("colKey is blank");
         }
 
-        File metaFile = metaFile(entityClass);
+        File metaFile = metaFile(entityClassName);
         File lockFile = new File(metaFile.getParentFile(), "columns.meta.lock");
         try (FileChannel ch = new FileOutputStream(lockFile, true).getChannel();
             FileLock ignored = ch.lock()) {
@@ -50,16 +57,23 @@ public final class ColumnRegistry {
             saveMeta(metaFile, meta);
             return newId;
         } catch (Exception e) {
-            throw new MetaStoreException("failed to write columns meta: entityClass=" + entityClass.getName() + ", colKey=" + colKey, e);
+            throw new MetaStoreException("failed to write columns meta: entityClass=" + entityClassName + ", colKey=" + colKey, e);
         }
     }
 
     public Long findColId(Class<? extends DsTableAdapter> entityClass, String colKey) {
         Objects.requireNonNull(entityClass, "entityClass cannot be null");
+        return findColId(entityClass.getName(), colKey);
+    }
+
+    public Long findColId(String entityClassName, String colKey) {
+        if (entityClassName == null || entityClassName.isBlank()) {
+            throw new IllegalArgumentException("entityClassName is blank");
+        }
         if (colKey == null || colKey.isBlank()) {
             return null;
         }
-        File metaFile = metaFile(entityClass);
+        File metaFile = metaFile(entityClassName);
         if (!metaFile.isFile()) {
             return null;
         }
@@ -67,16 +81,23 @@ public final class ColumnRegistry {
             RegistryMeta meta = parseYaml(in);
             return meta.colKeyToId.get(colKey);
         } catch (Exception e) {
-            throw new MetaStoreException("failed to read columns meta: entityClass=" + entityClass.getName() + ", colKey=" + colKey, e);
+            throw new MetaStoreException("failed to read columns meta: entityClass=" + entityClassName + ", colKey=" + colKey, e);
         }
     }
 
     public void markDeleted(Class<? extends DsTableAdapter> entityClass, long colId) {
         Objects.requireNonNull(entityClass, "entityClass cannot be null");
+        markDeleted(entityClass.getName(), colId);
+    }
+
+    public void markDeleted(String entityClassName, long colId) {
+        if (entityClassName == null || entityClassName.isBlank()) {
+            throw new IllegalArgumentException("entityClassName is blank");
+        }
         if (colId <= 0L) {
             throw new IllegalArgumentException("colId must be > 0");
         }
-        File metaFile = metaFile(entityClass);
+        File metaFile = metaFile(entityClassName);
         File lockFile = new File(metaFile.getParentFile(), "columns.meta.lock");
         try (FileChannel ch = new FileOutputStream(lockFile, true).getChannel();
             FileLock ignored = ch.lock()) {
@@ -85,16 +106,23 @@ public final class ColumnRegistry {
             meta.deleted.add(colId);
             saveMeta(metaFile, meta);
         } catch (Exception e) {
-            throw new MetaStoreException("failed to mark column deleted: entityClass=" + entityClass.getName() + ", colId=" + colId, e);
+            throw new MetaStoreException("failed to mark column deleted: entityClass=" + entityClassName + ", colId=" + colId, e);
         }
     }
 
     public boolean isDeleted(Class<? extends DsTableAdapter> entityClass, long colId) {
         Objects.requireNonNull(entityClass, "entityClass cannot be null");
+        return isDeleted(entityClass.getName(), colId);
+    }
+
+    public boolean isDeleted(String entityClassName, long colId) {
+        if (entityClassName == null || entityClassName.isBlank()) {
+            throw new IllegalArgumentException("entityClassName is blank");
+        }
         if (colId <= 0L) {
             return false;
         }
-        File metaFile = metaFile(entityClass);
+        File metaFile = metaFile(entityClassName);
         if (!metaFile.isFile()) {
             return false;
         }
@@ -102,12 +130,16 @@ public final class ColumnRegistry {
             RegistryMeta meta = parseYaml(in);
             return meta.deleted.contains(colId);
         } catch (Exception e) {
-            throw new MetaStoreException("failed to read deleted flags: entityClass=" + entityClass.getName() + ", colId=" + colId, e);
+            throw new MetaStoreException("failed to read deleted flags: entityClass=" + entityClassName + ", colId=" + colId, e);
         }
     }
 
     private File metaFile(Class<? extends DsTableAdapter> entityClass) {
-        String spacePath = DsPathUtil.dottedToLinuxPath(entityClass.getName(), "entityClass");
+        return metaFile(entityClass.getName());
+    }
+
+    private File metaFile(String entityClassName) {
+        String spacePath = DsPathUtil.dottedToLinuxPath(entityClassName, "entityClass");
         File dir = new File(dbRoot, "indexes/" + spacePath);
         if (!dir.exists()) {
             dir.mkdirs();

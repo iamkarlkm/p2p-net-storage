@@ -39,12 +39,64 @@ static int skip_field(const uint8_t* p, size_t n, size_t* off, uint32_t wt) {
     *off += (size_t)len;
     return 0;
   }
+  if (wt == 3) {
+    int depth = 1;
+    while (*off < n) {
+      int ok = 0;
+      uint64_t key = read_varint(p, n, off, &ok);
+      if (!ok) return -7;
+      uint32_t inner_wt = (uint32_t)(key & 7);
+      if (inner_wt == 3) {
+        depth++;
+        continue;
+      }
+      if (inner_wt == 4) {
+        depth--;
+        if (depth == 0) return 0;
+        continue;
+      }
+      int r = skip_field(p, n, off, inner_wt);
+      if (r != 0) return r;
+    }
+    return -8;
+  }
+  if (wt == 4) {
+    return 0;
+  }
   if (wt == 5) {
     if (*off + 4 > n) return -6;
     *off += 4;
     return 0;
   }
-  return -7;
+  return -9;
+}
+
+static int decode_object_bytes_group(const uint8_t* p, size_t n, size_t* off, uint32_t group_field_no, p2pws_pb_slice_t* out) {
+  if (!p || !off || !out) return -1;
+  out->p = NULL;
+  out->n = 0;
+  while (*off < n) {
+    int ok = 0;
+    uint64_t key = read_varint(p, n, off, &ok);
+    if (!ok) return -2;
+    uint32_t field = (uint32_t)(key >> 3);
+    uint32_t wt = (uint32_t)(key & 7);
+    if (field == group_field_no && wt == 4) {
+      return 0;
+    }
+    if (field == 11 && wt == 2) {
+      uint64_t len = read_varint(p, n, off, &ok);
+      if (!ok) return -3;
+      if (*off + (size_t)len > n) return -4;
+      out->p = p + *off;
+      out->n = (size_t)len;
+      *off += (size_t)len;
+      continue;
+    }
+    int r = skip_field(p, n, off, wt);
+    if (r != 0) return r;
+  }
+  return -5;
 }
 
 void p2pws_pb_reset(p2pws_buf_t* b) {
@@ -140,6 +192,71 @@ int p2pws_pb_decode_wrapper(const uint8_t* p, size_t n, p2pws_wrapper_view_t* ou
       off += (size_t)len;
       continue;
     }
+    if (field == 3 && wt == 3) {
+      int r = decode_object_bytes_group(p, n, &off, 3, &out->data);
+      if (r != 0) return r;
+      continue;
+    }
+    int r = skip_field(p, n, &off, wt);
+    if (r != 0) return r;
+  }
+  return 0;
+}
+
+int p2pws_pb_decode_stream_wrapper(const uint8_t* p, size_t n, p2pws_stream_wrapper_view_t* out) {
+  if (!p || !out) return -1;
+  memset(out, 0, sizeof(*out));
+  size_t off = 0;
+  while (off < n) {
+    int ok = 0;
+    uint64_t key = read_varint(p, n, &off, &ok);
+    if (!ok) return -2;
+    uint32_t field = (uint32_t)(key >> 3);
+    uint32_t wt = (uint32_t)(key & 7);
+    if (field == 1 && wt == 0) {
+      uint64_t v = read_varint(p, n, &off, &ok);
+      if (!ok) return -3;
+      out->seq = (int32_t)v;
+      continue;
+    }
+    if (field == 2 && wt == 0) {
+      uint64_t v = read_varint(p, n, &off, &ok);
+      if (!ok) return -4;
+      out->command = (int32_t)v;
+      continue;
+    }
+    if (field == 3 && wt == 2) {
+      uint64_t len = read_varint(p, n, &off, &ok);
+      if (!ok) return -5;
+      if (off + (size_t)len > n) return -6;
+      out->data.p = p + off;
+      out->data.n = (size_t)len;
+      off += (size_t)len;
+      continue;
+    }
+    if (field == 3 && wt == 3) {
+      int r = decode_object_bytes_group(p, n, &off, 3, &out->data);
+      if (r != 0) return r;
+      continue;
+    }
+    if (field == 4 && wt == 0) {
+      uint64_t v = read_varint(p, n, &off, &ok);
+      if (!ok) return -7;
+      out->index = (int32_t)v;
+      continue;
+    }
+    if (field == 5 && wt == 0) {
+      uint64_t v = read_varint(p, n, &off, &ok);
+      if (!ok) return -8;
+      out->completed = v ? 1 : 0;
+      continue;
+    }
+    if (field == 6 && wt == 0) {
+      uint64_t v = read_varint(p, n, &off, &ok);
+      if (!ok) return -9;
+      out->canceled = v ? 1 : 0;
+      continue;
+    }
     int r = skip_field(p, n, &off, wt);
     if (r != 0) return r;
   }
@@ -224,6 +341,18 @@ int p2pws_pb_decode_hand(const uint8_t* p, size_t n, p2pws_hand_view_t* out) {
       out->client_id[m] = 0;
       continue;
     }
+    if (field == 5 && wt == 2) {
+      p2pws_pb_slice_t s;
+      if (decode_len_bytes(p, n, &off, &s) != 0) return -7;
+      size_t m = s.n < sizeof(out->crypto_mode) - 1 ? s.n : sizeof(out->crypto_mode) - 1;
+      memcpy(out->crypto_mode, s.p, m);
+      out->crypto_mode[m] = 0;
+      continue;
+    }
+    if (field == 6 && wt == 2) {
+      if (decode_len_bytes(p, n, &off, &out->client_random_key) != 0) return -8;
+      continue;
+    }
     int r = skip_field(p, n, &off, wt);
     if (r != 0) return r;
   }
@@ -254,6 +383,18 @@ int p2pws_pb_decode_hand_ack_plain(const uint8_t* p, size_t n, p2pws_hand_ack_pl
       if (field == 3) out->offset = (uint32_t)v;
       if (field == 4) out->max_frame_payload = (uint32_t)v;
       if (field == 5) out->header_policy_id = (uint32_t)v;
+      continue;
+    }
+    if (field == 6 && wt == 2) {
+      p2pws_pb_slice_t s;
+      if (decode_len_bytes(p, n, &off, &s) != 0) return -6;
+      size_t m = s.n < sizeof(out->crypto_mode) - 1 ? s.n : sizeof(out->crypto_mode) - 1;
+      memcpy(out->crypto_mode, s.p, m);
+      out->crypto_mode[m] = 0;
+      continue;
+    }
+    if (field == 7 && wt == 2) {
+      if (decode_len_bytes(p, n, &off, &out->server_random_key) != 0) return -7;
       continue;
     }
     int r = skip_field(p, n, &off, wt);

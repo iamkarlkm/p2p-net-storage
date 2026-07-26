@@ -34,6 +34,7 @@ import lombok.extern.slf4j.Slf4j;
 public class ServerSendUdpMesageExecutor extends AbstractSendMesageExecutor {
 
     private InetSocketAddress remote;//udp 対端地址可能变动,非tcp一一对应,发送消息前校验
+    private static final int SEGMENT_V2_MARKER = -2;
 
     protected long delayTimes = 0;
     
@@ -225,8 +226,6 @@ public class ServerSendUdpMesageExecutor extends AbstractSendMesageExecutor {
     }
 
     public void writeMessage(int seq, ByteBuf buffer) throws InterruptedException {
-        buffer.retain();
-//        lastMessageMap.put(seq, buffer);
         if (lastMessageByteBuf != null) {
             lastMessageByteBuf.release();
         }
@@ -235,30 +234,62 @@ public class ServerSendUdpMesageExecutor extends AbstractSendMesageExecutor {
             log.debug("writeMessage ByteBuf seq=", seq);
         }
         int length = buffer.readableBytes();
-        if (length > P2PConfig.UDP_TRANSPORT_LIMIT_SIZE) {
+        int maxUdpPayloadSize = 1472;
+        int udpLimit = Math.min(P2PConfig.UDP_TRANSPORT_LIMIT_SIZE, maxUdpPayloadSize);
+        if (length > udpLimit) {
+            boolean v2Enabled = Boolean.parseBoolean(System.getProperty("p2p.udp.segment.v2.enabled", "true"));
+            if (v2Enabled) {
+                int start = buffer.readerIndex();
+                int magic = buffer.getInt(start + 4);
+                int fullHash = buffer.getInt(start + 8);
+                int totalLen = buffer.getInt(start);
+                int payloadStart = start + 12;
+                int segmentHeaderBytes = 12 + 20;
+                int segPayloadLimit = udpLimit - segmentHeaderBytes;
+                if (totalLen > 0 && segPayloadLimit > 0) {
+                    int segCount = (totalLen + segPayloadLimit - 1) / segPayloadLimit;
+                    for (int i = 0; i < segCount; i++) {
+                        int off = i * segPayloadLimit;
+                        int len = Math.min(segPayloadLimit, totalLen - off);
+                        ByteBuf out = SerializationUtil.tryGetDirectBuffer(segmentHeaderBytes + len);
+                        out.writeInt(SEGMENT_V2_MARKER);
+                        out.writeInt(magic);
+                        out.writeInt(fullHash);
+                        out.writeInt(totalLen);
+                        out.writeInt(off);
+                        out.writeShort(i);
+                        out.writeShort(segCount);
+                        out.writeInt(len);
+                        out.writeInt(seq);
+                        out.writeBytes(buffer, payloadStart + off, len);
+                        lastMessageFuture = channel.writeAndFlush(new DatagramPacket(out, this.remote));
+                        lastMessageFuture.sync();
+                    }
+                    return;
+                }
+            }
             System.out.println("分包发送");
             //分包发送,以防止中间网络路由问题导致传输问题(超时),实测数据域映射端口超过64k tcp包经常超时
-            int rest = (int) length % P2PConfig.UDP_TRANSPORT_LIMIT_SIZE;
-            int count = (int) length / P2PConfig.UDP_TRANSPORT_LIMIT_SIZE;
+            int rest = (int) length % udpLimit;
+            int count = (int) length / udpLimit;
             //System.out.println(bytes.length+" -> "+count+" rest "+rest);
 
             int start = buffer.readerIndex();
             for (int i = 0; i < count; i++) {
-                buffer.retain();
-                //cf = channel.writeAndFlush(buffer.slice(start + i * P2PConfig.UDP_TRANSPORT_LIMIT_SIZE, P2PConfig.UDP_TRANSPORT_LIMIT_SIZE));
-                lastMessageFuture = channel.writeAndFlush(new DatagramPacket(buffer.slice(start + i * P2PConfig.UDP_TRANSPORT_LIMIT_SIZE, P2PConfig.UDP_TRANSPORT_LIMIT_SIZE),
+                ByteBuf slice = buffer.retainedSlice(start + i * udpLimit, udpLimit);
+                lastMessageFuture = channel.writeAndFlush(new DatagramPacket(slice,
                     this.remote));
                 lastMessageFuture.sync();
             }
             if (rest > 0) {
 
-//                cf = channel.writeAndFlush(buffer.slice(start + count * P2PConfig.UDP_TRANSPORT_LIMIT_SIZE, rest));
-                lastMessageFuture = channel.writeAndFlush(new DatagramPacket(buffer.slice(start + count * P2PConfig.UDP_TRANSPORT_LIMIT_SIZE, rest), this.remote));
+                ByteBuf slice = buffer.retainedSlice(start + count * udpLimit, rest);
+                lastMessageFuture = channel.writeAndFlush(new DatagramPacket(slice, this.remote));
                 lastMessageFuture.sync();
             }
         } else {
             System.out.println("sennding:" + this.remote + "buffer:" + buffer.readableBytes());
-            lastMessageFuture = channel.writeAndFlush(new DatagramPacket(buffer, this.remote));
+            lastMessageFuture = channel.writeAndFlush(new DatagramPacket(buffer.retainedDuplicate(), this.remote));
             lastMessageFuture.sync();
             System.out.println("cf.sync() after");
         }
@@ -266,8 +297,6 @@ public class ServerSendUdpMesageExecutor extends AbstractSendMesageExecutor {
     }
 
     public void writeMessageSegment(int seq, int index, ByteBuf buffer) throws InterruptedException {
-        buffer.retain();
-        //lastMessageMap.put(seq, buffer);
         if (lastMessageByteBuf != null) {
             lastMessageByteBuf.release();
         }
@@ -277,30 +306,31 @@ public class ServerSendUdpMesageExecutor extends AbstractSendMesageExecutor {
         }
 
         int length = buffer.readableBytes();
-        if (length > P2PConfig.UDP_TRANSPORT_LIMIT_SIZE) {
+        int maxUdpPayloadSize = 1472;
+        int udpLimit = Math.min(P2PConfig.UDP_TRANSPORT_LIMIT_SIZE, maxUdpPayloadSize);
+        if (length > udpLimit) {
             System.out.println("分包发送");
             //分包发送,以防止中间网络路由问题导致传输问题(超时),实测数据域映射端口超过64k tcp包经常超时
-            int rest = (int) length % P2PConfig.UDP_TRANSPORT_LIMIT_SIZE;
-            int count = (int) length / P2PConfig.UDP_TRANSPORT_LIMIT_SIZE;
+            int rest = (int) length % udpLimit;
+            int count = (int) length / udpLimit;
             //System.out.println(bytes.length+" -> "+count+" rest "+rest);
 
             int start = buffer.readerIndex();
             for (int i = index; i < count; i++) {
-                buffer.retain();
-                //cf = channel.writeAndFlush(buffer.slice(start + i * P2PConfig.UDP_TRANSPORT_LIMIT_SIZE, P2PConfig.UDP_TRANSPORT_LIMIT_SIZE));
-                lastMessageFuture = channel.writeAndFlush(new DatagramPacket(buffer.slice(start + i * P2PConfig.UDP_TRANSPORT_LIMIT_SIZE, P2PConfig.UDP_TRANSPORT_LIMIT_SIZE),
+                ByteBuf slice = buffer.retainedSlice(start + i * udpLimit, udpLimit);
+                lastMessageFuture = channel.writeAndFlush(new DatagramPacket(slice,
                     this.remote));
                 lastMessageFuture.sync();
             }
             if (rest > 0) {
 
-//                cf = channel.writeAndFlush(buffer.slice(start + count * P2PConfig.UDP_TRANSPORT_LIMIT_SIZE, rest));
-                lastMessageFuture = channel.writeAndFlush(new DatagramPacket(buffer.slice(start + count * P2PConfig.UDP_TRANSPORT_LIMIT_SIZE, rest), this.remote));
+                ByteBuf slice = buffer.retainedSlice(start + count * udpLimit, rest);
+                lastMessageFuture = channel.writeAndFlush(new DatagramPacket(slice, this.remote));
                 lastMessageFuture.sync();
             }
         } else {
             System.out.println("sennding:" + this.remote + "buffer:" + buffer.readableBytes());
-            lastMessageFuture = channel.writeAndFlush(new DatagramPacket(buffer, this.remote));
+            lastMessageFuture = channel.writeAndFlush(new DatagramPacket(buffer.retainedDuplicate(), this.remote));
             lastMessageFuture.sync();
             System.out.println("cf.sync() after");
         }

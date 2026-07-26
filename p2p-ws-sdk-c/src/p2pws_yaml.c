@@ -75,6 +75,12 @@ int p2pws_cfg_load_yaml(const char* path, p2pws_cfg_t* out) {
   char line[1024];
   int in_reported = 0;
   int got_report_item = 0;
+  int in_ws_urls = 0;
+  int got_ws_urls_item = 0;
+  int got_crypto_mode = 0;
+  int encryption_enabled = 1;
+  char encryption_mode[64];
+  set_str(encryption_mode, sizeof(encryption_mode), "keyfile");
   while (fgets(line, sizeof(line), f)) {
     strip_comment(line);
     trim(line);
@@ -83,6 +89,13 @@ int p2pws_cfg_load_yaml(const char* path, p2pws_cfg_t* out) {
     if (starts_with(line, "reported_endpoints")) {
       in_reported = 1;
       got_report_item = 0;
+      in_ws_urls = 0;
+      continue;
+    }
+    if (starts_with(line, "ws_urls")) {
+      in_ws_urls = 1;
+      got_ws_urls_item = 0;
+      in_reported = 0;
       continue;
     }
     if (in_reported) {
@@ -112,6 +125,22 @@ int p2pws_cfg_load_yaml(const char* path, p2pws_cfg_t* out) {
       }
       continue;
     }
+    if (in_ws_urls) {
+      if (starts_with(line, "-")) {
+        got_ws_urls_item = 1;
+        char* p = line + 1;
+        trim(p);
+        if (*p && !out->ws_url[0]) {
+          set_str(out->ws_url, sizeof(out->ws_url), p);
+        }
+        continue;
+      }
+      if (got_ws_urls_item && strchr(line, ':')) {
+        in_ws_urls = 0;
+      } else {
+        continue;
+      }
+    }
 
     if (strchr(line, ':')) {
       char k[128], v[768];
@@ -122,7 +151,20 @@ int p2pws_cfg_load_yaml(const char* path, p2pws_cfg_t* out) {
       else if (strcmp(k, "key_id_sha256_hex") == 0) set_str(out->key_id_sha256_hex, sizeof(out->key_id_sha256_hex), v);
       else if (strcmp(k, "rsa_private_key_pem_path") == 0) set_str(out->rsa_private_key_pem_path, sizeof(out->rsa_private_key_pem_path), v);
       else if (strcmp(k, "pubkey_spki_der_base64") == 0) set_str(out->pubkey_spki_der_base64, sizeof(out->pubkey_spki_der_base64), v);
-      else if (strcmp(k, "crypto_mode") == 0) set_str(out->crypto_mode, sizeof(out->crypto_mode), v);
+      else if (strcmp(k, "crypto_mode") == 0) {
+        set_str(out->crypto_mode, sizeof(out->crypto_mode), v);
+        got_crypto_mode = 1;
+      } else if (strcmp(k, "encryption_enabled") == 0) {
+        if (!v[0]) {
+          encryption_enabled = 1;
+        } else if (strcmp(v, "false") == 0 || strcmp(v, "False") == 0 || strcmp(v, "0") == 0) {
+          encryption_enabled = 0;
+        } else {
+          encryption_enabled = 1;
+        }
+      } else if (strcmp(k, "encryption_mode") == 0) {
+        set_str(encryption_mode, sizeof(encryption_mode), v);
+      }
       else if (strcmp(k, "listen_port") == 0) out->listen_port = parse_u32_auto(v, out->listen_port);
       else if (strcmp(k, "renew_seconds") == 0) out->renew_seconds = parse_u32_auto(v, out->renew_seconds);
       else if (strcmp(k, "magic") == 0) out->magic = parse_u32_auto(v, out->magic);
@@ -134,9 +176,21 @@ int p2pws_cfg_load_yaml(const char* path, p2pws_cfg_t* out) {
   }
   fclose(f);
 
+  if (!got_crypto_mode) {
+    if (!encryption_enabled) {
+      set_str(out->crypto_mode, sizeof(out->crypto_mode), "PLAIN");
+    } else if (strcmp(encryption_mode, "client_random") == 0) {
+      set_str(out->crypto_mode, sizeof(out->crypto_mode), "CLIENT_RANDOM_XOR_RSA_OAEP");
+    } else if (strcmp(encryption_mode, "server_random") == 0) {
+      set_str(out->crypto_mode, sizeof(out->crypto_mode), "SERVER_RANDOM_XOR_RSA_OAEP");
+    } else {
+      set_str(out->crypto_mode, sizeof(out->crypto_mode), "KEYFILE_XOR_RSA_OAEP");
+    }
+  }
+
   if (!out->user_id[0]) return -3;
   if (!out->ws_url[0]) return -4;
-  if (!out->keyfile_path[0]) return -5;
+  if (!out->keyfile_path[0] && strcmp(out->crypto_mode, "KEYFILE_XOR_RSA_OAEP") == 0) return -5;
   if (!out->rsa_private_key_pem_path[0]) return -6;
   if (!out->pubkey_spki_der_base64[0]) return -7;
   if (!out->reported_transport[0]) set_str(out->reported_transport, sizeof(out->reported_transport), "ws");

@@ -48,3 +48,11 @@ int p2pws_xor_no_wrap(const uint8_t* in, size_t in_len, const uint8_t* keyfile, 
   return 0;
 }
 
+int p2pws_xor_repeat(const uint8_t* in, size_t in_len, const uint8_t* key, size_t key_len, uint8_t* out) {
+  if (!in || !key || !out) return -1;
+  if (key_len == 0) return -2;
+  for (size_t i = 0; i < in_len; i++) {
+    out[i] = (uint8_t)(in[i] ^ key[i % key_len]);
+  }
+  return 0;
+}

@@ -1,0 +1,2 @@
+#pragma code_page(65001)
+1 /* CREATEPROCESS_MANIFEST_RESOURCE_ID */ 24 /* RT_MANIFEST */ "I:/2025/code/P2P-Net-StorageSystem/p2p-net-storage/p2p-ws-sdk-c/build-msvc/CMakeFiles/p2pws_core_ws_rpc_stream_collect_chat.dir/embed.manifest"

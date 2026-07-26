@@ -20,6 +20,7 @@ import java.io.PrintStream;
 import java.util.concurrent.TimeUnit;
 import javax.net.p2p.channel.ChannelUtils;
 import javax.net.p2p.common.ExecutorServicePool;
+import javax.net.p2p.startup.P2PStartupChecks;
 
 /**
  *
@@ -51,6 +52,7 @@ public class P2PServerQuic extends AbstractP2PServer {
             throw new RuntimeException("同一服务正在运行，请先关闭后再操作,监听端口->" + port);
         }
         try {
+            P2PStartupChecks.runOrThrow();
             ExecutorServicePool.createServerPools();
             server = new Bootstrap();
             final boolean isMac = System.getProperty("os.name").toLowerCase().contains("mac");

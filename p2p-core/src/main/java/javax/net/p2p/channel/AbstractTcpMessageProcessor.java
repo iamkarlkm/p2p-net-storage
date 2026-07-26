@@ -131,6 +131,7 @@ public abstract class AbstractTcpMessageProcessor extends SimpleChannelInboundHa
     protected boolean connected = false;
 
     public AbstractTcpMessageProcessor(int magic, int queueSize) {
+        super(false);
         this.magic = magic;
         this.queueSize = queueSize;
     }

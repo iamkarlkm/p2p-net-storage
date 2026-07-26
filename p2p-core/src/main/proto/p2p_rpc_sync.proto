@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package p2p.rpc.sync.v1;
+
+option java_multiple_files = true;
+option java_package = "javax.net.p2p.rpc.sync.proto";
+option java_outer_classname = "RpcSyncProto";
+
+enum SyncEventType {
+  SYNC_EVENT_TYPE_UNSPECIFIED = 0;
+  CREATE = 1;
+  MODIFY = 2;
+  DELETE = 3;
+}
+
+message SyncEventRequest {
+  int64 task_id = 1;
+  uint64 event_uid = 2;
+  uint64 file_id = 3;
+  string path = 4;
+  bool directory = 5;
+  SyncEventType type = 6;
+  int64 last_modified_millis = 7;
+}
+
+message SyncEventAck {
+  uint64 event_uid = 1;
+  bool ok = 2;
+  bool needs_upload = 3;
+  int32 store_id = 4;
+  string message = 5;
+}
+
+message SyncFinalizeRequest {
+  int64 task_id = 1;
+  uint64 event_uid = 2;
+  string path = 3;
+  bool directory = 4;
+  SyncEventType type = 5;
+  int64 last_modified_millis = 6;
+}

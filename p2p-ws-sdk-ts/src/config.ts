@@ -5,9 +5,14 @@ import YAML from "yaml"
 export type ClientConfig = {
   user_id: string
   ws_url: string
+  ws_urls?: string[]
+  network_mode?: string
   keyfile_path: string
   key_id_sha256_hex?: string
   rsa_private_key_pem_path?: string
+  encryption_enabled?: boolean
+  encryption_mode?: string
+  random_key_bytes?: number
   crypto_mode?: string
   reported_endpoints?: Array<{ transport: string; addr: string }>
   presence_cache_path?: string
@@ -32,9 +37,14 @@ export function loadClientConfig(p: string): ClientConfig {
   const cfg: ClientConfig = {
     user_id: cfg0?.user_id == null ? "" : String(cfg0.user_id),
     ws_url: cfg0?.ws_url == null ? "" : String(cfg0.ws_url),
+    ws_urls: Array.isArray(cfg0?.ws_urls) ? cfg0.ws_urls.map((x: any) => String(x)) : undefined,
+    network_mode: cfg0?.network_mode == null ? undefined : String(cfg0.network_mode),
     keyfile_path: cfg0?.keyfile_path == null ? "" : String(cfg0.keyfile_path),
     key_id_sha256_hex: cfg0?.key_id_sha256_hex == null ? undefined : String(cfg0.key_id_sha256_hex),
     rsa_private_key_pem_path: cfg0?.rsa_private_key_pem_path == null ? undefined : String(cfg0.rsa_private_key_pem_path),
+    encryption_enabled: cfg0?.encryption_enabled,
+    encryption_mode: cfg0?.encryption_mode == null ? undefined : String(cfg0.encryption_mode),
+    random_key_bytes: cfg0?.random_key_bytes,
     crypto_mode: cfg0?.crypto_mode == null ? undefined : String(cfg0.crypto_mode),
     reported_endpoints: cfg0?.reported_endpoints,
     presence_cache_path: cfg0?.presence_cache_path == null ? undefined : String(cfg0.presence_cache_path),
@@ -53,8 +63,8 @@ export function loadClientConfig(p: string): ClientConfig {
   }
   if (!cfg || typeof cfg !== "object") throw new Error("invalid yaml")
   if (!cfg.user_id) throw new Error("user_id required")
-  if (!cfg.ws_url) throw new Error("ws_url required")
-  if (!cfg.keyfile_path) throw new Error("keyfile_path required")
+  if (!cfg.ws_url && (!cfg.ws_urls || cfg.ws_urls.length === 0)) throw new Error("ws_url/ws_urls required")
+  if (!cfg.rsa_private_key_pem_path) throw new Error("rsa_private_key_pem_path required")
   return cfg
 }
 

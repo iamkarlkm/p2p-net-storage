@@ -30,9 +30,15 @@ public class ChannelUtils {
 
     public static final AttributeKey<byte[]> XOR_KEY = AttributeKey.valueOf("XOR_KEY");
 
+    public static final AttributeKey<Integer> XOR_OFFSET = AttributeKey.valueOf("XOR_OFFSET");
+
     public static final AttributeKey<String> AUTH_USER_ID = AttributeKey.valueOf("AUTH_USER_ID");
 
     public static final AttributeKey<Boolean> AUTH_LOGGED_IN = AttributeKey.valueOf("AUTH_LOGGED_IN");
+
+    public static final AttributeKey<Boolean> AUTH_HANDSHAKE_DONE = AttributeKey.valueOf("AUTH_HANDSHAKE_DONE");
+
+    public static final AttributeKey<Integer> AUTH_CRYPTO_MODE = AttributeKey.valueOf("AUTH_CRYPTO_MODE");
 
     public static final AttributeKey<Boolean> HANDSHAKE_PLAINTEXT_RESP = AttributeKey.valueOf("HANDSHAKE_PLAINTEXT_RESP");
 	

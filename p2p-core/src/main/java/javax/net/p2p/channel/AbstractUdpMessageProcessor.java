@@ -26,6 +26,7 @@ import java.util.jar.JarEntry;
 import java.util.concurrent.ConcurrentHashMap;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.api.P2PServiceCategory;
+import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.interfaces.P2PMessageService;
 import javax.net.p2p.model.P2PWrapper;
@@ -71,6 +72,7 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
     
     //最近发送消息缓存
     protected final ConcurrentHashMap<InetSocketAddress,ByteBuf> lastMessageMap = new ConcurrentHashMap<>();
+    protected final ConcurrentHashMap<InetSocketAddress, Integer> lastMessageSeqMap = new ConcurrentHashMap<>();
     
     protected final ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<Integer,AbstractLongTimedRequestAdapter>> lastLongTimedRequestAdapterMap = new ConcurrentHashMap<>();
     
@@ -88,6 +90,7 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
      
     private long frameStartTime;
     private long frameLengthInt;
+    private static final int SEGMENT_V2_MARKER = -2;
 
 
     public AbstractUdpMessageProcessor(int magic,Integer queueSize) {
@@ -162,10 +165,11 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
      * @param remoteAddess
      * @param buffer 
      */
-    protected void cacheLastResponse(InetSocketAddress remoteAddess,ByteBuf buffer){
+    protected void cacheLastResponse(InetSocketAddress remoteAddess, ByteBuf buffer, int seq){
         buffer.retain();//pipeline会自动release buffer,计数+1
         buffer.markReaderIndex();
         lastMessageMap.put(remoteAddess, buffer);
+        lastMessageSeqMap.put(remoteAddess, seq);
     }
     
     /**
@@ -181,6 +185,7 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
             frameLastTransportSpeed = frameLengthInt / dt;
         }
         ByteBuf buffer = lastMessageMap.remove(remoteAddess);
+        lastMessageSeqMap.remove(remoteAddess);
         if (buffer != null) {
             buffer.release();
         }
@@ -213,7 +218,8 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
         if(sendUdpMesageExecutor!=null){//TODO
             
         }
-        sendResponse(ctx.channel(), remoteAddess, buffer);
+        Integer seq = lastMessageSeqMap.get(remoteAddess);
+        sendResponse(ctx.channel(), remoteAddess, seq == null ? 0 : seq, buffer);
         
     }
 
@@ -227,9 +233,16 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
      */
     public void sendResponse(Channel channel, InetSocketAddress remoteAddess, P2PWrapper response, int magic) {
         try {
-            if(lastMessageMap.containsKey(remoteAddess)){
-                //远程端点尚未ACK,一般来说不应该存在新数据包,可以安全的丢弃之(比如心跳包等
-                return;
+            Integer lastSeq = lastMessageSeqMap.get(remoteAddess);
+            if (lastSeq != null) {
+                if (lastSeq == response.getSeq()) {
+                    return;
+                }
+                ByteBuf old = lastMessageMap.remove(remoteAddess);
+                lastMessageSeqMap.remove(remoteAddess);
+                if (old != null) {
+                    old.release();
+                }
             }
             ByteBuf buffer;
              //心跳消息特殊处理
@@ -250,13 +263,13 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
                     break;
                 default://有序发送(send -> ack/retrieve)消息
                     buffer = encodeUdpFrame(response, magic);
-                    cacheLastResponse(remoteAddess,buffer);
+                    cacheLastResponse(remoteAddess, buffer, response.getSeq());
                     break;
             }
             if (log.isDebugEnabled()) {
                 log.debug("send response:{}", buffer.readableBytes());
             }
-            sendResponse(channel, remoteAddess, buffer);
+            sendResponse(channel, remoteAddess, response.getSeq(), buffer);
         } catch (Exception ex) {
             log.warn("{}消息处理异常:{},关闭channel:{}", response, ex, channel.id());
             try {
@@ -269,11 +282,68 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
     
     
     public void sendResponse(Channel channel, InetSocketAddress remoteAddess, ByteBuf buffer) {
+        Integer seq = lastMessageSeqMap.get(remoteAddess);
+        sendResponse(channel, remoteAddess, seq == null ? 0 : seq, buffer);
+    }
+
+    public void sendResponse(Channel channel, InetSocketAddress remoteAddess, int seq, ByteBuf buffer) {
         try {
             frameStartTime = System.currentTimeMillis();
             frameLengthInt = buffer.readableBytes();
             //收到udp消息后，可通过此方式原路返回的方式返回消息，例如返回时间戳
-            ChannelFuture cf = channel.writeAndFlush(new DatagramPacket(buffer, remoteAddess));
+            int maxUdpPayloadSize = 1472;
+            int udpLimit = Math.min(P2PConfig.UDP_TRANSPORT_LIMIT_SIZE, maxUdpPayloadSize);
+            ChannelFuture cf;
+            if (buffer.readableBytes() > udpLimit) {
+                boolean v2Enabled = Boolean.parseBoolean(System.getProperty("p2p.udp.segment.v2.enabled", "true"));
+                if (v2Enabled) {
+                    int start = buffer.readerIndex();
+                    int magic = buffer.getInt(start + 4);
+                    int fullHash = buffer.getInt(start + 8);
+                    int totalLen = buffer.getInt(start);
+                    int payloadStart = start + 12;
+                    int segmentHeaderBytes = 12 + 20;
+                    int segPayloadLimit = udpLimit - segmentHeaderBytes;
+                    if (totalLen <= 0 || segPayloadLimit <= 0) {
+                        cf = channel.writeAndFlush(new DatagramPacket(buffer.retainedDuplicate(), remoteAddess));
+                    } else {
+                        int segCount = (totalLen + segPayloadLimit - 1) / segPayloadLimit;
+                        cf = null;
+                        for (int i = 0; i < segCount; i++) {
+                            int off = i * segPayloadLimit;
+                            int len = Math.min(segPayloadLimit, totalLen - off);
+                            ByteBuf out = SerializationUtil.tryGetDirectBuffer(segmentHeaderBytes + len);
+                            out.writeInt(SEGMENT_V2_MARKER);
+                            out.writeInt(magic);
+                            out.writeInt(fullHash);
+                            out.writeInt(totalLen);
+                            out.writeInt(off);
+                            out.writeShort(i);
+                            out.writeShort(segCount);
+                            out.writeInt(len);
+                            out.writeInt(seq);
+                            out.writeBytes(buffer, payloadStart + off, len);
+                            cf = channel.writeAndFlush(new DatagramPacket(out, remoteAddess));
+                        }
+                    }
+                } else {
+                    int length = buffer.readableBytes();
+                    int rest = length % udpLimit;
+                    int count = length / udpLimit;
+                    int start = buffer.readerIndex();
+                    cf = null;
+                    for (int i = 0; i < count; i++) {
+                        ByteBuf slice = buffer.retainedSlice(start + i * udpLimit, udpLimit);
+                        cf = channel.writeAndFlush(new DatagramPacket(slice, remoteAddess));
+                    }
+                    if (rest > 0) {
+                        ByteBuf slice = buffer.retainedSlice(start + count * udpLimit, rest);
+                        cf = channel.writeAndFlush(new DatagramPacket(slice, remoteAddess));
+                    }
+                }
+            } else {
+                cf = channel.writeAndFlush(new DatagramPacket(buffer.retainedDuplicate(), remoteAddess));
+            }
 //            SocketAddress s = cf.channel().remoteAddress();
 //            InetSocketAddress t = datagramPacket.sender();
             if (cf != null) {

@@ -601,6 +601,45 @@ public class RpcCommandHandlersTest {
     }
 
     @Test
+    public void streamHandlerReturnsRpcErrorFrameWhenInvokerThrows() throws Exception {
+        String service = "test.rpc.v1.ThrowingStreamService." + System.nanoTime();
+        RpcBootstrap.registerServerStream(
+            service,
+            "Watch",
+            "v1",
+            true,
+            HealthCheckRequest.class,
+            HealthCheckResponse.class,
+            (context, request, observer) -> {
+                throw new RuntimeException("boom");
+            }
+        );
+        RpcFrame openFrame = RpcFrame.newBuilder()
+            .setMeta(RpcFrame.getDefaultInstance().getMeta().toBuilder()
+                .setRequestId(150L)
+                .setService(service)
+                .setMethod("Watch")
+                .setServiceVersion("v1")
+                .setCallType(RpcCallType.SERVER_STREAM)
+                .build())
+            .setFrameType(RpcFrameType.OPEN)
+            .setPayload(HealthCheckRequest.newBuilder().setService("watch").build().toByteString())
+            .setEndOfStream(true)
+            .build();
+
+        TestExecutor executor = new TestExecutor();
+        new RpcServerStreamHandler().processStream(executor, StreamP2PWrapper.buildStream(150, 0, P2PCommand.RPC_STREAM, openFrame.toByteArray(), false));
+
+        Assertions.assertEquals(1, executor.size());
+        P2PWrapper<?> outbound = executor.poll();
+        Assertions.assertEquals(P2PCommand.RPC_STREAM, outbound.getCommand());
+        RpcFrame errorFrame = RpcFrame.parseFrom((byte[]) outbound.getData());
+        Assertions.assertEquals(RpcFrameType.ERROR, errorFrame.getFrameType());
+        Assertions.assertEquals(RpcStatusCode.INTERNAL_ERROR, errorFrame.getStatus().getCode());
+        Assertions.assertTrue(errorFrame.getEndOfStream());
+    }
+
+    @Test
     public void rpcClientHealthAndDiscoverMethodsWork() throws Exception {
         P2PMessageService messageService = (P2PMessageService) Proxy.newProxyInstance(
             P2PMessageService.class.getClassLoader(),
@@ -821,6 +860,62 @@ public class RpcCommandHandlersTest {
         Assertions.assertEquals("unary-error", exception.context().responseHeaders().get("x-rpc-stage"));
         Assertions.assertEquals("failed", exception.context().responseTrailers().get("x-rpc-finish"));
         Assertions.assertTrue(exception.context().endOfStream());
+    }
+
+    @Test
+    public void unaryNotFoundStillIncludesAuditGovernanceFields() throws Exception {
+        String service = "test.rpc.v1.UnaryNotFoundService." + System.nanoTime();
+
+        RpcUnaryCommandServerHandler handler = new RpcUnaryCommandServerHandler();
+        P2PMessageService messageService = (P2PMessageService) Proxy.newProxyInstance(
+            P2PMessageService.class.getClassLoader(),
+            new Class<?>[]{P2PMessageService.class},
+            (proxy, method, args) -> {
+                if ("excute".equals(method.getName()) && args != null && args.length >= 1 && args[0] instanceof P2PWrapper<?> wrapper) {
+                    return handler.process((P2PWrapper<byte[]>) wrapper);
+                }
+                throw new UnsupportedOperationException(method.getName());
+            }
+        );
+
+        P2PRpcClient client = new P2PRpcClient(messageService);
+        RpcClientResponseException exception = Assertions.assertThrows(RpcClientResponseException.class, () ->
+            client.unaryDetailed(
+                service,
+                "Missing",
+                EchoRequest.newBuilder().setMessage("hello").build(),
+                EchoResponse.class,
+                metadataOptions()
+            )
+        );
+
+        Assertions.assertNotNull(exception.context());
+        Assertions.assertEquals(RpcStatusCode.NOT_FOUND, exception.context().status().getCode());
+        Assertions.assertEquals(service, exception.context().responseHeaders().get("x-rpc-service"));
+        Assertions.assertEquals("Missing", exception.context().responseHeaders().get("x-rpc-method"));
+        Assertions.assertEquals(RpcStatusCode.NOT_FOUND.name(), exception.context().responseTrailers().get("x-rpc-status"));
+        Assertions.assertEquals(service, exception.context().status().getDetailsMap().get("audit.service"));
+        Assertions.assertEquals("Missing", exception.context().status().getDetailsMap().get("audit.method"));
+    }
+
+    @Test
+    public void unaryStdErrorIsMappedToRpcResponseException() {
+        P2PMessageService messageService = (P2PMessageService) Proxy.newProxyInstance(
+            P2PMessageService.class.getClassLoader(),
+            new Class<?>[]{P2PMessageService.class},
+            (proxy, method, args) -> {
+                if ("excute".equals(method.getName()) && args != null && args.length >= 1 && args[0] instanceof P2PWrapper<?> wrapper) {
+                    return javax.net.p2p.error.P2PErrors.stdError(wrapper.getSeq(), javax.net.p2p.error.P2PErrorCode.AUTH_PERMISSION_DENIED);
+                }
+                throw new UnsupportedOperationException(method.getName());
+            }
+        );
+        P2PRpcClient client = new P2PRpcClient(messageService);
+        RpcClientResponseException exception = Assertions.assertThrows(RpcClientResponseException.class, () ->
+            client.echo("hello", metadataOptions())
+        );
+        Assertions.assertEquals(RpcStatusCode.FORBIDDEN, exception.context().status().getCode());
+        Assertions.assertEquals("auth.permission_denied", exception.context().status().getDetailsMap().get("p2p.std_error_key"));
     }
 
     @Test
@@ -1359,6 +1454,63 @@ public class RpcCommandHandlersTest {
     }
 
     @Test
+    public void serverStreamObserverOnErrorIncludesRpcResponseContext() throws Exception {
+        String service = "test.rpc.v1.ServerStreamErrorContextService." + System.nanoTime();
+        RpcBootstrap.registerServerStream(
+            service,
+            "Watch",
+            "v1",
+            true,
+            HealthCheckRequest.class,
+            HealthCheckResponse.class,
+            (context, request, observer) -> {
+                throw new RuntimeException("boom");
+            }
+        );
+        RpcTestRpcStreamMessageService messageService = new RpcTestRpcStreamMessageService(new RpcStreamCommandServerHandler());
+        P2PRpcClient client = new P2PRpcClient(messageService);
+        List<RpcClientResponseContext> contexts = new ArrayList<>();
+        AtomicReference<Exception> error = new AtomicReference<>();
+
+        client.serverStream(
+            service,
+            "Watch",
+            HealthCheckRequest.newBuilder().setService("watch").build(),
+            HealthCheckResponse.class,
+            metadataOptions(),
+            new RpcClientStreamObserver<>() {
+                @Override
+                public void onResponseContext(RpcClientResponseContext context) {
+                    contexts.add(context);
+                }
+
+                @Override
+                public void onNext(HealthCheckResponse response) {
+                }
+
+                @Override
+                public void onCompleted() {
+                }
+
+                @Override
+                public void onError(Exception exception) {
+                    error.set(exception);
+                }
+            }
+        );
+
+        Assertions.assertNotNull(error.get());
+        Assertions.assertTrue(error.get() instanceof RpcClientResponseException);
+        RpcClientResponseException ex = (RpcClientResponseException) error.get();
+        Assertions.assertNotNull(ex.context());
+        Assertions.assertEquals(RpcFrameType.ERROR, ex.context().frameType());
+        Assertions.assertEquals(RpcStatusCode.INTERNAL_ERROR, ex.context().status().getCode());
+        Assertions.assertTrue(ex.context().status().getMessage().contains("boom"));
+        Assertions.assertEquals(1, contexts.size());
+        Assertions.assertEquals(RpcFrameType.ERROR, contexts.get(0).frameType());
+    }
+
+    @Test
     public void dfsMapRangeStreamingAutoWindowUpdateSendsControlAndKeepsItemsFlowing() throws Exception {
         DfsMapRegistry.setBackend(new InMemoryDfsMapBackend(4000L, true));
         try {
@@ -1453,8 +1605,14 @@ public class RpcCommandHandlersTest {
             StreamCollectResponse.class,
             context -> {
                 capturedContext.set(context);
-                List<String> messages = new ArrayList<>();
-                return new javax.net.p2p.rpc.api.RpcClientStreamSession<>() {
+                class Session implements javax.net.p2p.rpc.api.RpcClientStreamSession<javax.net.p2p.rpc.stream.proto.StreamCollectRequest, StreamCollectResponse> {
+                    private final RpcRequestContext ctx;
+                    private final List<String> messages = new ArrayList<>();
+
+                    private Session(RpcRequestContext ctx) {
+                        this.ctx = ctx;
+                    }
+
                     @Override
                     public void onNext(javax.net.p2p.rpc.stream.proto.StreamCollectRequest request) {
                         messages.add(request.getMessage());
@@ -1464,11 +1622,12 @@ public class RpcCommandHandlersTest {
                     public StreamCollectResponse onCompleted() {
                         return StreamCollectResponse.newBuilder()
                             .setCount(messages.size())
-                            .setJoined(context.callerNodeId() + "|" + context.callerUserId() + "|" + context.headers().get("tenant"))
+                            .setJoined(ctx.callerNodeId() + "|" + ctx.callerUserId() + "|" + ctx.headers().get("tenant"))
                             .addAllMessages(messages)
                             .build();
                     }
-                };
+                }
+                return new Session(context);
             },
             null
         );
@@ -1504,6 +1663,22 @@ public class RpcCommandHandlersTest {
             StreamCollectResponse response = handle.halfCloseAndAwait();
             Assertions.assertEquals(2, response.getCount());
             Assertions.assertEquals("m1,m2", response.getJoined());
+        }
+    }
+
+    @Test
+    public void clientStreamRequestChunkingReassemblesOnServer() throws Exception {
+        RpcTestRpcStreamMessageService messageService = new RpcTestRpcStreamMessageService(new RpcStreamCommandServerHandler());
+        P2PRpcClient client = new P2PRpcClient(messageService);
+        RpcCallOptions options = RpcCallOptions.defaultOptions().withInitialStreamFlowControl(128, 0, 8);
+        String longMessage = "0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        try (RpcClientStreamHandle<javax.net.p2p.rpc.stream.proto.StreamCollectRequest, StreamCollectResponse> handle =
+                 client.openClientStream(RpcStreamingBuiltinServices.SERVICE, RpcStreamingBuiltinServices.METHOD_COLLECT, StreamCollectResponse.class, options)) {
+            handle.send(javax.net.p2p.rpc.stream.proto.StreamCollectRequest.newBuilder().setMessage(longMessage).build());
+            StreamCollectResponse response = handle.halfCloseAndAwait();
+            Assertions.assertEquals(1, response.getCount());
+            Assertions.assertEquals(longMessage, response.getMessages(0));
         }
     }
 
@@ -1552,23 +1727,31 @@ public class RpcCommandHandlersTest {
             StreamChatResponse.class,
             (context, observer) -> {
                 capturedContext.set(context);
-                return new javax.net.p2p.rpc.api.RpcBidiStreamSession<>() {
+                class Session implements javax.net.p2p.rpc.api.RpcBidiStreamSession<javax.net.p2p.rpc.stream.proto.StreamChatRequest, StreamChatResponse> {
+                    private final RpcRequestContext ctx;
+                    private final javax.net.p2p.rpc.api.RpcServerStreamObserver<StreamChatResponse> obs;
                     private int index;
+
+                    private Session(RpcRequestContext ctx, javax.net.p2p.rpc.api.RpcServerStreamObserver<StreamChatResponse> obs) {
+                        this.ctx = ctx;
+                        this.obs = obs;
+                    }
 
                     @Override
                     public void onNext(javax.net.p2p.rpc.stream.proto.StreamChatRequest request) throws Exception {
                         index++;
-                        observer.onNext(StreamChatResponse.newBuilder()
+                        obs.onNext(StreamChatResponse.newBuilder()
                             .setIndex(index)
-                            .setMessage(context.traceId() + "|" + context.callerNodeId() + "|" + request.getMessage())
+                            .setMessage(ctx.traceId() + "|" + ctx.callerNodeId() + "|" + request.getMessage())
                             .build());
                     }
 
                     @Override
                     public void onCompleted() throws Exception {
-                        observer.onCompleted();
+                        obs.onCompleted();
                     }
-                };
+                }
+                return new Session(context, observer);
             }
         );
 
@@ -1616,18 +1799,27 @@ public class RpcCommandHandlersTest {
             true,
             javax.net.p2p.rpc.stream.proto.StreamChatRequest.class,
             StreamChatResponse.class,
-            (context, observer) -> new javax.net.p2p.rpc.api.RpcBidiStreamSession<>() {
-                @Override
-                public void onNext(javax.net.p2p.rpc.stream.proto.StreamChatRequest request) {
-                    context.putResponseHeader("x-rpc-stage", "bidi-error");
-                    context.putResponseTrailer("x-rpc-finish", "bidi-failed");
-                    context.putResponseStatusDetail("bidi", "error");
-                    throw new IllegalStateException("bidi-context-boom");
-                }
+            (context, observer) -> {
+                class Session implements javax.net.p2p.rpc.api.RpcBidiStreamSession<javax.net.p2p.rpc.stream.proto.StreamChatRequest, StreamChatResponse> {
+                    private final RpcRequestContext ctx;
 
-                @Override
-                public void onCompleted() {
+                    private Session(RpcRequestContext ctx) {
+                        this.ctx = ctx;
+                    }
+
+                    @Override
+                    public void onNext(javax.net.p2p.rpc.stream.proto.StreamChatRequest request) {
+                        ctx.putResponseHeader("x-rpc-stage", "bidi-error");
+                        ctx.putResponseTrailer("x-rpc-finish", "bidi-failed");
+                        ctx.putResponseStatusDetail("bidi", "error");
+                        throw new IllegalStateException("bidi-context-boom");
+                    }
+
+                    @Override
+                    public void onCompleted() {
+                    }
                 }
+                return new Session(context);
             }
         );
 
@@ -1798,16 +1990,19 @@ public class RpcCommandHandlersTest {
             false,
             javax.net.p2p.rpc.stream.proto.StreamCollectRequest.class,
             StreamCollectResponse.class,
-            context -> new javax.net.p2p.rpc.api.RpcClientStreamSession<>() {
-                @Override
-                public void onNext(javax.net.p2p.rpc.stream.proto.StreamCollectRequest request) {
-                    throw new IllegalStateException("forced-stream-error");
-                }
+            context -> {
+                class Session implements javax.net.p2p.rpc.api.RpcClientStreamSession<javax.net.p2p.rpc.stream.proto.StreamCollectRequest, StreamCollectResponse> {
+                    @Override
+                    public void onNext(javax.net.p2p.rpc.stream.proto.StreamCollectRequest request) {
+                        throw new IllegalStateException("forced-stream-error");
+                    }
 
-                @Override
-                public StreamCollectResponse onCompleted() {
-                    return StreamCollectResponse.getDefaultInstance();
+                    @Override
+                    public StreamCollectResponse onCompleted() {
+                        return StreamCollectResponse.getDefaultInstance();
+                    }
                 }
+                return new Session();
             },
             null
         );
@@ -1839,22 +2034,30 @@ public class RpcCommandHandlersTest {
             false,
             javax.net.p2p.rpc.stream.proto.StreamChatRequest.class,
             StreamChatResponse.class,
-            (context, observer) -> new javax.net.p2p.rpc.api.RpcBidiStreamSession<>() {
-                private boolean done;
+            (context, observer) -> {
+                class Session implements javax.net.p2p.rpc.api.RpcBidiStreamSession<javax.net.p2p.rpc.stream.proto.StreamChatRequest, StreamChatResponse> {
+                    private final javax.net.p2p.rpc.api.RpcServerStreamObserver<StreamChatResponse> obs;
+                    private boolean done;
 
-                @Override
-                public void onNext(javax.net.p2p.rpc.stream.proto.StreamChatRequest request) throws Exception {
-                    if (done) {
-                        return;
+                    private Session(javax.net.p2p.rpc.api.RpcServerStreamObserver<StreamChatResponse> obs) {
+                        this.obs = obs;
                     }
-                    done = true;
-                    observer.onNext(StreamChatResponse.newBuilder().setIndex(1).setMessage("ack:" + request.getMessage()).build());
-                    observer.onCompleted();
-                }
 
-                @Override
-                public void onCompleted() {
+                    @Override
+                    public void onNext(javax.net.p2p.rpc.stream.proto.StreamChatRequest request) throws Exception {
+                        if (done) {
+                            return;
+                        }
+                        done = true;
+                        obs.onNext(StreamChatResponse.newBuilder().setIndex(1).setMessage("ack:" + request.getMessage()).build());
+                        obs.onCompleted();
+                    }
+
+                    @Override
+                    public void onCompleted() {
+                    }
                 }
+                return new Session(observer);
             }
         );
 

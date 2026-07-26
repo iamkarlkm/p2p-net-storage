@@ -12,3 +12,11 @@ export function xorNoWrap(plain: Uint8Array, keyfile: Uint8Array, offset: number
   return out
 }
 
+export function xorRepeat(plain: Uint8Array, key: Uint8Array): Uint8Array {
+  if (key.length === 0) throw new Error("key required")
+  const out = new Uint8Array(plain.length)
+  for (let i = 0; i < plain.length; i++) {
+    out[i] = plain[i] ^ key[i % key.length]
+  }
+  return out
+}

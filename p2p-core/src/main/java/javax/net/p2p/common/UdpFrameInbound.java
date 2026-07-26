@@ -8,6 +8,8 @@ import io.netty.util.Attribute;
 import java.io.Closeable;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.Future;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
@@ -33,6 +35,8 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runnable{
+
+    private static final int SEGMENT_V2_MARKER = -2;
 
     protected int headerSize;
     protected int frameLengthInt = -1;
@@ -87,6 +91,7 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
     
     private Channel channel;
     private Future<?> future;
+    private Map<Integer, SegmentAssembly> segmentV2Assemblies;
 
     protected UdpFrameInbound() {
         this.lock = new ReentrantLock();
@@ -161,6 +166,10 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
         channel = null;
         remoteAddess = null;
         future = null;
+        if (segmentV2Assemblies != null) {
+            segmentV2Assemblies.clear();
+        }
+        segmentV2Assemblies = null;
     }
 
     @Override
@@ -170,6 +179,10 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
     
     public void channelRead0(ChannelHandlerContext ctx, DatagramPacket datagramPacket) throws Exception{
         ByteBuf in = datagramPacket.content();
+        if (tryHandleSegmentV2(ctx, datagramPacket, in)) {
+            in.skipBytes(in.readableBytes());
+            return;
+        }
         if(frameReseted){
             System.out.println("frameReseted skip readableBytes:"+in.readableBytes());
             in.skipBytes(in.readableBytes());
@@ -328,6 +341,140 @@ public class UdpFrameInbound extends PooledableAdapter implements Closeable,Runn
         out.writeInt(hash);
         out.writeBytes(data);
         channel.writeAndFlush(new DatagramPacket(out, remote));
+    }
+
+    private boolean tryHandleSegmentV2(ChannelHandlerContext ctx, DatagramPacket datagramPacket, ByteBuf in) {
+        if (in == null || in.readableBytes() < headerSize) {
+            return false;
+        }
+        int marker = in.getInt(in.readerIndex());
+        if (marker != SEGMENT_V2_MARKER) {
+            return false;
+        }
+        int readerIndex = in.readerIndex();
+        int magicLocal = 0;
+        Integer channelMagic = ctx.channel().attr(ChannelUtils.MAGIC).get();
+        if (channelMagic != null) {
+            magicLocal = channelMagic;
+        }
+        int magicIn = in.getInt(readerIndex + 4);
+        if (magicIn != magicLocal) {
+            return false;
+        }
+        int fullHash = in.getInt(readerIndex + 8);
+        int minBytes = headerSize + 20;
+        if (in.readableBytes() < minBytes) {
+            return true;
+        }
+        in.skipBytes(headerSize);
+        int totalLen = in.readInt();
+        int segOffset = in.readInt();
+        int segIndex = in.readUnsignedShort();
+        int segCount = in.readUnsignedShort();
+        int segLen = in.readInt();
+        int frameSeq = in.readInt();
+
+        if (totalLen <= 0 || segCount <= 0 || segIndex < 0 || segIndex >= segCount || segLen < 0) {
+            return true;
+        }
+        if (segOffset < 0 || segOffset + segLen > totalLen) {
+            return true;
+        }
+        if (in.readableBytes() < segLen) {
+            return true;
+        }
+
+        SegmentAssembly assembly = getOrCreateSegmentV2Assembly(frameSeq, totalLen, segCount, fullHash);
+        if (assembly == null) {
+            return true;
+        }
+        assembly.addSegment(segIndex, segOffset, segLen, in);
+        if (!assembly.isComplete()) {
+            return true;
+        }
+        int hash = XXHashUtil.hash32(assembly.bytes);
+        if (hash != fullHash) {
+            segmentV2Assemblies.remove(frameSeq);
+            try {
+                P2PWrapper resetUdpFrame = P2PWrapper.build(frameSeq, P2PCommand.UDP_FRAME_RESET);
+                messageProcessor.sendResponse(channel, datagramPacket.sender(), resetUdpFrame, magicIn);
+            } catch (Exception ignored) {
+            }
+            return true;
+        }
+        try {
+            P2PWrapper request = SerializationUtil.deserialize(P2PWrapper.class, assembly.bytes);
+            if (request.getCommand() == P2PCommand.UDP_FRAME_ACK) {
+                messageProcessor.completeLastResponse(datagramPacket.sender());
+            } else if (messageProcessor instanceof ClientUdpMessageProcessor) {
+                sendFrameAck(ctx.channel(), datagramPacket.sender(), request.getSeq());
+            }
+            UdpReliabilityHandler reliabilityHandler = ctx.channel().attr(ChannelUtils.UDP_RELIABILITY_HANDLER).get();
+            boolean forward = request.getCommand() != P2PCommand.UDP_FRAME_ACK;
+            if (reliabilityHandler != null) {
+                forward = reliabilityHandler.handleDecodedMessage(ctx.channel(), datagramPacket.sender(), request);
+            }
+            if (forward) {
+                messageProcessor.processMessage(ctx, datagramPacket, request);
+            }
+        } catch (Exception ex) {
+            log.error("segment v2 resolve error:{}", ex.getMessage());
+        } finally {
+            segmentV2Assemblies.remove(frameSeq);
+        }
+        return true;
+    }
+
+    private SegmentAssembly getOrCreateSegmentV2Assembly(int frameSeq, int totalLen, int segCount, int fullHash) {
+        if (segmentV2Assemblies == null) {
+            segmentV2Assemblies = new HashMap<>();
+        }
+        SegmentAssembly existing = segmentV2Assemblies.get(frameSeq);
+        if (existing != null) {
+            if (existing.totalLen != totalLen || existing.segmentCount != segCount || existing.fullHash != fullHash) {
+                segmentV2Assemblies.remove(frameSeq);
+                return null;
+            }
+            return existing;
+        }
+        if (segmentV2Assemblies.size() > 64) {
+            segmentV2Assemblies.clear();
+        }
+        SegmentAssembly created = new SegmentAssembly(totalLen, segCount, fullHash);
+        segmentV2Assemblies.put(frameSeq, created);
+        return created;
+    }
+
+    private static final class SegmentAssembly {
+
+        final int totalLen;
+        final int segmentCount;
+        final int fullHash;
+        final byte[] bytes;
+        final boolean[] received;
+        int receivedCount;
+
+        SegmentAssembly(int totalLen, int segmentCount, int fullHash) {
+            this.totalLen = totalLen;
+            this.segmentCount = segmentCount;
+            this.fullHash = fullHash;
+            this.bytes = new byte[totalLen];
+            this.received = new boolean[segmentCount];
+        }
+
+        void addSegment(int index, int offset, int len, ByteBuf src) {
+            if (received[index]) {
+                src.skipBytes(len);
+                return;
+            }
+            src.readBytes(bytes, offset, len);
+            received[index] = true;
+            receivedCount++;
+        }
+
+        boolean isComplete() {
+            return receivedCount >= segmentCount;
+        }
     }
     
     /**

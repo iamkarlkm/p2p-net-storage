@@ -7,12 +7,16 @@ class Hand {
   final List<Uint8List> keyIds;
   final int maxFramePayload;
   final String clientId;
+  final String cryptoMode;
+  final Uint8List clientRandomKey;
 
   const Hand({
     required this.clientPubkeySpkiDer,
     required this.keyIds,
     required this.maxFramePayload,
     required this.clientId,
+    required this.cryptoMode,
+    required this.clientRandomKey,
   });
 }
 
@@ -24,6 +28,12 @@ Uint8List encodeHand(Hand h) {
   }
   w.writeUint32(3, h.maxFramePayload);
   w.writeString(4, h.clientId);
+  if (h.cryptoMode.isNotEmpty) {
+    w.writeString(5, h.cryptoMode);
+  }
+  if (h.clientRandomKey.isNotEmpty) {
+    w.writeBytesField(6, h.clientRandomKey);
+  }
   return w.takeBytes();
 }
 
@@ -33,6 +43,8 @@ Hand decodeHand(Uint8List bytes) {
   final keyIds = <Uint8List>[];
   var maxFramePayload = 0;
   var clientId = "";
+  var cryptoMode = "";
+  Uint8List clientRandomKey = Uint8List(0);
   while (!r.isEOF) {
     final t = r.readTag();
     switch (t.fieldNumber) {
@@ -64,6 +76,20 @@ Hand decodeHand(Uint8List bytes) {
         }
         clientId = r.readString();
         break;
+      case 5:
+        if (t.wireType != 2) {
+          r.skipField(t.wireType);
+          break;
+        }
+        cryptoMode = r.readString();
+        break;
+      case 6:
+        if (t.wireType != 2) {
+          r.skipField(t.wireType);
+          break;
+        }
+        clientRandomKey = Uint8List.fromList(r.readBytes());
+        break;
       default:
         r.skipField(t.wireType);
         break;
@@ -74,6 +100,8 @@ Hand decodeHand(Uint8List bytes) {
     keyIds: keyIds,
     maxFramePayload: maxFramePayload,
     clientId: clientId,
+    cryptoMode: cryptoMode,
+    clientRandomKey: clientRandomKey,
   );
 }
 
@@ -83,6 +111,8 @@ class HandAckPlain {
   final int offset;
   final int maxFramePayload;
   final int headerPolicyId;
+  final String cryptoMode;
+  final Uint8List serverRandomKey;
 
   const HandAckPlain({
     required this.sessionId,
@@ -90,6 +120,8 @@ class HandAckPlain {
     required this.offset,
     required this.maxFramePayload,
     required this.headerPolicyId,
+    required this.cryptoMode,
+    required this.serverRandomKey,
   });
 }
 
@@ -100,6 +132,12 @@ Uint8List encodeHandAckPlain(HandAckPlain a) {
   w.writeUint32(3, a.offset);
   w.writeUint32(4, a.maxFramePayload);
   w.writeUint32(5, a.headerPolicyId);
+  if (a.cryptoMode.isNotEmpty) {
+    w.writeString(6, a.cryptoMode);
+  }
+  if (a.serverRandomKey.isNotEmpty) {
+    w.writeBytesField(7, a.serverRandomKey);
+  }
   return w.takeBytes();
 }
 
@@ -110,6 +148,8 @@ HandAckPlain decodeHandAckPlain(Uint8List bytes) {
   var offset = 0;
   var maxFramePayload = 0;
   var headerPolicyId = 0;
+  var cryptoMode = "";
+  Uint8List serverRandomKey = Uint8List(0);
   while (!r.isEOF) {
     final t = r.readTag();
     switch (t.fieldNumber) {
@@ -148,6 +188,20 @@ HandAckPlain decodeHandAckPlain(Uint8List bytes) {
         }
         headerPolicyId = r.readVarint();
         break;
+      case 6:
+        if (t.wireType != 2) {
+          r.skipField(t.wireType);
+          break;
+        }
+        cryptoMode = r.readString();
+        break;
+      case 7:
+        if (t.wireType != 2) {
+          r.skipField(t.wireType);
+          break;
+        }
+        serverRandomKey = Uint8List.fromList(r.readBytes());
+        break;
       default:
         r.skipField(t.wireType);
         break;
@@ -159,6 +213,8 @@ HandAckPlain decodeHandAckPlain(Uint8List bytes) {
     offset: offset,
     maxFramePayload: maxFramePayload,
     headerPolicyId: headerPolicyId,
+    cryptoMode: cryptoMode,
+    serverRandomKey: serverRandomKey,
   );
 }
 

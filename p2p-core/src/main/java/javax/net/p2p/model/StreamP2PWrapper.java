@@ -28,6 +28,10 @@ public class StreamP2PWrapper<T> extends P2PWrapper<T> {
     public final static <T> StreamP2PWrapper<T> buildStream(int seq,boolean canceled) {
         StreamP2PWrapper<T> t = ConcurrentObjectPool.get().poll();
         t.seq = seq;
+        t.command = null;
+        t.data = null;
+        t.index = 0;
+        t.completed = false;
         t.canceled = canceled;
         return t;
     }
@@ -38,6 +42,8 @@ public class StreamP2PWrapper<T> extends P2PWrapper<T> {
         t.command = command;
         t.data = data;
         t.index = index;
+        t.completed = false;
+        t.canceled = false;
         return t;
     }
         
@@ -48,6 +54,7 @@ public class StreamP2PWrapper<T> extends P2PWrapper<T> {
         t.data = data;
         t.index = index;
         t.completed = completed;
+        t.canceled = false;
         return t;
     }
 
@@ -68,6 +75,9 @@ public class StreamP2PWrapper<T> extends P2PWrapper<T> {
         seq = 0;
         command = null;
         data = null;
+        index = 0;
+        completed = false;
+        canceled = false;
     }
     
     @Override

@@ -2,6 +2,11 @@ package javax.net.p2p.utils;
 
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.Locale;
@@ -131,7 +136,42 @@ public class DateUtil {
 		return new SimpleDateFormat(DATETIME_FORMAT).format(date);
 	}
 
-    public static Date parseEnglishDate(String text) {
+       
+    public static Date convert(Object val) {
+       if(val instanceof Long){
+           return new Date((Long)val);
+       }else if(val instanceof Date){
+           return (Date) val;
+       }else{
+           return convertDate(val.toString());
+       }
+    }
+    
+     public static Date toDate(LocalDate localDate) {
+        return Date.from(localDate.atStartOfDay().atZone(ZoneId.systemDefault()).toInstant());
+    }
+ 
+    public static Date toDate(LocalDateTime localDateTime) {
+        return Date.from(localDateTime.atZone(ZoneId.systemDefault()).toInstant());
+    }
+ 
+    public static LocalDate toLocalDate(Date date) {
+        return Instant.ofEpochMilli(date.getTime()).atZone(ZoneId.systemDefault()).toLocalDate();
+    }
+ 
+    public static LocalDateTime toLocalDateTime(Date date) {
+        return Instant.ofEpochMilli(date.getTime()).atZone(ZoneId.systemDefault()).toLocalDateTime();
+    }
+    
+    public static Date toDate(LocalTime localTime){
+        return java.sql.Timestamp.valueOf(localTime.atDate(LocalDate.now()));
+    }
+    
+    public static LocalTime toLocalTime(Date date){
+        return Instant.ofEpochMilli(date.getTime()).atZone(ZoneId.systemDefault()).toLocalDateTime().toLocalTime();
+    }
+
+    public static Date convertEnglishDate(String text) {
         Date date = null;
         for (SimpleDateFormat sdf : englishDateFormats) {
             if (sdf.toPattern().length() == text.length()) {
@@ -143,6 +183,14 @@ public class DateUtil {
             }
         }
         return date;
+    }
+
+    public static Date convertDate(String text) {
+        return parse(text);
+    }
+
+    public static Date parseEnglishDate(String text) {
+        return convertEnglishDate(text);
     }
 
     /**

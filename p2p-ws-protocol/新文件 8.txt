@@ -1,0 +1,13 @@
+功能	日期	状态
+滑动窗口限流	2026-04-30	已提交
+小说发布(ainovel)	2026-04-30	已提交
+WebSocket JWT认证	2026-04-30	已提交
+但以下功能还没记录（未提交的文件）：
+功能	文件
+选题方案状态管理	V28, NovelTopicProposalRepository
+积分系统	PointsService, PointsUsageEntity
+模型限流增强	ModelRateLimiter, SlidingWindowCounter
+用户类型默认配置	UserTypeDefaultConfigEntity/Repository/Service
+章节索引规范化	V1.23, V1.24
+选题JSON解析	NovelTopicProposalEntity
+小说发布增强	NovelPublishService

@@ -10,10 +10,11 @@ extern "C" {
 #endif
 
 int p2pws_msg_encode_wrapper(int32_t seq, int32_t command, const uint8_t* data, size_t data_len, p2pws_buf_t* out);
+int p2pws_msg_encode_stream_wrapper(int32_t seq, int32_t command, const uint8_t* data, size_t data_len, int32_t index, int completed, int canceled, p2pws_buf_t* out);
 
-int p2pws_msg_encode_hand(const uint8_t* client_pub_spki_der, size_t client_pub_len, const uint8_t* key_id32, uint32_t max_frame_payload, const char* client_id, p2pws_buf_t* out);
+int p2pws_msg_encode_hand(const uint8_t* client_pub_spki_der, size_t client_pub_len, const uint8_t* key_id32, uint32_t max_frame_payload, const char* client_id, const char* crypto_mode, const uint8_t* client_random_key, size_t client_random_key_len, p2pws_buf_t* out);
 
-int p2pws_msg_encode_hand_ack_plain(const uint8_t session_id16[16], const uint8_t* selected_key_id32, uint32_t offset, uint32_t max_frame_payload, uint32_t header_policy_id, p2pws_buf_t* out);
+int p2pws_msg_encode_hand_ack_plain(const uint8_t session_id16[16], const uint8_t* selected_key_id32, uint32_t offset, uint32_t max_frame_payload, uint32_t header_policy_id, const char* crypto_mode, const uint8_t* server_random_key, size_t server_random_key_len, p2pws_buf_t* out);
 
 int p2pws_msg_encode_center_hello_body(uint64_t node_id64, const uint8_t* pub_spki_der, size_t pub_len, const char* reported_transport, const char* reported_addr, uint32_t max_frame_payload, uint32_t magic, uint32_t version, uint32_t flags_plain, uint32_t flags_encrypted, uint64_t timestamp_ms, const char* crypto_mode, p2pws_buf_t* out);
 

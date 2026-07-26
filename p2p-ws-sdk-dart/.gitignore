@@ -1,0 +1,6 @@
+# brain:begin gitignore-session
+.brain/session.json
+.brain/sessions/
+.brain/policy.override.yaml
+.brain/state/
+# brain:end gitignore-session

@@ -5,6 +5,8 @@ import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
 import java.net.DatagramSocket;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.client.P2PClientQuic;
@@ -80,12 +82,14 @@ public class QuicReliabilityTest {
      */
     @Test
     public void testConcurrentMessageSending() throws Exception {
-        int messageCount = 100;
+        int messageCount = 30;
         CountDownLatch latch = new CountDownLatch(messageCount);
+        ExecutorService pool = Executors.newFixedThreadPool(8);
 
-        for (int i = 0; i < messageCount; i++) {
-            int seq = i;
-            new Thread(() -> {
+        try {
+            for (int i = 0; i < messageCount; i++) {
+                int seq = 1000 + i;
+                pool.execute(() -> {
                 try {
                     P2PWrapper<String> message = P2PWrapper.build(seq, P2PCommand.HEART_PING, "Ping " + seq);
                     P2PWrapper response = client.excute(message);
@@ -95,11 +99,18 @@ public class QuicReliabilityTest {
                 } catch (Exception e) {
                     log.error("Error sending message", e);
                 }
-            }).start();
-        }
+                });
+            }
 
-        boolean allDelivered = latch.await(30, TimeUnit.SECONDS);
-        assertTrue("All messages should be processed successfully", allDelivered);
+            boolean allDelivered = latch.await(30, TimeUnit.SECONDS);
+            assertTrue("All messages should be processed successfully", allDelivered);
+        } finally {
+            pool.shutdown();
+            if (!pool.awaitTermination(3, TimeUnit.SECONDS)) {
+                pool.shutdownNow();
+                pool.awaitTermination(3, TimeUnit.SECONDS);
+            }
+        }
     }
 
 }

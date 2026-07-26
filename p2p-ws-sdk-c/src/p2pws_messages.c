@@ -15,33 +15,70 @@ int p2pws_msg_encode_wrapper(int32_t seq, int32_t command, const uint8_t* data, 
   if (r != 0) return r;
   r = p2pws_pb_write_varint_i32(out, command);
   if (r != 0) return r;
-  if (data && data_len) {
-    r = p2pws_pb_write_bytes(out, 3, data, data_len);
-    if (r != 0) return r;
-  } else {
-    r = p2pws_pb_write_bytes(out, 3, "", 0);
-    if (r != 0) return r;
-  }
+  r = p2pws_pb_write_key(out, 3, 3);
+  if (r != 0) return r;
+  r = p2pws_pb_write_bytes(out, 11, data ? data : "", data ? data_len : 0);
+  if (r != 0) return r;
+  r = p2pws_pb_write_key(out, 3, 4);
+  if (r != 0) return r;
   return 0;
 }
 
-int p2pws_msg_encode_hand(const uint8_t* client_pub_spki_der, size_t client_pub_len, const uint8_t* key_id32, uint32_t max_frame_payload, const char* client_id, p2pws_buf_t* out) {
-  if (!out || !client_pub_spki_der || !key_id32) return -1;
+int p2pws_msg_encode_stream_wrapper(int32_t seq, int32_t command, const uint8_t* data, size_t data_len, int32_t index, int completed, int canceled, p2pws_buf_t* out) {
+  if (!out) return -1;
+  p2pws_pb_reset(out);
+  int r = p2pws_pb_write_key(out, 1, 0);
+  if (r != 0) return r;
+  r = p2pws_pb_write_varint_i32(out, seq);
+  if (r != 0) return r;
+  r = p2pws_pb_write_key(out, 2, 0);
+  if (r != 0) return r;
+  r = p2pws_pb_write_varint_i32(out, command);
+  if (r != 0) return r;
+  r = p2pws_pb_write_key(out, 3, 3);
+  if (r != 0) return r;
+  r = p2pws_pb_write_bytes(out, 11, data ? data : "", data ? data_len : 0);
+  if (r != 0) return r;
+  r = p2pws_pb_write_key(out, 3, 4);
+  if (r != 0) return r;
+  r = p2pws_pb_write_key(out, 4, 0);
+  if (r != 0) return r;
+  r = p2pws_pb_write_varint_i32(out, index);
+  if (r != 0) return r;
+  r = p2pws_pb_write_bool(out, 5, completed ? 1 : 0);
+  if (r != 0) return r;
+  r = p2pws_pb_write_bool(out, 6, canceled ? 1 : 0);
+  if (r != 0) return r;
+  return 0;
+}
+
+int p2pws_msg_encode_hand(const uint8_t* client_pub_spki_der, size_t client_pub_len, const uint8_t* key_id32, uint32_t max_frame_payload, const char* client_id, const char* crypto_mode, const uint8_t* client_random_key, size_t client_random_key_len, p2pws_buf_t* out) {
+  if (!out || !client_pub_spki_der) return -1;
   p2pws_pb_reset(out);
   int r = p2pws_pb_write_bytes(out, 1, client_pub_spki_der, client_pub_len);
   if (r != 0) return r;
-  r = p2pws_pb_write_bytes(out, 2, key_id32, 32);
-  if (r != 0) return r;
+  if (key_id32) {
+    r = p2pws_pb_write_bytes(out, 2, key_id32, 32);
+    if (r != 0) return r;
+  }
   r = p2pws_pb_write_key(out, 3, 0);
   if (r != 0) return r;
   r = p2pws_pb_write_varint_u64(out, max_frame_payload);
   if (r != 0) return r;
   r = p2pws_pb_write_string(out, 4, client_id ? client_id : "");
   if (r != 0) return r;
+  if (crypto_mode && crypto_mode[0]) {
+    r = p2pws_pb_write_string(out, 5, crypto_mode);
+    if (r != 0) return r;
+  }
+  if (client_random_key && client_random_key_len) {
+    r = p2pws_pb_write_bytes(out, 6, client_random_key, client_random_key_len);
+    if (r != 0) return r;
+  }
   return 0;
 }
 
-int p2pws_msg_encode_hand_ack_plain(const uint8_t session_id16[16], const uint8_t* selected_key_id32, uint32_t offset, uint32_t max_frame_payload, uint32_t header_policy_id, p2pws_buf_t* out) {
+int p2pws_msg_encode_hand_ack_plain(const uint8_t session_id16[16], const uint8_t* selected_key_id32, uint32_t offset, uint32_t max_frame_payload, uint32_t header_policy_id, const char* crypto_mode, const uint8_t* server_random_key, size_t server_random_key_len, p2pws_buf_t* out) {
   if (!out || !session_id16 || !selected_key_id32) return -1;
   p2pws_pb_reset(out);
   int r = p2pws_pb_write_bytes(out, 1, session_id16, 16);
@@ -60,6 +97,14 @@ int p2pws_msg_encode_hand_ack_plain(const uint8_t session_id16[16], const uint8_
   if (r != 0) return r;
   r = p2pws_pb_write_varint_u64(out, header_policy_id);
   if (r != 0) return r;
+  if (crypto_mode && crypto_mode[0]) {
+    r = p2pws_pb_write_string(out, 6, crypto_mode);
+    if (r != 0) return r;
+  }
+  if (server_random_key && server_random_key_len) {
+    r = p2pws_pb_write_bytes(out, 7, server_random_key, server_random_key_len);
+    if (r != 0) return r;
+  }
   return 0;
 }
 

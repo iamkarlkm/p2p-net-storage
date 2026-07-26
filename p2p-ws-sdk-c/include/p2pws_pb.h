@@ -20,6 +20,15 @@ typedef struct p2pws_wrapper_view {
   p2pws_pb_slice_t data;
 } p2pws_wrapper_view_t;
 
+typedef struct p2pws_stream_wrapper_view {
+  int32_t seq;
+  int32_t command;
+  p2pws_pb_slice_t data;
+  int32_t index;
+  int completed;
+  int canceled;
+} p2pws_stream_wrapper_view_t;
+
 void p2pws_pb_reset(p2pws_buf_t* b);
 
 int p2pws_pb_write_varint_u64(p2pws_buf_t* b, uint64_t v);
@@ -31,6 +40,7 @@ int p2pws_pb_write_fixed64(p2pws_buf_t* b, uint32_t field_no, uint64_t v);
 int p2pws_pb_write_bool(p2pws_buf_t* b, uint32_t field_no, int v);
 
 int p2pws_pb_decode_wrapper(const uint8_t* p, size_t n, p2pws_wrapper_view_t* out);
+int p2pws_pb_decode_stream_wrapper(const uint8_t* p, size_t n, p2pws_stream_wrapper_view_t* out);
 
 typedef struct p2pws_hand_ack_plain_view {
   uint32_t offset;
@@ -38,6 +48,8 @@ typedef struct p2pws_hand_ack_plain_view {
   uint32_t header_policy_id;
   p2pws_pb_slice_t selected_key_id;
   p2pws_pb_slice_t session_id;
+  char crypto_mode[64];
+  p2pws_pb_slice_t server_random_key;
 } p2pws_hand_ack_plain_view_t;
 
 typedef struct p2pws_hand_view {
@@ -45,6 +57,8 @@ typedef struct p2pws_hand_view {
   p2pws_pb_slice_t key_id;
   uint32_t max_frame_payload;
   char client_id[64];
+  char crypto_mode[64];
+  p2pws_pb_slice_t client_random_key;
 } p2pws_hand_view_t;
 
 typedef struct p2pws_peer_hello_view {

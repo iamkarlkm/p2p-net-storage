@@ -8,14 +8,20 @@ client:
   serverPublicKey: ""
 server:
   privateKey: ""
+  clientPublicKeyTemplate: "client-public-keys/{userIdPrefix2}/{userId}.pub"
   clientPublicKeys: {}
-  allowCommands:
-    example-user-id:
-      - HAND
-      - LOGIN
-      - ECHO
-      - DB_ENTITY_PUT
-      - DB_ENTITY_GET
-      - DB_ENTITY_REMOVE
-      - DB_ENTITY_EXISTS
-      - DB_ENTITY_QUERY_IDS
+  roles:
+    core_compat:
+      allowCommands:
+        - ECHO
+      allowCategories:
+        - RPC
+    dsdb_admin:
+      allowCategories:
+        - DS_DB
+  defaultRoles:
+    - core_compat
+  roleBindings:
+    - match: "admin-*"
+      roles:
+        - dsdb_admin

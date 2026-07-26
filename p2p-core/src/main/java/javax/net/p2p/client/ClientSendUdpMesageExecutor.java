@@ -37,6 +37,7 @@ import lombok.extern.slf4j.Slf4j;
 public class ClientSendUdpMesageExecutor extends ClientSendMesageExecutor {
     
     private InetSocketAddress remote;//udp 対端地址可能变动,非tcp一一对应,发送消息前校验
+    private static final int SEGMENT_V2_MARKER = -2;
 
     private ClientSendUdpMesageExecutor(int queueSize) {
         super(queueSize);
@@ -142,7 +143,8 @@ public class ClientSendUdpMesageExecutor extends ClientSendMesageExecutor {
     public ChannelFuture writeAndFlush(Channel channel, P2PWrapper request) throws InterruptedException {
         InetSocketAddress remoteAddress = (InetSocketAddress) channel.remoteAddress();
         UdpReliabilityHandler reliabilityHandler = channel.attr(ChannelUtils.UDP_RELIABILITY_HANDLER).get();
-        if (remoteAddress != null && reliabilityHandler != null && reliabilityHandler.isEnabled()
+        boolean useReliability = Boolean.getBoolean("p2p.udp.reliability.enabled");
+        if (useReliability && remoteAddress != null && reliabilityHandler != null && reliabilityHandler.isEnabled()
             && request.getCommand() != P2PCommand.UDP_RELIABILITY_ACK) {
             int seq = reliabilityHandler.sendReliableMessage(channel, remoteAddress, request);
             if (seq >= 0) {
@@ -156,31 +158,57 @@ public class ClientSendUdpMesageExecutor extends ClientSendMesageExecutor {
         int hash = XXHashUtil.hash32(data);
         //System.out.println(request.getSeq() + " data:" + data.length + " hash:" + hash);
 
-//        ByteBuf buffer = SerializationUtil.serializeToByteBuf(request, magicChannel);
-        ByteBuf buffer = SerializationUtil.tryGetDirectBuffer(data.length + 12);
-        buffer.writeInt(data.length);
-        buffer.writeInt(magicChannel);
-        buffer.writeInt(hash);//写入哈希种子
-        buffer.writeBytes(data);
-         ChannelFuture cf = null;
+        ChannelFuture cf = null;
         try {
             if (log.isDebugEnabled()) {
                 log.debug("queue size:{}", this.requestQueue.size());
                 log.debug("request:{}" + request);
             }
-            int length = buffer.readableBytes();
             
             // 优化UDP分片逻辑，考虑MTU限制（通常1500字节，减去IP和UDP头约1472字节）
             // 使用更小的分片大小，避免IP分片
             int maxUdpPayloadSize = 1472; // 考虑IP和UDP头的MTU限制
             int udpLimit = Math.min(P2PConfig.UDP_TRANSPORT_LIMIT_SIZE, maxUdpPayloadSize);
-            
-            // 分包发送，避免UDP数据包过大导致IP分片
-            int rest = length % udpLimit;
-            int count = length / udpLimit;
-            
-            int start = buffer.readerIndex();
+            boolean v2Enabled = Boolean.parseBoolean(System.getProperty("p2p.udp.segment.v2.enabled", "true"));
+            int totalFrameBytes = data.length + 12;
+            if (v2Enabled && totalFrameBytes > udpLimit) {
+                int segmentHeaderBytes = 12 + 20;
+                int segPayloadLimit = udpLimit - segmentHeaderBytes;
+                int totalLen = data.length;
+                if (segPayloadLimit <= 0 || totalLen <= 0) return channel.newFailedFuture(new IllegalStateException("udpLimit too small for segment v2"));
+                int segCount = (totalLen + segPayloadLimit - 1) / segPayloadLimit;
+                for (int i = 0; i < segCount; i++) {
+                    int off = i * segPayloadLimit;
+                    int len = Math.min(segPayloadLimit, totalLen - off);
+                    ByteBuf out = SerializationUtil.tryGetDirectBuffer(segmentHeaderBytes + len);
+                    out.writeInt(SEGMENT_V2_MARKER);
+                    out.writeInt(magicChannel);
+                    out.writeInt(hash);
+                    out.writeInt(totalLen);
+                    out.writeInt(off);
+                    out.writeShort(i);
+                    out.writeShort(segCount);
+                    out.writeInt(len);
+                    out.writeInt(request.getSeq());
+                    out.writeBytes(data, off, len);
+                    cf = channel.writeAndFlush(new DatagramPacket(out, remoteAddress));
+                    cf.sync();
+                }
+                return cf;
+            }
+
+            ByteBuf buffer = SerializationUtil.tryGetDirectBuffer(totalFrameBytes);
             try {
+                buffer.writeInt(data.length);
+                buffer.writeInt(magicChannel);
+                buffer.writeInt(hash);//写入哈希种子
+                buffer.writeBytes(data);
+                int length = buffer.readableBytes();
+            
+                // 分包发送，避免UDP数据包过大导致IP分片
+                int rest = length % udpLimit;
+                int count = length / udpLimit;
+                int start = buffer.readerIndex();
                 for (int i = 0; i < count; i++) {
                     ByteBuf slice = buffer.retainedSlice(start + i * udpLimit, udpLimit);
                     cf = channel.writeAndFlush(new DatagramPacket(slice, remoteAddress));

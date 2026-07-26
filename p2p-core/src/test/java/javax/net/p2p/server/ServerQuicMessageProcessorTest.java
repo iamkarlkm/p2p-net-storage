@@ -225,28 +225,35 @@ public class ServerQuicMessageProcessorTest {
             StreamCollectRequest.class,
             StreamCollectResponse.class,
             context -> {
-                List<String> messages = new ArrayList<>();
-                return new javax.net.p2p.rpc.api.RpcClientStreamSession<>() {
+                class Session implements javax.net.p2p.rpc.api.RpcClientStreamSession<StreamCollectRequest, StreamCollectResponse> {
+                    private final javax.net.p2p.rpc.model.RpcRequestContext ctx;
+                    private final List<String> messages = new ArrayList<>();
+
+                    private Session(javax.net.p2p.rpc.model.RpcRequestContext ctx) {
+                        this.ctx = ctx;
+                    }
+
                     @Override
                     public void onNext(StreamCollectRequest request) {
-                        context.putResponseHeader("x-rpc-stage", "quic-client-stream");
+                        ctx.putResponseHeader("x-rpc-stage", "quic-client-stream");
                         messages.add(request.getMessage());
                     }
 
                     @Override
                     public StreamCollectResponse onCompleted() {
-                        context.putResponseTrailer("x-rpc-finish", "quic-stream-done");
-                        context.putResponseStatusDetail("quic-stream", "ok");
+                        ctx.putResponseTrailer("x-rpc-finish", "quic-stream-done");
+                        ctx.putResponseStatusDetail("quic-stream", "ok");
                         return StreamCollectResponse.newBuilder()
                             .setCount(messages.size())
                             .setJoined(
-                                context.traceId() + "|" + context.parentSpanId() + "|" + context.callerNodeId() + "|" + context.callerUserId()
-                                    + "|" + context.headers().get("tenant")
+                                ctx.traceId() + "|" + ctx.parentSpanId() + "|" + ctx.callerNodeId() + "|" + ctx.callerUserId()
+                                    + "|" + ctx.headers().get("tenant")
                             )
                             .addAllMessages(messages)
                             .build();
                     }
-                };
+                }
+                return new Session(context);
             },
             null
         );

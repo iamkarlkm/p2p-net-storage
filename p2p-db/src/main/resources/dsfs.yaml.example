@@ -1,0 +1,3 @@
+namespaceDir: "./data/dsfs/ns1"
+atimeEnabled: false
+tagsInitialRingCap: 64

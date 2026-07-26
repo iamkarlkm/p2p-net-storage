@@ -29,7 +29,7 @@ public class InheritedMetadata implements DsTableByteBufferSerializable{
     int uid;//owner 用户ID。
     int roleId;//owner 角色ID。
     
-    HashSet<Long> acls = new HashSet();//权限列表。采用默认拒绝模式。只要不在这个列表中的都拒绝。高32位掩码。区分组ID,用户ID和角色ID。
+    HashSet<Long> acls = new HashSet<>();//权限列表。采用默认拒绝模式。只要不在这个列表中的都拒绝。高32位掩码。区分组ID,用户ID和角色ID。
     /**
      *  //  acls 高32位掩码 位定义
     public static final short IFLAG_USER = 0x000100000000;   // bit0 用户ID。
@@ -47,14 +47,49 @@ public class InheritedMetadata implements DsTableByteBufferSerializable{
         this.id = id;
     }
 
+    /**
+     * 将继承元数据序列化为 ByteBuffer。
+     *
+     * <p>格式：id(long) + flags(int) + gid(int) + uid(int) + roleId(int) + aclCount(int) + acls[](long[])</p>
+     */
     @Override
     public ByteBuffer toBytes() {
-        throw new UnsupportedOperationException("Not supported yet."); // Generated from nbfs://nbhost/SystemFileSystem/Templates/Classes/Code/GeneratedMethodBody
+        int aclCount = acls != null ? acls.size() : 0;
+        int totalSize = 28 + aclCount * 8;
+        ByteBuffer buffer = ByteBuffer.allocate(totalSize);
+        buffer.putLong(id != null ? id : 0L);
+        buffer.putInt(flags);
+        buffer.putInt(gid);
+        buffer.putInt(uid);
+        buffer.putInt(roleId);
+        buffer.putInt(aclCount);
+        if (acls != null) {
+            for (Long acl : acls) {
+                buffer.putLong(acl != null ? acl : 0L);
+            }
+        }
+        buffer.flip();
+        return buffer;
     }
 
+    /**
+     * 从 ByteBuffer 反序列化继承元数据。
+     */
     @Override
     public void load(ByteBuffer data) {
-        throw new UnsupportedOperationException("Not supported yet."); // Generated from nbfs://nbhost/SystemFileSystem/Templates/Classes/Code/GeneratedMethodBody
+        if (data == null || data.remaining() < 28) {
+            throw new IllegalArgumentException("data is too small for InheritedMetadata, need at least 28 bytes");
+        }
+        this.id = data.getLong();
+        this.flags = data.getInt();
+        this.gid = data.getInt();
+        this.uid = data.getInt();
+        this.roleId = data.getInt();
+        int aclCount = data.getInt();
+        this.acls = new HashSet<>();
+        for (int i = 0; i < aclCount; i++) {
+            this.acls.add(data.getLong());
+        }
     }
     
 }

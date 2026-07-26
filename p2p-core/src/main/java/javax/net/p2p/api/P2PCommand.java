@@ -437,6 +437,82 @@ public enum P2PCommand {
     DB_ENTITY_QUERY_IDS(24008, P2PServiceCategory.DS_DB),
 
     R_OK_DB_ENTITY_QUERY_IDS(24009, P2PServiceCategory.DS_DB),
+
+    DB_META_GET(24010, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_META_GET(24011, P2PServiceCategory.DS_DB),
+
+    DB_META_PUT(24012, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_META_PUT(24013, P2PServiceCategory.DS_DB),
+
+    DB_ROW_ALLOC(24014, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ROW_ALLOC(24015, P2PServiceCategory.DS_DB),
+
+    DB_ROW_EXISTS(24016, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ROW_EXISTS(24017, P2PServiceCategory.DS_DB),
+
+    DB_ROW_REMOVE(24018, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ROW_REMOVE(24019, P2PServiceCategory.DS_DB),
+
+    DB_ROW_LIST_IDS(24020, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ROW_LIST_IDS(24021, P2PServiceCategory.DS_DB),
+
+    DB_COL_PUT(24022, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_COL_PUT(24023, P2PServiceCategory.DS_DB),
+
+    DB_COL_GET(24024, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_COL_GET(24025, P2PServiceCategory.DS_DB),
+
+    DB_COL_REMOVE(24026, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_COL_REMOVE(24027, P2PServiceCategory.DS_DB),
+
+    DB_ROW_PUT(24028, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ROW_PUT(24029, P2PServiceCategory.DS_DB),
+
+    DB_ROW_GET(24030, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ROW_GET(24031, P2PServiceCategory.DS_DB),
+
+    DB_ROW_QUERY_IDS(24032, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ROW_QUERY_IDS(24033, P2PServiceCategory.DS_DB),
+
+    DB_INDEX_CREATE(24034, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_INDEX_CREATE(24035, P2PServiceCategory.DS_DB),
+
+    DB_INDEX_DROP(24036, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_INDEX_DROP(24037, P2PServiceCategory.DS_DB),
+
+    DB_INDEX_LIST(24038, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_INDEX_LIST(24039, P2PServiceCategory.DS_DB),
+
+    DB_INDEX_INFO(24040, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_INDEX_INFO(24041, P2PServiceCategory.DS_DB),
+
+    DB_ROW_COUNT(24042, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ROW_COUNT(24043, P2PServiceCategory.DS_DB),
+
+    DB_ROW_EXISTS_BY_QUERY(24044, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ROW_EXISTS_BY_QUERY(24045, P2PServiceCategory.DS_DB),
+
+    DB_ROW_QUERY_IDS_STREAM(24046, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ROW_QUERY_IDS_STREAM(24047, P2PServiceCategory.DS_DB),
     
     DATA_TRANSFER(21000, P2PServiceCategory.DATA_TRANSFER),
 

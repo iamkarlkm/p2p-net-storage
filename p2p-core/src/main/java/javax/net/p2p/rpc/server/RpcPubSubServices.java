@@ -32,7 +32,10 @@ public final class RpcPubSubServices {
             PubSubPublishResponse.class,
             (context, request) -> {
                 boolean accepted = RpcPubSubBroker.isTopicAllowed(request.getTopic());
-                int subscribers = accepted ? RpcPubSubBroker.publish(request.getTopic(), request.getMessage()) : 0;
+                if (accepted) {
+                    RpcPubSubBroker.publish(request.getTopic(), request.getMessage());
+                }
+                int subscribers = accepted ? RpcPubSubBroker.subscriberCount(request.getTopic()) : 0;
                 return PubSubPublishResponse.newBuilder()
                     .setAccepted(accepted)
                     .setSubscriberCount(subscribers)
