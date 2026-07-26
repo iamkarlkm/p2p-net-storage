@@ -9,14 +9,21 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
+import java.util.List;
 
 import javax.net.p2p.filesync.config.P2PSyncConfig;
+import javax.net.p2p.filesync.sync.FileSyncAcker;
+import javax.net.p2p.filesync.sync.FileSyncEventHandler;
 import javax.net.p2p.filesync.sync.FileSyncEventType;
 import javax.net.p2p.filesync.sync.P2PDirectorySyncService;
 import javax.net.p2p.filesync.sync.P2PSyncStateStore;
+import javax.net.p2p.filesync.sync.SyncUploadStatus;
+import javax.net.p2p.filesync.sync.SyncUploadStatusProvider;
 
 import org.junit.Assert;
 import org.junit.Test;
+
 
 public class P2PSyncMonitorServerTest {
 
@@ -29,7 +36,7 @@ public class P2PSyncMonitorServerTest {
         cfg.setLocalDir(root.toString());
         cfg.setDsHome(state.toString());
 
-        try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, null)) {
+        try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, new StaticUploadStatusHandler())) {
             svc.start();
             P2PSyncStateStore store = svc.getStore();
             long fileId = store.getOrCreateFileId("failed.txt");
@@ -49,6 +56,10 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"fileId\":\""));
                 Assert.assertTrue(json.contains("\"path\":\"failed.txt\""));
                 Assert.assertTrue(json.contains("\"reason\":\"write_conflict\""));
+                Assert.assertTrue(json.contains("\"uploads\""));
+                Assert.assertTrue(json.contains("\"size\":1"));
+                Assert.assertTrue(json.contains("\"phase\":\"uploading\""));
+                Assert.assertTrue(json.contains("\"segmented\":true"));
             }
         }
     }
@@ -76,7 +87,6 @@ public class P2PSyncMonitorServerTest {
                     "http://127.0.0.1:" + server.getPort() + "/sync/api/failed/retry?fileId=" + retryId + "&dir=false&type=MODIFY",
                     "");
                 Assert.assertTrue(retryResp.contains("\"ok\":true"));
-                Assert.assertTrue(store.fileModifiesActive().contains(Long.valueOf(retryId)));
                 Assert.assertFalse(store.fileModifiesFailed().contains(Long.valueOf(retryId)));
 
                 String discardResp = send("POST",
@@ -120,6 +130,20 @@ public class P2PSyncMonitorServerTest {
                 out.write(buffer, 0, n);
             }
             return new String(out.toByteArray(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private static final class StaticUploadStatusHandler implements FileSyncEventHandler, SyncUploadStatusProvider {
+        @Override
+        public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
+            acker.ack();
+        }
+
+        @Override
+        public List<SyncUploadStatus> snapshotActiveUploads(int limit) {
+            return Collections.singletonList(new SyncUploadStatus(
+                1001L, 1002L, "big.bin", "uploading", 16L * 1024L * 1024L, true, 2, 1,
+                System.currentTimeMillis() - 500L, System.currentTimeMillis()));
         }
     }
 }

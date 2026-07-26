@@ -2,16 +2,20 @@ package javax.net.p2p.filesync.sync.rpc;
 
 import com.google.protobuf.Message;
 import java.io.File;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.filesync.sync.FileSyncEventType;
+import javax.net.p2p.filesync.sync.SyncUploadStatus;
 import javax.net.p2p.interfaces.P2PFileService;
 import javax.net.p2p.model.FileDataModel;
 import javax.net.p2p.model.FileSegmentsDataModel;
@@ -98,10 +102,92 @@ public class RpcSyncEventHandlerTest {
         Assert.assertNotNull(fileService.md5);
     }
 
+    @Test
+    public void shouldExposeActiveSegmentedUploadStatus() throws Exception {
+        Path localFile = Files.createTempFile("p2p_sync_rpc_large_", ".bin");
+        Files.write(localFile, new byte[P2PConfig.DATA_BLOCK_SIZE + 1024]);
+
+        RpcClient rpcClient = new RpcClient() {
+            @Override
+            public <Req extends Message, Resp extends Message> Resp unary(String service, String method, Req request, Class<Resp> responseType, RpcCallOptions options) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public <Req extends Message, Resp extends Message> RpcUnaryResult<Resp> unaryDetailed(String service, String method, Req request, Class<Resp> responseType, RpcCallOptions options) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            @SuppressWarnings("unchecked")
+            public <Req extends Message, Resp extends Message> CompletableFuture<Resp> unaryAsync(String service, String method, Req request, Class<Resp> responseType, RpcCallOptions options) {
+                if (SyncRpcServices.APPLY_EVENT.equals(method)) {
+                    SyncEventRequest syncReq = (SyncEventRequest) request;
+                    return CompletableFuture.completedFuture((Resp) SyncEventAck.newBuilder()
+                        .setOk(true)
+                        .setNeedsUpload(true)
+                        .setStoreId(9)
+                        .setEventUid(syncReq.getEventUid())
+                        .build());
+                }
+                if (SyncRpcServices.FINALIZE_EVENT.equals(method)) {
+                    SyncFinalizeRequest syncReq = (SyncFinalizeRequest) request;
+                    return CompletableFuture.completedFuture((Resp) SyncEventAck.newBuilder()
+                        .setOk(true)
+                        .setEventUid(syncReq.getEventUid())
+                        .build());
+                }
+                CompletableFuture<Resp> future = new CompletableFuture<Resp>();
+                future.completeExceptionally(new IllegalArgumentException("unexpected method: " + method));
+                return future;
+            }
+        };
+
+        FakeFileService fileService = new FakeFileService();
+        fileService.simulateSegmentedUpload();
+        RpcSyncEventHandler handler = new RpcSyncEventHandler(rpcClient, fileService, 12L);
+
+        CountDownLatch ackLatch = new CountDownLatch(1);
+        handler.handle(FileSyncEventType.MODIFY, 2L, "big.bin", localFile, false, new javax.net.p2p.filesync.sync.FileSyncAcker() {
+            @Override
+            public void ack() {
+                ackLatch.countDown();
+            }
+
+            @Override
+            public void retry() {
+            }
+        });
+
+        Assert.assertTrue(fileService.uploadStarted.await(5, TimeUnit.SECONDS));
+        SyncUploadStatus status = waitForUploadStatus(handler, 5, TimeUnit.SECONDS);
+        Assert.assertEquals("big.bin", status.getPath());
+        Assert.assertTrue(status.isSegmented());
+        Assert.assertEquals(2, status.getTotalSegments());
+        waitUntilUploadedSegments(handler, 1, 5, TimeUnit.SECONDS);
+
+        fileService.releaseUpload.countDown();
+        Assert.assertTrue(ackLatch.await(5, TimeUnit.SECONDS));
+        waitUntilNoUploads(handler, 5, TimeUnit.SECONDS);
+        Assert.assertTrue(handler.snapshotActiveUploads(10).isEmpty());
+        handler.close();
+    }
+
     private static final class FakeFileService implements P2PFileService {
         private String path;
         private long length;
         private String md5;
+        private CountDownLatch uploadStarted;
+        private CountDownLatch releaseUpload;
+        private boolean segmentedUpload;
+        private boolean checkWithMd5Result;
+
+        private void simulateSegmentedUpload() {
+            this.segmentedUpload = true;
+            this.checkWithMd5Result = true;
+            this.uploadStarted = new CountDownLatch(1);
+            this.releaseUpload = new CountDownLatch(1);
+        }
 
         @Override
         public FileDataModel getFileStream(int storeId, String path) {
@@ -139,8 +225,18 @@ public class RpcSyncEventHandlerTest {
         }
 
         @Override
-        public void putFileData(int storeId, String path, File localfile) {
+        public void putFileData(int storeId, String path, File localfile) throws Exception {
             this.path = path;
+            if (segmentedUpload) {
+                File idx = new File(System.getProperty("java.io.tmpdir"), path + ".up.idx");
+                if (idx.getParentFile() != null && !idx.getParentFile().exists()) {
+                    idx.getParentFile().mkdirs();
+                }
+                Files.write(idx.toPath(), Collections.singletonList("0"), Charset.forName("UTF-8"));
+                uploadStarted.countDown();
+                releaseUpload.await(5, TimeUnit.SECONDS);
+                idx.delete();
+            }
         }
 
         @Override
@@ -168,7 +264,7 @@ public class RpcSyncEventHandlerTest {
             this.path = path;
             this.length = length;
             this.md5 = md5;
-            return false;
+            return checkWithMd5Result;
         }
 
         @Override
@@ -204,5 +300,41 @@ public class RpcSyncEventHandlerTest {
 
     private static void writeUtf8(Path path, String value) throws Exception {
         Files.write(path, value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static SyncUploadStatus waitForUploadStatus(RpcSyncEventHandler handler, long timeout, TimeUnit unit) throws Exception {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            List<SyncUploadStatus> statuses = handler.snapshotActiveUploads(10);
+            if (!statuses.isEmpty()) {
+                return statuses.get(0);
+            }
+            Thread.sleep(50L);
+        }
+        Assert.fail("upload status not exposed in time");
+        return null;
+    }
+
+    private static void waitUntilNoUploads(RpcSyncEventHandler handler, long timeout, TimeUnit unit) throws Exception {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            if (handler.snapshotActiveUploads(10).isEmpty()) {
+                return;
+            }
+            Thread.sleep(50L);
+        }
+        Assert.fail("upload status not cleared in time");
+    }
+
+    private static void waitUntilUploadedSegments(RpcSyncEventHandler handler, int expectedMin, long timeout, TimeUnit unit) throws Exception {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            List<SyncUploadStatus> statuses = handler.snapshotActiveUploads(10);
+            if (!statuses.isEmpty() && statuses.get(0).getUploadedSegments() >= expectedMin) {
+                return;
+            }
+            Thread.sleep(50L);
+        }
+        Assert.fail("upload progress not observed in time");
     }
 }

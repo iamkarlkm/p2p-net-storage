@@ -19,6 +19,7 @@ import javax.net.p2p.filesync.sync.P2PSyncStateStore;
 import javax.net.p2p.filesync.sync.P2PSyncStateStore.QueueKey;
 import javax.net.p2p.filesync.sync.P2PSyncStateStore.QueueStage;
 import javax.net.p2p.filesync.sync.PersistentLongQueue;
+import javax.net.p2p.filesync.sync.SyncUploadStatus;
 
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
@@ -125,11 +126,35 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         }
     }
 
-    private static String buildQueuesJson(P2PSyncStateStore store, int limit) {
+    private String buildQueuesJson(P2PSyncStateStore store, int limit) {
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("ok", Boolean.TRUE);
         root.put("queues", queuesToMap(store, limit));
+        root.put("uploads", uploadsToMap(limit));
         return toJson(root);
+    }
+
+    private Map<String, Object> uploadsToMap(int limit) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        List<Map<String, Object>> items = new ArrayList<Map<String, Object>>();
+        List<SyncUploadStatus> uploads = syncService.snapshotActiveUploads(limit);
+        for (SyncUploadStatus upload : uploads) {
+            Map<String, Object> item = new LinkedHashMap<String, Object>();
+            item.put("eventUid", Long.toString(upload.getEventUid()));
+            item.put("fileId", Long.toString(upload.getFileId()));
+            item.put("path", upload.getPath());
+            item.put("phase", upload.getPhase());
+            item.put("fileSize", Long.valueOf(upload.getFileSize()));
+            item.put("segmented", Boolean.valueOf(upload.isSegmented()));
+            item.put("totalSegments", Integer.valueOf(upload.getTotalSegments()));
+            item.put("uploadedSegments", Integer.valueOf(upload.getUploadedSegments()));
+            item.put("startedAtMillis", Long.valueOf(upload.getStartedAtMillis()));
+            item.put("updatedAtMillis", Long.valueOf(upload.getUpdatedAtMillis()));
+            items.add(item);
+        }
+        out.put("size", Integer.valueOf(items.size()));
+        out.put("items", items);
+        return out;
     }
 
     private static Map<String, Object> queuesToMap(P2PSyncStateStore store, int limit) {
@@ -213,7 +238,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      const res = await fetch('/sync/api/queues?limit=200');\n"
             + "      const data = await res.json();\n"
             + "      if(!data.ok){document.getElementById('content').innerText = data.message || 'error';return;}\n"
-            + "      render(data.queues);\n"
+            + "      render(data.queues, data.uploads);\n"
             + "    }\n"
             + "    function esc(s){return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}\n"
             + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
@@ -232,6 +257,16 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      html += '</table></div>';\n"
             + "      return html;\n"
             + "    }\n"
+            + "    function renderUploads(u){\n"
+            + "      let html = '<div class=\"card\"><h3>上传中 (size='+u.size+')</h3>';\n"
+            + "      html += '<table><tr><th>path</th><th>phase</th><th>size</th><th>segmented</th><th>progress</th></tr>';\n"
+            + "      for(const it of u.items){\n"
+            + "        const progress = it.totalSegments > 0 ? (it.uploadedSegments + '/' + it.totalSegments) : '-';\n"
+            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.phase)+'</td><td>'+it.fileSize+'</td><td>'+it.segmented+'</td><td>'+progress+'</td></tr>';\n"
+            + "      }\n"
+            + "      html += '</table></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
             + "    async function retryIt(fileId, dir, type){\n"
             + "      await fetch('/sync/api/failed/retry?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});\n"
             + "      await reload();\n"
@@ -240,7 +275,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      await fetch('/sync/api/failed/discard?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});\n"
             + "      await reload();\n"
             + "    }\n"
-            + "    function render(queues){\n"
+            + "    function render(queues, uploads){\n"
             + "      const keys = [\n"
             + "        ['新增(文件)', 'file_create'],\n"
             + "        ['修改(文件)', 'file_modify'],\n"
@@ -254,6 +289,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "        ['失败-删除(目录)', 'failed_dir_delete'],\n"
             + "      ];\n"
             + "      let html = '<div class=\"row\">';\n"
+            + "      html += renderUploads(uploads || {size:0, items:[]});\n"
             + "      for(const [title,key] of keys){\n"
             + "        html += renderQueue(title, queues[key]);\n"
             + "      }\n"

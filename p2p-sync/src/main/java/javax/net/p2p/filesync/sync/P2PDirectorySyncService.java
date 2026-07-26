@@ -15,6 +15,7 @@ import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -51,6 +52,13 @@ public final class P2PDirectorySyncService implements AutoCloseable {
 
     public P2PSyncStateStore getStore() {
         return store;
+    }
+
+    public List<SyncUploadStatus> snapshotActiveUploads(int limit) {
+        if (!(eventHandler instanceof SyncUploadStatusProvider)) {
+            return Collections.emptyList();
+        }
+        return ((SyncUploadStatusProvider) eventHandler).snapshotActiveUploads(limit);
     }
 
     boolean isWatchReady() {

@@ -4,14 +4,26 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.filesync.sync.FileSyncAcker;
 import javax.net.p2p.filesync.sync.FileSyncEventHandler;
 import javax.net.p2p.filesync.sync.FileSyncEventType;
+import javax.net.p2p.filesync.sync.SyncUploadStatus;
+import javax.net.p2p.filesync.sync.SyncUploadStatusProvider;
 import javax.net.p2p.interfaces.P2PFileService;
 import javax.net.p2p.rpc.api.RpcClient;
 import javax.net.p2p.rpc.model.RpcCallOptions;
@@ -20,17 +32,20 @@ import javax.net.p2p.rpc.sync.proto.SyncEventAck;
 import javax.net.p2p.rpc.sync.proto.SyncEventRequest;
 import javax.net.p2p.rpc.sync.proto.SyncEventType;
 import javax.net.p2p.rpc.sync.proto.SyncFinalizeRequest;
+import javax.net.p2p.utils.FileUtil;
 import javax.net.p2p.utils.SecurityUtils;
 import javax.net.p2p.utils.XXHashUtil;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
-public final class RpcSyncEventHandler implements FileSyncEventHandler, AutoCloseable {
+public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUploadStatusProvider, AutoCloseable {
 
     private final RpcClient rpcClient;
     private final P2PFileService fileClient;
     private final long taskId;
     private final ExecutorService uploadExecutor;
+    private final ScheduledExecutorService uploadProgressExecutor;
+    private final Map<Long, UploadStatusEntry> activeUploads = new ConcurrentHashMap<Long, UploadStatusEntry>();
     private static final String WRITE_CONFLICT = "write_conflict";
 
     public RpcSyncEventHandler(RpcClient rpcClient, P2PFileService fileClient, long taskId) {
@@ -46,11 +61,44 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, AutoClos
                 return t;
             }
         });
+        this.uploadProgressExecutor = Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
+            @Override
+            public Thread newThread(Runnable r) {
+                Thread t = new Thread(r, "p2p-sync-upload-progress");
+                t.setDaemon(true);
+                return t;
+            }
+        });
     }
 
     @Override
     public void close() {
         uploadExecutor.shutdownNow();
+        uploadProgressExecutor.shutdownNow();
+        activeUploads.clear();
+    }
+
+    @Override
+    public List<SyncUploadStatus> snapshotActiveUploads(int limit) {
+        List<UploadStatusEntry> entries = new ArrayList<UploadStatusEntry>(activeUploads.values());
+        java.util.Collections.sort(entries, new Comparator<UploadStatusEntry>() {
+            @Override
+            public int compare(UploadStatusEntry o1, UploadStatusEntry o2) {
+                if (o1.startedAtMillis == o2.startedAtMillis) {
+                    return o1.path.compareTo(o2.path);
+                }
+                return o1.startedAtMillis < o2.startedAtMillis ? -1 : 1;
+            }
+        });
+        List<SyncUploadStatus> out = new ArrayList<SyncUploadStatus>();
+        int max = limit <= 0 ? Integer.MAX_VALUE : limit;
+        for (UploadStatusEntry entry : entries) {
+            if (out.size() >= max) {
+                break;
+            }
+            out.add(entry.snapshot());
+        }
+        return out;
     }
 
     @Override
@@ -102,25 +150,42 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, AutoClos
                     acker.retry();
                     return;
                 }
-                uploadAndFinalize(resp.getStoreId(), eventUid, type, relativePath, absolutePath, lastModifiedMillisFinal, acker);
+                uploadAndFinalize(resp.getStoreId(), eventUid, fileId, type, relativePath, absolutePath, lastModifiedMillisFinal, acker);
             });
     }
 
-    private void uploadAndFinalize(int storeId, long eventUid, FileSyncEventType type, String relativePath, Path absolutePath, long lastModifiedMillis, FileSyncAcker acker) {
+    private void uploadAndFinalize(int storeId, long eventUid, long fileId, FileSyncEventType type, String relativePath, Path absolutePath, long lastModifiedMillis, FileSyncAcker acker) {
         // 两阶段：ApplyEvent 通过 -> 上传文件内容 -> FinalizeEvent 才算最终 ACK
+        final UploadStatusEntry statusEntry;
+        try {
+            statusEntry = new UploadStatusEntry(eventUid, fileId, relativePath, Files.size(absolutePath));
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+        activeUploads.put(Long.valueOf(eventUid), statusEntry);
         java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            ScheduledFuture<?> progressFuture = startUploadProgress(statusEntry);
             try {
                 FileContentMetadata metadata = loadFileContentMetadata(absolutePath);
+                statusEntry.setPhase("uploading");
                 fileClient.putFileData(storeId, relativePath, absolutePath.toFile());
+                refreshUploadProgress(statusEntry);
+                statusEntry.markUploaded();
+                statusEntry.setPhase("checking");
                 if (!fileClient.checkWithMd5(storeId, relativePath, metadata.getLength(), metadata.getMd5())) {
                     throw new IllegalStateException("remote content check failed");
                 }
                 return metadata;
             } catch (Exception e) {
                 throw new RuntimeException(e);
+            } finally {
+                if (progressFuture != null) {
+                    progressFuture.cancel(true);
+                }
             }
         }, uploadExecutor).thenCompose(metadata -> {
             long finalizeLastModifiedMillis = resolveLastModifiedMillis(absolutePath, lastModifiedMillis);
+            statusEntry.setPhase("finalizing");
             log.info("p2p-sync finalize dispatch: taskId={}, path={}, eventUid={}, lastModifiedMillis={}",
                 taskId, relativePath, eventUid, finalizeLastModifiedMillis);
             SyncFinalizeRequest fin = SyncFinalizeRequest.newBuilder()
@@ -135,24 +200,52 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, AutoClos
             return rpcClient.unaryAsync(SyncRpcServices.SYNC_SERVICE, SyncRpcServices.FINALIZE_EVENT, fin, SyncEventAck.class, options);
         }).whenComplete((ack, ex) -> {
             if (ex != null || ack == null) {
+                activeUploads.remove(Long.valueOf(eventUid));
                 log.error("p2p-sync finalize failed: taskId={}, path={}, eventUid={}, ackNull={}, ex={}",
                     taskId, relativePath, eventUid, ack == null, ex == null ? "null" : ex.toString());
                 acker.retry();
                 return;
             }
             if (ack.getOk() && ack.getEventUid() == eventUid) {
+                activeUploads.remove(Long.valueOf(eventUid));
                 log.info("p2p-sync finalize acked: taskId={}, path={}, eventUid={}", taskId, relativePath, eventUid);
                 acker.ack();
                 return;
             }
             if (!ack.getOk() && isWriteConflict(ack.getMessage())) {
+                activeUploads.remove(Long.valueOf(eventUid));
                 log.error("p2p-sync write conflict: phase=finalize, taskId={}, path={}, eventUid={}, msg={}",
                     taskId, relativePath, eventUid, ack.getMessage());
                 acker.fail(ack.getMessage());
                 return;
             }
+            activeUploads.remove(Long.valueOf(eventUid));
             acker.retry();
         });
+    }
+
+    private ScheduledFuture<?> startUploadProgress(final UploadStatusEntry entry) {
+        if (!entry.segmented) {
+            return null;
+        }
+        refreshUploadProgress(entry);
+        return uploadProgressExecutor.scheduleAtFixedRate(new Runnable() {
+            @Override
+            public void run() {
+                refreshUploadProgress(entry);
+            }
+        }, 0L, 200L, TimeUnit.MILLISECONDS);
+    }
+
+    private static void refreshUploadProgress(UploadStatusEntry entry) {
+        if (!entry.segmented) {
+            return;
+        }
+        try {
+            int uploadedSegments = FileUtil.getUpInfoTmp(entry.path).getRight().size();
+            entry.setUploadedSegments(uploadedSegments);
+        } catch (Exception ignored) {
+        }
     }
 
     private static FileContentMetadata loadFileContentMetadata(Path absolutePath) throws Exception {
@@ -214,6 +307,77 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, AutoClos
 
         private String getMd5() {
             return md5;
+        }
+    }
+
+    private static final class UploadStatusEntry {
+        private final long eventUid;
+        private final long fileId;
+        private final String path;
+        private final long fileSize;
+        private final boolean segmented;
+        private final int totalSegments;
+        private final long startedAtMillis;
+        private volatile String phase;
+        private final AtomicInteger uploadedSegments = new AtomicInteger();
+        private volatile long updatedAtMillis;
+
+        private UploadStatusEntry(long eventUid, long fileId, String path, long fileSize) {
+            this.eventUid = eventUid;
+            this.fileId = fileId;
+            this.path = path == null ? "" : path;
+            this.fileSize = fileSize;
+            this.segmented = fileSize > P2PConfig.DATA_BLOCK_SIZE;
+            this.totalSegments = segmentCount(fileSize);
+            this.startedAtMillis = System.currentTimeMillis();
+            this.updatedAtMillis = this.startedAtMillis;
+            this.phase = "queued";
+            if (!segmented && fileSize > 0L) {
+                this.uploadedSegments.set(0);
+            }
+        }
+
+        private void setPhase(String phase) {
+            this.phase = phase;
+            this.updatedAtMillis = System.currentTimeMillis();
+        }
+
+        private void setUploadedSegments(int value) {
+            int capped = value;
+            if (capped < 0) {
+                capped = 0;
+            }
+            if (totalSegments > 0 && capped > totalSegments) {
+                capped = totalSegments;
+            }
+            this.uploadedSegments.set(capped);
+            this.updatedAtMillis = System.currentTimeMillis();
+        }
+
+        private void markUploaded() {
+            if (totalSegments > 0) {
+                this.uploadedSegments.set(totalSegments);
+            }
+            this.updatedAtMillis = System.currentTimeMillis();
+        }
+
+        private SyncUploadStatus snapshot() {
+            return new SyncUploadStatus(eventUid, fileId, path, phase, fileSize, segmented,
+                totalSegments, uploadedSegments.get(), startedAtMillis, updatedAtMillis);
+        }
+
+        private static int segmentCount(long fileSize) {
+            if (fileSize <= 0L) {
+                return 1;
+            }
+            long count = fileSize / P2PConfig.DATA_BLOCK_SIZE;
+            if (fileSize % P2PConfig.DATA_BLOCK_SIZE != 0L) {
+                count++;
+            }
+            if (count > Integer.MAX_VALUE) {
+                return Integer.MAX_VALUE;
+            }
+            return (int) count;
         }
     }
 }
