@@ -164,7 +164,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             body.put("recordedAtMillis", Long.valueOf(result.recordedAtMillis));
             appendBatchReplicaSummary(body, result);
             recordOperatorAction("RETRY_AUTO_RECOVERABLE_REPLICAS", true, result.touchedFileCount, result.touchedReplicaCount,
-                null, false, 0L, null, null, batchActionMessage("batch_retry_auto_recoverable", result));
+                null, false, 0L, null, null, batchActionMessage("batch_retry_auto_recoverable", result), result);
             writeJson(exchange, 200, toJson(body));
         }
     }
@@ -185,7 +185,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             body.put("recordedAtMillis", Long.valueOf(result.recordedAtMillis));
             appendBatchReplicaSummary(body, result);
             recordOperatorAction("DISCARD_MANUAL_REPLICAS", true, result.touchedFileCount, result.touchedReplicaCount,
-                null, false, 0L, null, null, batchActionMessage("batch_discard_manual", result));
+                null, false, 0L, null, null, batchActionMessage("batch_discard_manual", result), result);
             writeJson(exchange, 200, toJson(body));
         }
     }
@@ -229,7 +229,8 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
                 0L,
                 null,
                 categories,
-                batchActionMessage("batch_category_action", result));
+                batchActionMessage("batch_category_action", result),
+                result);
             writeJson(exchange, 200, toJson(body));
         }
     }
@@ -507,6 +508,12 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             item.put("categories", record.categories == null ? Collections.emptyList() : new ArrayList<String>(record.categories));
             item.put("updatedAtMillis", Long.valueOf(record.updatedAtMillis));
             item.put("message", record.message == null ? "" : record.message);
+            item.put("clearedFailedItemCount", Integer.valueOf(record.clearedFailedItemCount));
+            item.put("clearedOutstandingReplicaCount", Integer.valueOf(record.clearedOutstandingReplicaCount));
+            item.put("clearedReplicaCategorySummary", record.clearedReplicaCategorySummary == null ? "" : record.clearedReplicaCategorySummary);
+            item.put("remainingFailedItemCount", Integer.valueOf(record.remainingFailedItemCount));
+            item.put("remainingOutstandingReplicaCount", Integer.valueOf(record.remainingOutstandingReplicaCount));
+            item.put("remainingReplicaCategorySummary", record.remainingReplicaCategorySummary == null ? "" : record.remainingReplicaCategorySummary);
             items.add(item);
             count++;
         }
@@ -558,6 +565,12 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         item.put("action", record.action);
         item.put("success", Boolean.valueOf(record.success));
         item.put("fileId", record.fileId > 0L ? Long.toString(record.fileId) : "");
+        item.put("clearedFailedItemCount", Integer.valueOf(record.clearedFailedItemCount));
+        item.put("clearedOutstandingReplicaCount", Integer.valueOf(record.clearedOutstandingReplicaCount));
+        item.put("clearedReplicaCategorySummary", record.clearedReplicaCategorySummary == null ? "" : record.clearedReplicaCategorySummary);
+        item.put("remainingFailedItemCount", Integer.valueOf(record.remainingFailedItemCount));
+        item.put("remainingOutstandingReplicaCount", Integer.valueOf(record.remainingOutstandingReplicaCount));
+        item.put("remainingReplicaCategorySummary", record.remainingReplicaCategorySummary == null ? "" : record.remainingReplicaCategorySummary);
         return item;
     }
 
@@ -595,12 +608,24 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     private void recordOperatorAction(String action, boolean success, int touchedFileCount, int touchedReplicaCount,
                                       FileSyncEventType type, boolean directory, long fileId, String replica,
                                       Set<String> categories, String message) {
+        recordOperatorAction(action, success, touchedFileCount, touchedReplicaCount, type, directory, fileId, replica, categories, message, null);
+    }
+
+    private void recordOperatorAction(String action, boolean success, int touchedFileCount, int touchedReplicaCount,
+                                      FileSyncEventType type, boolean directory, long fileId, String replica,
+                                      Set<String> categories, String message, BatchReplicaActionResult result) {
         long now = System.currentTimeMillis();
         List<String> categoryList = categories == null || categories.isEmpty()
             ? Collections.<String>emptyList()
             : new ArrayList<String>(categories);
         recentOperatorActions.addFirst(new MonitorActionRecord(action, success, touchedFileCount, touchedReplicaCount,
-            type, directory, fileId, replica, categoryList, now, message));
+            type, directory, fileId, replica, categoryList, now, message,
+            result == null ? 0 : result.clearedFailedItemCount,
+            result == null ? 0 : result.clearedOutstandingReplicaCount,
+            result == null ? "" : result.clearedReplicaCategorySummary,
+            result == null ? 0 : result.remainingFailedItemCount,
+            result == null ? 0 : result.remainingOutstandingReplicaCount,
+            result == null ? "" : result.remainingReplicaCategorySummary));
         while (recentOperatorActions.size() > MAX_RECENT_OPERATOR_ACTIONS) {
             recentOperatorActions.pollLast();
         }
@@ -2132,10 +2157,18 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         private final List<String> categories;
         private final long updatedAtMillis;
         private final String message;
+        private final int clearedFailedItemCount;
+        private final int clearedOutstandingReplicaCount;
+        private final String clearedReplicaCategorySummary;
+        private final int remainingFailedItemCount;
+        private final int remainingOutstandingReplicaCount;
+        private final String remainingReplicaCategorySummary;
 
         private MonitorActionRecord(String action, boolean success, int touchedFileCount, int touchedReplicaCount,
                                     FileSyncEventType type, boolean directory, long fileId, String replica,
-                                    List<String> categories, long updatedAtMillis, String message) {
+                                    List<String> categories, long updatedAtMillis, String message,
+                                    int clearedFailedItemCount, int clearedOutstandingReplicaCount, String clearedReplicaCategorySummary,
+                                    int remainingFailedItemCount, int remainingOutstandingReplicaCount, String remainingReplicaCategorySummary) {
             this.action = action;
             this.success = success;
             this.touchedFileCount = touchedFileCount;
@@ -2147,6 +2180,12 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             this.categories = categories;
             this.updatedAtMillis = updatedAtMillis;
             this.message = message;
+            this.clearedFailedItemCount = clearedFailedItemCount;
+            this.clearedOutstandingReplicaCount = clearedOutstandingReplicaCount;
+            this.clearedReplicaCategorySummary = clearedReplicaCategorySummary;
+            this.remainingFailedItemCount = remainingFailedItemCount;
+            this.remainingOutstandingReplicaCount = remainingOutstandingReplicaCount;
+            this.remainingReplicaCategorySummary = remainingReplicaCategorySummary;
         }
     }
 

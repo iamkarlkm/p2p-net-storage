@@ -473,6 +473,20 @@ public class P2PSyncMonitorServerTest {
 
                 Assert.assertTrue(store.dirCreatesFailed().contains(Long.valueOf(otherId)));
                 Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, true, otherId, "node-d", P2PSyncStateStore.REPLICA_FAILED));
+
+                String queuesJson = send("GET", "http://127.0.0.1:" + server.getPort() + "/sync/api/queues?limit=20", null);
+                Assert.assertTrue(queuesJson.contains("\"action\":\"RETRY_REPLICAS_BY_CATEGORY\""));
+                Assert.assertTrue(queuesJson.contains("\"action\":\"DISCARD_REPLICAS_BY_CATEGORY\""));
+                Assert.assertTrue(queuesJson.contains("\"clearedFailedItemCount\":1"));
+                Assert.assertTrue(queuesJson.contains("\"clearedReplicaCategorySummary\":\"NETWORK=1\""));
+                Assert.assertTrue(queuesJson.contains("\"remainingFailedItemCount\":3"));
+                Assert.assertTrue(queuesJson.contains("\"remainingReplicaCategorySummary\":\"CONFLICT=1, RETRY_LIMIT=1, STATE_MISMATCH=1\""));
+                Assert.assertTrue(queuesJson.contains("\"clearedFailedItemCount\":2"));
+                Assert.assertTrue(queuesJson.contains("\"clearedReplicaCategorySummary\":\"CONFLICT=1, RETRY_LIMIT=1\""));
+                Assert.assertTrue(queuesJson.contains("\"remainingFailedItemCount\":1"));
+                Assert.assertTrue(queuesJson.contains("\"remainingReplicaCategorySummary\":\"STATE_MISMATCH=1\""));
+                Assert.assertTrue(queuesJson.contains("RETRY_REPLICAS_BY_CATEGORY success=true"));
+                Assert.assertTrue(queuesJson.contains("DISCARD_REPLICAS_BY_CATEGORY success=true"));
             }
         }
     }
