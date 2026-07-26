@@ -42,6 +42,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         this.server.createContext("/sync/api/queues", new QueuesHandler());
         this.server.createContext("/sync/api/failed/retry", new FailedActionHandler(true));
         this.server.createContext("/sync/api/failed/discard", new FailedActionHandler(false));
+        this.server.createContext("/sync/api/failed/retry-auto-recoverable-replicas", new BatchRetryAutoRecoverableReplicasHandler());
     }
 
     public void start() {
@@ -124,6 +125,23 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
                 ok = retry ? store.retryFailed(t, directory, fileId) : store.discardFailed(t, directory, fileId);
             }
             writeJson(exchange, 200, ok ? "{\"ok\":true}" : "{\"ok\":false,\"message\":\"not found\"}");
+        }
+    }
+
+    private final class BatchRetryAutoRecoverableReplicasHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            P2PSyncStateStore store = syncService.getStore();
+            if (store == null) {
+                writeJson(exchange, 503, "{\"ok\":false,\"message\":\"store not ready\"}");
+                return;
+            }
+            BatchReplicaActionResult result = retryAutoRecoverableReplicas(store);
+            Map<String, Object> body = new LinkedHashMap<String, Object>();
+            body.put("ok", Boolean.TRUE);
+            body.put("touchedFileCount", Integer.valueOf(result.touchedFileCount));
+            body.put("retriedReplicaCount", Integer.valueOf(result.touchedReplicaCount));
+            writeJson(exchange, 200, toJson(body));
         }
     }
 
@@ -511,6 +529,57 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         return new ReplicaRecoveryStats(outstanding, autoRecoverable, manual);
     }
 
+    private BatchReplicaActionResult retryAutoRecoverableReplicas(P2PSyncStateStore store) {
+        BatchReplicaActionResult result = new BatchReplicaActionResult();
+        retryAutoRecoverableReplicas(result, store, store.queueRef(QueueKey.FILE_CREATE, QueueStage.FAILED), FileSyncEventType.CREATE, false);
+        retryAutoRecoverableReplicas(result, store, store.queueRef(QueueKey.FILE_MODIFY, QueueStage.FAILED), FileSyncEventType.MODIFY, false);
+        retryAutoRecoverableReplicas(result, store, store.queueRef(QueueKey.FILE_DELETE, QueueStage.FAILED), FileSyncEventType.DELETE, false);
+        retryAutoRecoverableReplicas(result, store, store.queueRef(QueueKey.DIR_CREATE, QueueStage.FAILED), FileSyncEventType.CREATE, true);
+        retryAutoRecoverableReplicas(result, store, store.queueRef(QueueKey.DIR_DELETE, QueueStage.FAILED), FileSyncEventType.DELETE, true);
+        return result;
+    }
+
+    private void retryAutoRecoverableReplicas(BatchReplicaActionResult result, P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir) {
+        List<Long> fileIds = new ArrayList<Long>();
+        for (Long o : set) {
+            fileIds.add(o);
+        }
+        for (Long fileIdRef : fileIds) {
+            long fileId = fileIdRef.longValue();
+            List<String> labels = autoRecoverableReplicaLabels(store, type, dir, fileId);
+            if (labels.isEmpty()) {
+                continue;
+            }
+            int updated = store.retryFailedReplicas(type, dir, fileId, labels);
+            if (updated > 0) {
+                result.touchedFileCount++;
+                result.touchedReplicaCount += updated;
+            }
+        }
+    }
+
+    private List<String> autoRecoverableReplicaLabels(P2PSyncStateStore store, FileSyncEventType type, boolean dir, long fileId) {
+        int retryCount = store.getRetryCount(type, dir, fileId);
+        String reason = store.getFailedReason(type, dir, fileId);
+        boolean autoRetryable = isRetryable(retryCount);
+        boolean manualReason = "write_conflict".equals(reason) || "retry_limit_exceeded".equals(reason);
+        List<String> labels = new ArrayList<String>();
+        for (P2PSyncStateStore.ReplicaState replicaState : store.getReplicaStates(type, dir, fileId)) {
+            String status = replicaState.getStatus();
+            if (!isReplicaActionable(status)) {
+                continue;
+            }
+            if (P2PSyncStateStore.REPLICA_TARGETED.equals(status) || P2PSyncStateStore.REPLICA_RETRY.equals(status)) {
+                labels.add(replicaState.getLabel());
+                continue;
+            }
+            if (!manualReason && autoRetryable) {
+                labels.add(replicaState.getLabel());
+            }
+        }
+        return labels;
+    }
+
     private Map<String, Object> queuesToMap(P2PSyncStateStore store, int limit) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("file_create", queue(store, store.queueRef(QueueKey.FILE_CREATE, QueueStage.ACTIVE), FileSyncEventType.CREATE, false, limit));
@@ -646,6 +715,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "  <h2>p2p-sync 队列监控</h2>\n"
             + "  <div>\n"
             + "    <button class=\"btn\" onclick=\"reload()\">刷新</button>\n"
+            + "    <button class=\"btn\" data-batch-action=\"retry-auto-recoverable-replicas\">批量重试可自动恢复副本</button>\n"
             + "  </div>\n"
             + "  <div id=\"content\"></div>\n"
             + "  <script>\n"
@@ -797,6 +867,10 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      await fetch(url, {method:'POST'});\n"
             + "      await reload();\n"
             + "    }\n"
+            + "    async function retryAutoRecoverableReplicas(){\n"
+            + "      await fetch('/sync/api/failed/retry-auto-recoverable-replicas', {method:'POST'});\n"
+            + "      await reload();\n"
+            + "    }\n"
             + "    function render(queues, queueMatrix, healthSummary, failureSummary, failureRecoverySummary, replicaRecoverySummary, hotFailedItems, recentTimeline, uploads, uploadPolicy, retryPolicy, recentCompletedUploads, recentFailedUploads){\n"
             + "      const keys = [\n"
             + "        ['新增(文件)', 'file_create'],\n"
@@ -838,6 +912,13 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      document.getElementById('content').innerHTML = html;\n"
             + "    }\n"
             + "    document.addEventListener('click', async function(e){\n"
+            + "      const batchBtn = e.target.closest('button[data-batch-action]');\n"
+            + "      if(batchBtn){\n"
+            + "        if(batchBtn.getAttribute('data-batch-action') === 'retry-auto-recoverable-replicas'){\n"
+            + "          await retryAutoRecoverableReplicas();\n"
+            + "        }\n"
+            + "        return;\n"
+            + "      }\n"
             + "      const btn = e.target.closest('button[data-action]');\n"
             + "      if(!btn){return;}\n"
             + "      const fileId = btn.getAttribute('data-file-id');\n"
@@ -967,6 +1048,11 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         private int failedCount;
         private int maxRetryCount;
         private long oldestFailedAtMillis;
+    }
+
+    private static final class BatchReplicaActionResult {
+        private int touchedFileCount;
+        private int touchedReplicaCount;
     }
 
     private static final class ReplicaRecoveryStats {

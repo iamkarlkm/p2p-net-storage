@@ -61,6 +61,8 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("p2p-sync 队列监控"));
                 Assert.assertTrue(index.contains("/sync/api/queues?limit=200"));
                 Assert.assertTrue(index.contains("data-action"));
+                Assert.assertTrue(index.contains("data-batch-action"));
+                Assert.assertTrue(index.contains("批量重试可自动恢复副本"));
                 Assert.assertTrue(index.contains("document.addEventListener('click'"));
                 Assert.assertTrue(index.contains("class=\"page\""));
                 Assert.assertTrue(index.contains("class=\"section\""));
@@ -203,6 +205,55 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(targetedDiscardResp.contains("\"ok\":true"));
                 Assert.assertTrue(store.fileCreatesFailed().contains(Long.valueOf(targetedId)));
                 Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, false, targetedId, "node-c", P2PSyncStateStore.REPLICA_DISCARDED));
+            }
+        }
+    }
+
+    @Test
+    public void shouldBatchRetryAutoRecoverableReplicasViaHttp() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_monitor_root_batch_");
+        Path state = Files.createTempDirectory("p2p_sync_monitor_state_batch_");
+        P2PSyncConfig cfg = new P2PSyncConfig();
+        cfg.setTaskId(102L);
+        cfg.setLocalDir(root.toString());
+        cfg.setDsHome(state.toString());
+        cfg.setMaxRetryCount(2);
+
+        try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, null)) {
+            svc.start();
+            P2PSyncStateStore store = svc.getStore();
+            long autoId = store.getOrCreateFileId("auto.txt");
+            long manualId = store.getOrCreateFileId("manual.txt");
+            long cappedId = store.getOrCreateFileId("capped.txt");
+            store.markFailed(FileSyncEventType.CREATE, false, autoId, "stale");
+            store.markReplicaState(FileSyncEventType.CREATE, false, autoId, "node-a", P2PSyncStateStore.REPLICA_FAILED);
+            store.markReplicaState(FileSyncEventType.CREATE, false, autoId, "node-b", P2PSyncStateStore.REPLICA_FAILED);
+            store.markFailed(FileSyncEventType.MODIFY, false, manualId, "write_conflict");
+            store.markReplicaState(FileSyncEventType.MODIFY, false, manualId, "node-c", P2PSyncStateStore.REPLICA_FAILED);
+            store.markFailed(FileSyncEventType.DELETE, false, cappedId, "stale");
+            store.markReplicaState(FileSyncEventType.DELETE, false, cappedId, "node-d", P2PSyncStateStore.REPLICA_FAILED);
+            store.incrementRetryCount(FileSyncEventType.DELETE, false, cappedId);
+            store.incrementRetryCount(FileSyncEventType.DELETE, false, cappedId);
+
+            try (P2PSyncMonitorServer server = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
+                server.start();
+                String response = send("POST",
+                    "http://127.0.0.1:" + server.getPort() + "/sync/api/failed/retry-auto-recoverable-replicas",
+                    "");
+                Assert.assertTrue(response.contains("\"ok\":true"));
+                Assert.assertTrue(response.contains("\"touchedFileCount\":1"));
+                Assert.assertTrue(response.contains("\"retriedReplicaCount\":2"));
+
+                Assert.assertFalse(store.fileCreatesFailed().contains(Long.valueOf(autoId)));
+                Assert.assertTrue(store.fileCreatesActive().contains(Long.valueOf(autoId)));
+                Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, false, autoId, "node-a", P2PSyncStateStore.REPLICA_TARGETED));
+                Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, false, autoId, "node-b", P2PSyncStateStore.REPLICA_TARGETED));
+
+                Assert.assertTrue(store.fileModifiesFailed().contains(Long.valueOf(manualId)));
+                Assert.assertTrue(hasReplicaState(store, FileSyncEventType.MODIFY, false, manualId, "node-c", P2PSyncStateStore.REPLICA_FAILED));
+
+                Assert.assertTrue(store.fileDeletesFailed().contains(Long.valueOf(cappedId)));
+                Assert.assertTrue(hasReplicaState(store, FileSyncEventType.DELETE, false, cappedId, "node-d", P2PSyncStateStore.REPLICA_FAILED));
             }
         }
     }

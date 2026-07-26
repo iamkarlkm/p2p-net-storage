@@ -8,9 +8,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import javax.net.p2p.utils.XXHashUtil;
 import lombok.extern.slf4j.Slf4j;
 
@@ -455,23 +457,40 @@ public final class P2PSyncStateStore implements AutoCloseable {
     }
 
     public boolean retryFailedReplica(FileSyncEventType type, boolean directory, long fileId, String label) {
+        return retryFailedReplicas(type, directory, fileId, java.util.Collections.singletonList(label)) > 0;
+    }
+
+    public int retryFailedReplicas(FileSyncEventType type, boolean directory, long fileId, List<String> labels) {
         int code = codeFor(type, directory);
-        if (code < 0 || label == null || label.trim().isEmpty()) {
-            return false;
+        if (code < 0 || labels == null || labels.isEmpty()) {
+            return 0;
         }
         DsHashSet failed = failedSetForCode(code);
         DsHashSet active = activeSetForCode(code);
         if (failed == null || active == null || !failed.contains(Long.valueOf(fileId))) {
-            return false;
+            return 0;
         }
         long key = failedKey(code, fileId);
         Map<String, String> states = readReplicaStateMap(key);
-        String safeLabel = sanitizeReplicaToken(label);
-        String current = states.get(safeLabel);
-        if (current == null || REPLICA_ACKED.equals(current)) {
-            return false;
+        Set<String> uniqueLabels = new LinkedHashSet<String>();
+        for (String label : labels) {
+            String safeLabel = sanitizeReplicaToken(label);
+            if (!safeLabel.isEmpty()) {
+                uniqueLabels.add(safeLabel);
+            }
         }
-        states.put(safeLabel, REPLICA_TARGETED);
+        int updated = 0;
+        for (String safeLabel : uniqueLabels) {
+            String current = states.get(safeLabel);
+            if (current == null || REPLICA_ACKED.equals(current) || REPLICA_DISCARDED.equals(current)) {
+                continue;
+            }
+            states.put(safeLabel, REPLICA_TARGETED);
+            updated++;
+        }
+        if (updated <= 0) {
+            return 0;
+        }
         writeReplicaStateMap(key, states);
         failed.remove(Long.valueOf(fileId));
         active.add(Long.valueOf(fileId));
@@ -482,7 +501,7 @@ public final class P2PSyncStateStore implements AutoCloseable {
         markRetriedNow(type, directory, fileId);
         failedKeyToFailedAtMillis.remove(Long.valueOf(key));
         failedKeyToFailedAtMillis.sync();
-        return true;
+        return updated;
     }
 
     public boolean discardFailedReplica(FileSyncEventType type, boolean directory, long fileId, String label) {
