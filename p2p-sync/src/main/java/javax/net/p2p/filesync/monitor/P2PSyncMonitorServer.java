@@ -9,12 +9,14 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
@@ -34,8 +36,11 @@ import com.sun.net.httpserver.HttpServer;
 
 public final class P2PSyncMonitorServer implements AutoCloseable {
 
+    private static final int MAX_RECENT_OPERATOR_ACTIONS = 50;
+
     private final HttpServer server;
     private final P2PDirectorySyncService syncService;
+    private final Deque<MonitorActionRecord> recentOperatorActions = new ConcurrentLinkedDeque<MonitorActionRecord>();
 
     public P2PSyncMonitorServer(P2PDirectorySyncService syncService, InetSocketAddress bind) throws IOException {
         this.syncService = syncService;
@@ -130,7 +135,16 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             } else {
                 ok = retry ? store.retryFailed(t, directory, fileId) : store.discardFailed(t, directory, fileId);
             }
-            writeJson(exchange, 200, ok ? "{\"ok\":true}" : "{\"ok\":false,\"message\":\"not found\"}");
+            long recordedAtMillis = System.currentTimeMillis();
+            recordOperatorAction(singleActionName(retry, replica), ok, 1, ok ? 1 : 0, t, directory, fileId, replica, null,
+                ok ? "manual_action_applied" : "not_found");
+            Map<String, Object> body = new LinkedHashMap<String, Object>();
+            body.put("ok", Boolean.valueOf(ok));
+            body.put("recordedAtMillis", Long.valueOf(recordedAtMillis));
+            if (!ok) {
+                body.put("message", "not found");
+            }
+            writeJson(exchange, 200, toJson(body));
         }
     }
 
@@ -147,6 +161,9 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             body.put("ok", Boolean.TRUE);
             body.put("touchedFileCount", Integer.valueOf(result.touchedFileCount));
             body.put("retriedReplicaCount", Integer.valueOf(result.touchedReplicaCount));
+            body.put("recordedAtMillis", Long.valueOf(result.recordedAtMillis));
+            recordOperatorAction("RETRY_AUTO_RECOVERABLE_REPLICAS", true, result.touchedFileCount, result.touchedReplicaCount,
+                null, false, 0L, null, null, "batch_retry_auto_recoverable");
             writeJson(exchange, 200, toJson(body));
         }
     }
@@ -164,6 +181,9 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             body.put("ok", Boolean.TRUE);
             body.put("touchedFileCount", Integer.valueOf(result.touchedFileCount));
             body.put("discardedReplicaCount", Integer.valueOf(result.touchedReplicaCount));
+            body.put("recordedAtMillis", Long.valueOf(result.recordedAtMillis));
+            recordOperatorAction("DISCARD_MANUAL_REPLICAS", true, result.touchedFileCount, result.touchedReplicaCount,
+                null, false, 0L, null, null, "batch_discard_manual");
             writeJson(exchange, 200, toJson(body));
         }
     }
@@ -196,6 +216,17 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             body.put("categories", new ArrayList<String>(categories));
             body.put("touchedFileCount", Integer.valueOf(result.touchedFileCount));
             body.put(retry ? "retriedReplicaCount" : "discardedReplicaCount", Integer.valueOf(result.touchedReplicaCount));
+            body.put("recordedAtMillis", Long.valueOf(result.recordedAtMillis));
+            recordOperatorAction(retry ? "RETRY_REPLICAS_BY_CATEGORY" : "DISCARD_REPLICAS_BY_CATEGORY",
+                true,
+                result.touchedFileCount,
+                result.touchedReplicaCount,
+                null,
+                false,
+                0L,
+                null,
+                categories,
+                "batch_category_action");
             writeJson(exchange, 200, toJson(body));
         }
     }
@@ -224,6 +255,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         root.put("replicaFailureSummary", replicaFailureSummaryToMap(store));
         root.put("replicaFailureCategorySummary", replicaFailureCategorySummaryToMap(store));
         root.put("hotFailedItems", hotFailedItemsToMap(store, limit));
+        root.put("recentOperatorActions", recentOperatorActionsToMap(limit));
         root.put("recentTimeline", recentTimelineToMap(limit));
         root.put("uploads", uploadsToMap(limit));
         root.put("uploadPolicy", uploadPolicyToMap());
@@ -430,6 +462,55 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             timeline = new ArrayList<SyncUploadStatus>(timeline.subList(0, limit));
         }
         return uploadHistoryToMap(timeline);
+    }
+
+    private Map<String, Object> recentOperatorActionsToMap(int limit) {
+        List<Map<String, Object>> items = new ArrayList<Map<String, Object>>();
+        int count = 0;
+        for (MonitorActionRecord record : recentOperatorActions) {
+            if (count >= limit) {
+                break;
+            }
+            Map<String, Object> item = new LinkedHashMap<String, Object>();
+            item.put("action", record.action);
+            item.put("success", Boolean.valueOf(record.success));
+            item.put("touchedFileCount", Integer.valueOf(record.touchedFileCount));
+            item.put("touchedReplicaCount", Integer.valueOf(record.touchedReplicaCount));
+            item.put("type", record.type == null ? "" : record.type.name());
+            item.put("dir", Boolean.valueOf(record.directory));
+            item.put("fileId", record.fileId > 0L ? Long.toString(record.fileId) : "");
+            item.put("replica", record.replica == null ? "" : record.replica);
+            item.put("categories", record.categories == null ? Collections.emptyList() : new ArrayList<String>(record.categories));
+            item.put("updatedAtMillis", Long.valueOf(record.updatedAtMillis));
+            item.put("message", record.message == null ? "" : record.message);
+            items.add(item);
+            count++;
+        }
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("size", Integer.valueOf(items.size()));
+        out.put("items", items);
+        return out;
+    }
+
+    private void recordOperatorAction(String action, boolean success, int touchedFileCount, int touchedReplicaCount,
+                                      FileSyncEventType type, boolean directory, long fileId, String replica,
+                                      Set<String> categories, String message) {
+        long now = System.currentTimeMillis();
+        List<String> categoryList = categories == null || categories.isEmpty()
+            ? Collections.<String>emptyList()
+            : new ArrayList<String>(categories);
+        recentOperatorActions.addFirst(new MonitorActionRecord(action, success, touchedFileCount, touchedReplicaCount,
+            type, directory, fileId, replica, categoryList, now, message));
+        while (recentOperatorActions.size() > MAX_RECENT_OPERATOR_ACTIONS) {
+            recentOperatorActions.pollLast();
+        }
+    }
+
+    private String singleActionName(boolean retry, String replica) {
+        if (replica != null && !replica.isBlank()) {
+            return retry ? "RETRY_REPLICA" : "DISCARD_REPLICA";
+        }
+        return retry ? "RETRY_FAILED_ITEM" : "DISCARD_FAILED_ITEM";
     }
 
     private Map<String, Object> hotFailedItemsToMap(P2PSyncStateStore store, int limit) {
@@ -1372,7 +1453,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      const res = await fetch('/sync/api/queues?limit=200');\n"
             + "      const data = await res.json();\n"
             + "      if(!data.ok){document.getElementById('content').innerText = data.message || 'error';return;}\n"
-            + "      render(data.queues, data.queueMatrix, data.healthSummary, data.failureTrend, data.recoverySuccessSummary, data.failureSummary, data.failureRecoverySummary, data.replicaRecoverySummary, data.replicaFailureSummary, data.replicaFailureCategorySummary, data.hotFailedItems, data.recentTimeline, data.uploads, data.uploadPolicy, data.retryPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
+            + "      render(data.queues, data.queueMatrix, data.healthSummary, data.failureTrend, data.recoverySuccessSummary, data.failureSummary, data.failureRecoverySummary, data.replicaRecoverySummary, data.replicaFailureSummary, data.replicaFailureCategorySummary, data.hotFailedItems, data.recentOperatorActions, data.recentTimeline, data.uploads, data.uploadPolicy, data.retryPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
             + "    }\n"
             + "    function esc(s){return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}\n"
             + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
@@ -1441,6 +1522,16 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      html += '<table><tr><th>path</th><th>phase</th><th>updatedAtMillis</th><th>message</th></tr>';\n"
             + "      for(const it of t.items){\n"
             + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.phase)+'</td><td>'+it.updatedAtMillis+'</td><td>'+esc(it.message)+'</td></tr>';\n"
+            + "      }\n"
+            + "      html += '</table></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
+            + "    function renderRecentOperatorActions(a){\n"
+            + "      let html = '<div class=\"card\"><h3>最近运维动作 (size='+a.size+')</h3>';\n"
+            + "      html += '<table><tr><th>action</th><th>success</th><th>type</th><th>dir</th><th>fileId</th><th>replica</th><th>categories</th><th>touchedFiles</th><th>touchedReplicas</th><th>updatedAtMillis</th><th>message</th></tr>';\n"
+            + "      for(const it of a.items){\n"
+            + "        const categories = Array.isArray(it.categories) ? it.categories.join(',') : '';\n"
+            + "        html += '<tr><td>'+esc(it.action)+'</td><td>'+it.success+'</td><td>'+esc(it.type || '')+'</td><td>'+it.dir+'</td><td>'+esc(it.fileId || '')+'</td><td>'+esc(it.replica || '')+'</td><td>'+esc(categories)+'</td><td>'+it.touchedFileCount+'</td><td>'+it.touchedReplicaCount+'</td><td>'+it.updatedAtMillis+'</td><td>'+esc(it.message || '')+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
@@ -1588,7 +1679,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      await fetch('/sync/api/failed/discard-replicas-by-category?category='+encodeURIComponent(category), {method:'POST'});\n"
             + "      await reload();\n"
             + "    }\n"
-            + "    function render(queues, queueMatrix, healthSummary, failureTrend, recoverySuccessSummary, failureSummary, failureRecoverySummary, replicaRecoverySummary, replicaFailureSummary, replicaFailureCategorySummary, hotFailedItems, recentTimeline, uploads, uploadPolicy, retryPolicy, recentCompletedUploads, recentFailedUploads){\n"
+            + "    function render(queues, queueMatrix, healthSummary, failureTrend, recoverySuccessSummary, failureSummary, failureRecoverySummary, replicaRecoverySummary, replicaFailureSummary, replicaFailureCategorySummary, hotFailedItems, recentOperatorActions, recentTimeline, uploads, uploadPolicy, retryPolicy, recentCompletedUploads, recentFailedUploads){\n"
             + "      const keys = [\n"
             + "        ['新增(文件)', 'file_create'],\n"
             + "        ['修改(文件)', 'file_modify'],\n"
@@ -1615,6 +1706,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      failed += renderReplicaFailureSummary(replicaFailureSummary || {size:0, totalOutstandingReplicas:0, items:[]});\n"
             + "      failed += renderReplicaFailureCategorySummary(replicaFailureCategorySummary || {size:0, totalOutstandingReplicas:0, items:[]});\n"
             + "      failed += renderHotFailedItems(hotFailedItems || {size:0, items:[]});\n"
+            + "      failed += renderRecentOperatorActions(recentOperatorActions || {size:0, items:[]});\n"
             + "      failed += renderUploadHistory('最近失败上传', recentFailedUploads || {size:0, items:[]});\n"
             + "      let upload = '';\n"
             + "      upload += renderUploads(uploads || {size:0, items:[]});\n"
@@ -1790,6 +1882,37 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     private static final class BatchReplicaActionResult {
         private int touchedFileCount;
         private int touchedReplicaCount;
+        private long recordedAtMillis = System.currentTimeMillis();
+    }
+
+    private static final class MonitorActionRecord {
+        private final String action;
+        private final boolean success;
+        private final int touchedFileCount;
+        private final int touchedReplicaCount;
+        private final FileSyncEventType type;
+        private final boolean directory;
+        private final long fileId;
+        private final String replica;
+        private final List<String> categories;
+        private final long updatedAtMillis;
+        private final String message;
+
+        private MonitorActionRecord(String action, boolean success, int touchedFileCount, int touchedReplicaCount,
+                                    FileSyncEventType type, boolean directory, long fileId, String replica,
+                                    List<String> categories, long updatedAtMillis, String message) {
+            this.action = action;
+            this.success = success;
+            this.touchedFileCount = touchedFileCount;
+            this.touchedReplicaCount = touchedReplicaCount;
+            this.type = type;
+            this.directory = directory;
+            this.fileId = fileId;
+            this.replica = replica;
+            this.categories = categories;
+            this.updatedAtMillis = updatedAtMillis;
+            this.message = message;
+        }
     }
 
     private static final class ReplicaRecoveryStats {

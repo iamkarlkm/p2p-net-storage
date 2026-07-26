@@ -79,6 +79,7 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("副本失败类别汇总"));
                 Assert.assertTrue(index.contains("失败趋势"));
                 Assert.assertTrue(index.contains("恢复成功率"));
+                Assert.assertTrue(index.contains("最近运维动作"));
                 Assert.assertTrue(index.contains(">recommendedAction</th>"));
                 Assert.assertTrue(index.contains(">operatorHint</th>"));
                 Assert.assertTrue(index.contains("data-category-action"));
@@ -174,6 +175,7 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"retryBackoffMillis\":2500"));
                 Assert.assertTrue(json.contains("\"manualRetryUnrestricted\":true"));
                 Assert.assertTrue(json.contains("\"recentTimeline\""));
+                Assert.assertTrue(json.contains("\"recentOperatorActions\""));
                 Assert.assertTrue(json.contains("\"phase\":\"completed\""));
                 Assert.assertTrue(json.contains("\"phase\":\"failed\""));
                 Assert.assertTrue(json.contains("\"size\":1"));
@@ -217,6 +219,7 @@ public class P2PSyncMonitorServerTest {
                     "http://127.0.0.1:" + server.getPort() + "/sync/api/failed/retry?fileId=" + retryId + "&dir=false&type=MODIFY",
                     "");
                 Assert.assertTrue(retryResp.contains("\"ok\":true"));
+                Assert.assertTrue(retryResp.contains("\"recordedAtMillis\":"));
                 Assert.assertFalse(store.fileModifiesFailed().contains(Long.valueOf(retryId)));
                 Assert.assertTrue(store.fileModifiesActive().contains(Long.valueOf(retryId)));
 
@@ -224,6 +227,7 @@ public class P2PSyncMonitorServerTest {
                     "http://127.0.0.1:" + server.getPort() + "/sync/api/failed/discard?fileId=" + discardId + "&dir=false&type=DELETE",
                     "");
                 Assert.assertTrue(discardResp.contains("\"ok\":true"));
+                Assert.assertTrue(discardResp.contains("\"recordedAtMillis\":"));
                 Assert.assertFalse(store.fileDeletesFailed().contains(Long.valueOf(discardId)));
                 Assert.assertEquals(0, store.getRetryCount(FileSyncEventType.DELETE, false, discardId));
 
@@ -232,6 +236,7 @@ public class P2PSyncMonitorServerTest {
                         + "&dir=false&type=CREATE&replica=node-b",
                     "");
                 Assert.assertTrue(targetedRetryResp.contains("\"ok\":true"));
+                Assert.assertTrue(targetedRetryResp.contains("\"recordedAtMillis\":"));
                 Assert.assertFalse(store.fileCreatesFailed().contains(Long.valueOf(targetedId)));
                 Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, false, targetedId, "node-b", P2PSyncStateStore.REPLICA_TARGETED));
                 Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, false, targetedId, "node-c", P2PSyncStateStore.REPLICA_FAILED));
@@ -245,8 +250,20 @@ public class P2PSyncMonitorServerTest {
                         + "&dir=false&type=CREATE&replica=node-c",
                     "");
                 Assert.assertTrue(targetedDiscardResp.contains("\"ok\":true"));
+                Assert.assertTrue(targetedDiscardResp.contains("\"recordedAtMillis\":"));
                 Assert.assertTrue(store.fileCreatesFailed().contains(Long.valueOf(targetedId)));
                 Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, false, targetedId, "node-c", P2PSyncStateStore.REPLICA_DISCARDED));
+
+                String queuesJson = send("GET", "http://127.0.0.1:" + server.getPort() + "/sync/api/queues?limit=10", null);
+                Assert.assertTrue(queuesJson.contains("\"recentOperatorActions\""));
+                Assert.assertTrue(queuesJson.contains("\"action\":\"RETRY_FAILED_ITEM\""));
+                Assert.assertTrue(queuesJson.contains("\"action\":\"DISCARD_FAILED_ITEM\""));
+                Assert.assertTrue(queuesJson.contains("\"action\":\"RETRY_REPLICA\""));
+                Assert.assertTrue(queuesJson.contains("\"action\":\"DISCARD_REPLICA\""));
+                Assert.assertTrue(queuesJson.contains("\"fileId\":\"" + targetedId + "\""));
+                Assert.assertTrue(queuesJson.contains("\"replica\":\"node-b\""));
+                Assert.assertTrue(queuesJson.contains("\"replica\":\"node-c\""));
+                Assert.assertTrue(queuesJson.contains("\"message\":\"manual_action_applied\""));
             }
         }
     }
