@@ -398,7 +398,7 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
             this.fileId = fileId;
             this.path = path == null ? "" : path;
             this.fileSize = fileSize;
-            this.segmented = fileSize > P2PConfig.DATA_BLOCK_SIZE;
+            this.segmented = fileSize > P2PConfig.DATA_PUT_BLOCK_SIZE;
             this.totalSegments = segmentCount(fileSize);
             this.startedAtMillis = System.currentTimeMillis();
             this.updatedAtMillis = this.startedAtMillis;
@@ -445,8 +445,8 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
             if (fileSize <= 0L) {
                 return 1;
             }
-            long count = fileSize / P2PConfig.DATA_BLOCK_SIZE;
-            if (fileSize % P2PConfig.DATA_BLOCK_SIZE != 0L) {
+            long count = fileSize / P2PConfig.DATA_PUT_BLOCK_SIZE;
+            if (fileSize % P2PConfig.DATA_PUT_BLOCK_SIZE != 0L) {
                 count++;
             }
             if (count > Integer.MAX_VALUE) {

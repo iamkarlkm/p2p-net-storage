@@ -5,6 +5,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import javax.net.p2p.auth.config.AuthConfig;
+import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.filesync.sync.rpc.server.SyncConflictPolicy;
 
 import org.junit.Assert;
@@ -123,6 +124,32 @@ public class P2PSyncConfigTest {
 
             Assert.assertEquals(SyncConflictPolicy.LAST_WRITE_WINS, cfg.getConflictPolicy());
         } finally {
+            System.clearProperty("p2p.sync.inlineYaml");
+            System.clearProperty("p2p.sync.inlineBaseDir");
+            System.clearProperty("p2p.auth.inlineYaml");
+            System.clearProperty("p2p.auth.inlineBaseDir");
+            System.clearProperty("p2p.auth.yaml");
+            System.clearProperty("p2p.key.dir");
+        }
+    }
+
+    @Test
+    public void shouldApplyUploadBlockSizeFromInlineYaml() throws Exception {
+        Path baseDir = Files.createTempDirectory("p2p_sync_cfg_upload_block_");
+        int original = P2PConfig.DATA_PUT_BLOCK_SIZE;
+        try {
+            System.setProperty("p2p.sync.inlineBaseDir", baseDir.toString());
+            System.setProperty("p2p.sync.inlineYaml", ""
+                + "taskId: 1\n"
+                + "localDir: \"./data\"\n"
+                + "uploadBlockSizeBytes: 4096\n");
+
+            P2PSyncConfig cfg = P2PSyncConfig.load();
+
+            Assert.assertEquals(4096, cfg.getUploadBlockSizeBytes());
+            Assert.assertEquals(4096, P2PConfig.DATA_PUT_BLOCK_SIZE);
+        } finally {
+            P2PConfig.DATA_PUT_BLOCK_SIZE = original;
             System.clearProperty("p2p.sync.inlineYaml");
             System.clearProperty("p2p.sync.inlineBaseDir");
             System.clearProperty("p2p.auth.inlineYaml");

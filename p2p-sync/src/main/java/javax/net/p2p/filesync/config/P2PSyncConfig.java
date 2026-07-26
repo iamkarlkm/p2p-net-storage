@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 import javax.net.p2p.auth.config.AuthConfig;
+import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.filesync.sync.rpc.server.SyncConflictPolicy;
 
 import org.yaml.snakeyaml.Yaml;
@@ -26,6 +27,7 @@ public class P2PSyncConfig {
     private List<String> excludeGlobs = new ArrayList<>();
     private String localDir;
     private String dsHome;
+    private int uploadBlockSizeBytes;
     private Map<String, String> userInfo;
     private Map<String, String> loginInfo;
     private AuthConfig auth;
@@ -105,6 +107,14 @@ public class P2PSyncConfig {
 
     public void setDsHome(String dsHome) {
         this.dsHome = dsHome;
+    }
+
+    public int getUploadBlockSizeBytes() {
+        return uploadBlockSizeBytes;
+    }
+
+    public void setUploadBlockSizeBytes(int uploadBlockSizeBytes) {
+        this.uploadBlockSizeBytes = uploadBlockSizeBytes;
     }
 
     public Map<String, String> getUserInfo() {
@@ -231,6 +241,10 @@ public class P2PSyncConfig {
         if (cfg.monitorPort == 0) {
             cfg.monitorPort = 8090;
         }
+        if (cfg.uploadBlockSizeBytes <= 0) {
+            cfg.uploadBlockSizeBytes = P2PConfig.DATA_PUT_BLOCK_SIZE;
+        }
+        P2PConfig.DATA_PUT_BLOCK_SIZE = cfg.uploadBlockSizeBytes;
         return cfg;
     }
 

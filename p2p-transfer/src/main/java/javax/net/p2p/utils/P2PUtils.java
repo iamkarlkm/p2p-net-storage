@@ -600,7 +600,7 @@ public class P2PUtils  implements P2PFileService{
 	}
 
 	public void putFileData(int storeId, String path, File localfile) throws Exception {
-		if (localfile.length() <= P2PConfig.DATA_BLOCK_SIZE) {
+		if (localfile.length() <= P2PConfig.DATA_PUT_BLOCK_SIZE) {
 			P2PWrapper p2p = P2PWrapper.build(P2PCommand.PUT_FILE, new FileDataModel(storeId, path, Files.readAllBytes(localfile.toPath())));
 			P2PWrapper response = (P2PWrapper) node.excute(p2p);
 
@@ -617,7 +617,7 @@ public class P2PUtils  implements P2PFileService{
 		} else {//分段上传
 			String md5 = SecurityUtils.getFileMD5String(localfile);
 			long length = localfile.length();
-			int blockSize = P2PConfig.DATA_BLOCK_SIZE;
+			int blockSize = P2PConfig.DATA_PUT_BLOCK_SIZE;
 			int count = (int) (length % blockSize == 0 ? length / blockSize : length / blockSize + 1);
 
 			Triple<File, File, Set<Integer>> upInfo = FileUtil.getUpInfoTmp(path);

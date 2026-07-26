@@ -109,76 +109,82 @@ public class RpcSyncEventHandlerTest {
 
     @Test
     public void shouldExposeActiveSegmentedUploadStatus() throws Exception {
+        int originalBlockSize = P2PConfig.DATA_PUT_BLOCK_SIZE;
         Path localFile = Files.createTempFile("p2p_sync_rpc_large_", ".bin");
-        Files.write(localFile, new byte[P2PConfig.DATA_BLOCK_SIZE + 1024]);
+        P2PConfig.DATA_PUT_BLOCK_SIZE = 1024;
+        Files.write(localFile, new byte[P2PConfig.DATA_PUT_BLOCK_SIZE + 1024]);
 
-        RpcClient rpcClient = new RpcClient() {
-            @Override
-            public <Req extends Message, Resp extends Message> Resp unary(String service, String method, Req request, Class<Resp> responseType, RpcCallOptions options) {
-                throw new UnsupportedOperationException();
-            }
-
-            @Override
-            public <Req extends Message, Resp extends Message> RpcUnaryResult<Resp> unaryDetailed(String service, String method, Req request, Class<Resp> responseType, RpcCallOptions options) {
-                throw new UnsupportedOperationException();
-            }
-
-            @Override
-            @SuppressWarnings("unchecked")
-            public <Req extends Message, Resp extends Message> CompletableFuture<Resp> unaryAsync(String service, String method, Req request, Class<Resp> responseType, RpcCallOptions options) {
-                if (SyncRpcServices.APPLY_EVENT.equals(method)) {
-                    SyncEventRequest syncReq = (SyncEventRequest) request;
-                    return CompletableFuture.completedFuture((Resp) SyncEventAck.newBuilder()
-                        .setOk(true)
-                        .setNeedsUpload(true)
-                        .setStoreId(9)
-                        .setEventUid(syncReq.getEventUid())
-                        .build());
+        try {
+            RpcClient rpcClient = new RpcClient() {
+                @Override
+                public <Req extends Message, Resp extends Message> Resp unary(String service, String method, Req request, Class<Resp> responseType, RpcCallOptions options) {
+                    throw new UnsupportedOperationException();
                 }
-                if (SyncRpcServices.FINALIZE_EVENT.equals(method)) {
-                    SyncFinalizeRequest syncReq = (SyncFinalizeRequest) request;
-                    return CompletableFuture.completedFuture((Resp) SyncEventAck.newBuilder()
-                        .setOk(true)
-                        .setEventUid(syncReq.getEventUid())
-                        .build());
+
+                @Override
+                public <Req extends Message, Resp extends Message> RpcUnaryResult<Resp> unaryDetailed(String service, String method, Req request, Class<Resp> responseType, RpcCallOptions options) {
+                    throw new UnsupportedOperationException();
                 }
-                CompletableFuture<Resp> future = new CompletableFuture<Resp>();
-                future.completeExceptionally(new IllegalArgumentException("unexpected method: " + method));
-                return future;
-            }
-        };
 
-        FakeFileService fileService = new FakeFileService();
-        fileService.simulateSegmentedUpload();
-        RpcSyncEventHandler handler = new RpcSyncEventHandler(rpcClient, fileService, 12L);
+                @Override
+                @SuppressWarnings("unchecked")
+                public <Req extends Message, Resp extends Message> CompletableFuture<Resp> unaryAsync(String service, String method, Req request, Class<Resp> responseType, RpcCallOptions options) {
+                    if (SyncRpcServices.APPLY_EVENT.equals(method)) {
+                        SyncEventRequest syncReq = (SyncEventRequest) request;
+                        return CompletableFuture.completedFuture((Resp) SyncEventAck.newBuilder()
+                            .setOk(true)
+                            .setNeedsUpload(true)
+                            .setStoreId(9)
+                            .setEventUid(syncReq.getEventUid())
+                            .build());
+                    }
+                    if (SyncRpcServices.FINALIZE_EVENT.equals(method)) {
+                        SyncFinalizeRequest syncReq = (SyncFinalizeRequest) request;
+                        return CompletableFuture.completedFuture((Resp) SyncEventAck.newBuilder()
+                            .setOk(true)
+                            .setEventUid(syncReq.getEventUid())
+                            .build());
+                    }
+                    CompletableFuture<Resp> future = new CompletableFuture<Resp>();
+                    future.completeExceptionally(new IllegalArgumentException("unexpected method: " + method));
+                    return future;
+                }
+            };
 
-        CountDownLatch ackLatch = new CountDownLatch(1);
-        handler.handle(FileSyncEventType.MODIFY, 2L, "big.bin", localFile, false, new javax.net.p2p.filesync.sync.FileSyncAcker() {
-            @Override
-            public void ack() {
-                ackLatch.countDown();
-            }
+            FakeFileService fileService = new FakeFileService();
+            fileService.simulateSegmentedUpload();
+            RpcSyncEventHandler handler = new RpcSyncEventHandler(rpcClient, fileService, 12L);
 
-            @Override
-            public void retry() {
-            }
-        });
+            CountDownLatch ackLatch = new CountDownLatch(1);
+            handler.handle(FileSyncEventType.MODIFY, 2L, "big.bin", localFile, false, new javax.net.p2p.filesync.sync.FileSyncAcker() {
+                @Override
+                public void ack() {
+                    ackLatch.countDown();
+                }
 
-        Assert.assertTrue(fileService.uploadStarted.await(5, TimeUnit.SECONDS));
-        SyncUploadStatus status = waitForUploadStatus(handler, 5, TimeUnit.SECONDS);
-        Assert.assertEquals("big.bin", status.getPath());
-        Assert.assertTrue(status.isSegmented());
-        Assert.assertEquals(2, status.getTotalSegments());
-        waitUntilUploadedSegments(handler, 1, 5, TimeUnit.SECONDS);
+                @Override
+                public void retry() {
+                }
+            });
 
-        fileService.releaseUpload.countDown();
-        Assert.assertTrue(ackLatch.await(5, TimeUnit.SECONDS));
-        waitUntilNoUploads(handler, 5, TimeUnit.SECONDS);
-        Assert.assertTrue(handler.snapshotActiveUploads(10).isEmpty());
-        SyncUploadStatus completed = waitForRecentCompletedStatus(handler, 5, TimeUnit.SECONDS);
-        Assert.assertEquals("big.bin", completed.getPath());
-        Assert.assertEquals("completed", completed.getPhase());
-        handler.close();
+            Assert.assertTrue(fileService.uploadStarted.await(5, TimeUnit.SECONDS));
+            SyncUploadStatus status = waitForUploadStatus(handler, 5, TimeUnit.SECONDS);
+            Assert.assertEquals("big.bin", status.getPath());
+            Assert.assertTrue(status.isSegmented());
+            Assert.assertEquals(2, status.getTotalSegments());
+            waitUntilUploadedSegments(handler, 1, 5, TimeUnit.SECONDS);
+
+            fileService.releaseUpload.countDown();
+            Assert.assertTrue(ackLatch.await(5, TimeUnit.SECONDS));
+            waitUntilNoUploads(handler, 5, TimeUnit.SECONDS);
+            Assert.assertTrue(handler.snapshotActiveUploads(10).isEmpty());
+            SyncUploadStatus completed = waitForRecentCompletedStatus(handler, 5, TimeUnit.SECONDS);
+            Assert.assertEquals("big.bin", completed.getPath());
+            Assert.assertEquals("completed", completed.getPhase());
+            handler.close();
+        } finally {
+            P2PConfig.DATA_PUT_BLOCK_SIZE = originalBlockSize;
+        }
     }
 
     private static final class FakeFileService implements P2PFileService {

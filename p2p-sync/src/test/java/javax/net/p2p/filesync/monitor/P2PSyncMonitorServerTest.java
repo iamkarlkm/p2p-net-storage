@@ -57,6 +57,9 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"path\":\"failed.txt\""));
                 Assert.assertTrue(json.contains("\"reason\":\"write_conflict\""));
                 Assert.assertTrue(json.contains("\"uploads\""));
+                Assert.assertTrue(json.contains("\"uploadPolicy\""));
+                Assert.assertTrue(json.contains("\"mode\":\"AUTO_SEGMENT_RESUMABLE\""));
+                Assert.assertTrue(json.contains("\"uploadBlockSizeBytes\":"));
                 Assert.assertTrue(json.contains("\"size\":1"));
                 Assert.assertTrue(json.contains("\"phase\":\"uploading\""));
                 Assert.assertTrue(json.contains("\"segmented\":true"));

@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.concurrent.Executors;
 
+import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.filesync.sync.FileSyncEventType;
 import javax.net.p2p.filesync.sync.P2PDirectorySyncService;
 import javax.net.p2p.filesync.sync.P2PSyncStateStore;
@@ -131,9 +132,19 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         root.put("ok", Boolean.TRUE);
         root.put("queues", queuesToMap(store, limit));
         root.put("uploads", uploadsToMap(limit));
+        root.put("uploadPolicy", uploadPolicyToMap());
         root.put("recentCompletedUploads", uploadHistoryToMap(syncService.snapshotRecentCompletedUploads(limit)));
         root.put("recentFailedUploads", uploadHistoryToMap(syncService.snapshotRecentFailedUploads(limit)));
         return toJson(root);
+    }
+
+    private Map<String, Object> uploadPolicyToMap() {
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("mode", "AUTO_SEGMENT_RESUMABLE");
+        out.put("uploadBlockSizeBytes", Integer.valueOf(P2PConfig.DATA_PUT_BLOCK_SIZE));
+        out.put("resumeSupported", Boolean.TRUE);
+        out.put("historyRetention", "memory_recent");
+        return out;
     }
 
     private Map<String, Object> uploadsToMap(int limit) {
@@ -248,7 +259,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      const res = await fetch('/sync/api/queues?limit=200');\n"
             + "      const data = await res.json();\n"
             + "      if(!data.ok){document.getElementById('content').innerText = data.message || 'error';return;}\n"
-            + "      render(data.queues, data.uploads, data.recentCompletedUploads, data.recentFailedUploads);\n"
+            + "      render(data.queues, data.uploads, data.uploadPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
             + "    }\n"
             + "    function esc(s){return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}\n"
             + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
@@ -287,6 +298,13 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      html += '</table></div>';\n"
             + "      return html;\n"
             + "    }\n"
+            + "    function renderUploadPolicy(p){\n"
+            + "      let html = '<div class=\"card\"><h3>上传策略</h3>';\n"
+            + "      html += '<table><tr><th>mode</th><th>uploadBlockSizeBytes</th><th>resumeSupported</th><th>historyRetention</th></tr>';\n"
+            + "      html += '<tr><td>'+esc(p.mode)+'</td><td>'+p.uploadBlockSizeBytes+'</td><td>'+p.resumeSupported+'</td><td>'+esc(p.historyRetention)+'</td></tr>';\n"
+            + "      html += '</table></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
             + "    async function retryIt(fileId, dir, type){\n"
             + "      await fetch('/sync/api/failed/retry?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});\n"
             + "      await reload();\n"
@@ -295,7 +313,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      await fetch('/sync/api/failed/discard?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});\n"
             + "      await reload();\n"
             + "    }\n"
-            + "    function render(queues, uploads, recentCompletedUploads, recentFailedUploads){\n"
+            + "    function render(queues, uploads, uploadPolicy, recentCompletedUploads, recentFailedUploads){\n"
             + "      const keys = [\n"
             + "        ['新增(文件)', 'file_create'],\n"
             + "        ['修改(文件)', 'file_modify'],\n"
@@ -309,6 +327,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "        ['失败-删除(目录)', 'failed_dir_delete'],\n"
             + "      ];\n"
             + "      let html = '<div class=\"row\">';\n"
+            + "      html += renderUploadPolicy(uploadPolicy || {mode:'AUTO_SEGMENT_RESUMABLE', uploadBlockSizeBytes:0, resumeSupported:true, historyRetention:'memory_recent'});\n"
             + "      html += renderUploads(uploads || {size:0, items:[]});\n"
             + "      html += renderUploadHistory('最近完成上传', recentCompletedUploads || {size:0, items:[]});\n"
             + "      html += renderUploadHistory('最近失败上传', recentFailedUploads || {size:0, items:[]});\n"
