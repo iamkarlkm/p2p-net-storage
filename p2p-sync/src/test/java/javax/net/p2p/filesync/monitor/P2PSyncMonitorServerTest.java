@@ -47,6 +47,7 @@ public class P2PSyncMonitorServerTest {
             store.markFailed(FileSyncEventType.DELETE, false, staleId, "stale");
             store.markReplicaState(FileSyncEventType.CREATE, false, fileId, "node-a", "ACKED");
             store.markReplicaState(FileSyncEventType.CREATE, false, fileId, "node-b", "FAILED");
+            store.markReplicaState(FileSyncEventType.DELETE, false, staleId, "node-c", "FAILED");
             store.incrementRetryCount(FileSyncEventType.CREATE, false, fileId);
             store.incrementRetryCount(FileSyncEventType.CREATE, false, fileId);
             store.markRetriedNow(FileSyncEventType.CREATE, false, fileId);
@@ -68,6 +69,8 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("上传区"));
                 Assert.assertTrue(index.contains("队列明细区"));
                 Assert.assertTrue(index.contains(">replicas</th>"));
+                Assert.assertTrue(index.contains("副本恢复分级汇总"));
+                Assert.assertTrue(index.contains(">replicaRecoveryClass</th>"));
 
                 String json = send("GET", "http://127.0.0.1:" + server.getPort() + "/sync/api/queues?limit=20", null);
                 Assert.assertTrue(json.contains("\"ok\":true"));
@@ -88,6 +91,10 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"reason\":\"write_conflict\""));
                 Assert.assertTrue(json.contains("\"replicaStates\""));
                 Assert.assertTrue(json.contains("\"replicaSummary\":\"node-a=ACKED, node-b=FAILED\""));
+                Assert.assertTrue(json.contains("\"replicaRecoveryClass\":\"MANUAL_INTERVENTION\""));
+                Assert.assertTrue(json.contains("\"outstandingReplicaCount\":1"));
+                Assert.assertTrue(json.contains("\"autoRecoverableReplicaCount\":0"));
+                Assert.assertTrue(json.contains("\"manualReplicaCount\":1"));
                 Assert.assertTrue(json.contains("\"label\":\"node-a\""));
                 Assert.assertTrue(json.contains("\"status\":\"FAILED\""));
                 Assert.assertTrue(json.contains("\"healthSummary\""));
@@ -101,6 +108,9 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"failureRecoverySummary\""));
                 Assert.assertTrue(json.contains("\"recoveryClass\":\"MANUAL_INTERVENTION\""));
                 Assert.assertTrue(json.contains("\"recoveryClass\":\"AUTO_RECOVERABLE\""));
+                Assert.assertTrue(json.contains("\"replicaRecoverySummary\""));
+                Assert.assertTrue(json.contains("\"totalOutstandingReplicas\":2"));
+                Assert.assertTrue(json.contains("\"manualReplicaCount\":1"));
                 Assert.assertTrue(json.contains("\"hotFailedItems\""));
                 Assert.assertTrue(json.contains("\"size\":2"));
                 Assert.assertTrue(json.contains("\"reason\":\"stale\""));
