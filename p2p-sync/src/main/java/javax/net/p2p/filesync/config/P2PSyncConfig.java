@@ -30,6 +30,7 @@ public class P2PSyncConfig {
     private int uploadBlockSizeBytes;
     private int maxRetryCount = 3;
     private long retryBackoffMillis = 2000L;
+    private long receiverPendingExpireMillis = 300000L;
     private Map<String, String> userInfo;
     private Map<String, String> loginInfo;
     private AuthConfig auth;
@@ -133,6 +134,14 @@ public class P2PSyncConfig {
 
     public void setRetryBackoffMillis(long retryBackoffMillis) {
         this.retryBackoffMillis = retryBackoffMillis;
+    }
+
+    public long getReceiverPendingExpireMillis() {
+        return receiverPendingExpireMillis;
+    }
+
+    public void setReceiverPendingExpireMillis(long receiverPendingExpireMillis) {
+        this.receiverPendingExpireMillis = receiverPendingExpireMillis;
     }
 
     public Map<String, String> getUserInfo() {
@@ -267,6 +276,9 @@ public class P2PSyncConfig {
         }
         if (cfg.retryBackoffMillis < 0L) {
             cfg.retryBackoffMillis = 2000L;
+        }
+        if (cfg.receiverPendingExpireMillis <= 0L) {
+            cfg.receiverPendingExpireMillis = 300000L;
         }
         P2PConfig.DATA_PUT_BLOCK_SIZE = cfg.uploadBlockSizeBytes;
         return cfg;

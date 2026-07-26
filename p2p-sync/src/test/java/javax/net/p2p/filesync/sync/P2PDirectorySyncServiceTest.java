@@ -119,6 +119,64 @@ public class P2PDirectorySyncServiceTest {
     }
 
     @Test
+    public void shouldAdvanceStartupCheckpointAfterAckedFileCreate() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_root_checkpoint_ack_");
+        Path state = Files.createTempDirectory("p2p_sync_state_checkpoint_ack_");
+        Path file = root.resolve("acked.txt");
+        writeUtf8(file, "v1");
+        long lastModifiedMillis = System.currentTimeMillis() - 5000L;
+        Files.setLastModifiedTime(file, FileTime.fromMillis(lastModifiedMillis));
+
+        P2PSyncConfig cfg = new P2PSyncConfig();
+        cfg.setTaskId(30L);
+        cfg.setLocalDir(root.toString());
+        cfg.setDsHome(state.toString());
+
+        CountDownLatch latch = new CountDownLatch(1);
+        try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, (type, fileId, rel, abs, dir, acker) -> {
+            if (!dir && type == FileSyncEventType.CREATE && "acked.txt".equals(rel)) {
+                latch.countDown();
+            }
+            acker.ack();
+        })) {
+            svc.start();
+            Assert.assertTrue(latch.await(5, TimeUnit.SECONDS));
+        }
+
+        try (P2PSyncStateStore store = new P2PSyncStateStore(state)) {
+            Assert.assertEquals(lastModifiedMillis, store.getLastSuccessRunMillis());
+        }
+    }
+
+    @Test
+    public void shouldNotAdvanceStartupCheckpointWhileEventRemainsInflight() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_root_checkpoint_inflight_");
+        Path state = Files.createTempDirectory("p2p_sync_state_checkpoint_inflight_");
+        Path file = root.resolve("inflight.txt");
+        writeUtf8(file, "v1");
+
+        P2PSyncConfig cfg = new P2PSyncConfig();
+        cfg.setTaskId(31L);
+        cfg.setLocalDir(root.toString());
+        cfg.setDsHome(state.toString());
+
+        CountDownLatch latch = new CountDownLatch(1);
+        try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, (type, fileId, rel, abs, dir, acker) -> {
+            if (!dir && type == FileSyncEventType.CREATE && "inflight.txt".equals(rel)) {
+                latch.countDown();
+            }
+        })) {
+            svc.start();
+            Assert.assertTrue(latch.await(5, TimeUnit.SECONDS));
+            Thread.sleep(1200L);
+        }
+
+        try (P2PSyncStateStore store = new P2PSyncStateStore(state)) {
+            Assert.assertEquals(0L, store.getLastSuccessRunMillis());
+        }
+    }
+
+    @Test
     public void shouldMoveToFailedQueueOnFail() throws Exception {
         Path root = Files.createTempDirectory("p2p_sync_root_failed_");
         Path state = Files.createTempDirectory("p2p_sync_state_failed_");

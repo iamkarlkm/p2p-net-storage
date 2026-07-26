@@ -171,9 +171,12 @@ final class P2PSyncQueueEngine {
             }
             inflight.remove(fileId);
             inflight.sync();
+            store.advanceLastSuccessRunMillis(store.getLastModifiedMillis(fileId) == null ? 0L : store.getLastModifiedMillis(fileId).longValue());
             store.clearRetryCount(def.type, def.directory, fileId);
             if (def.type == FileSyncEventType.DELETE) {
                 store.removeKind(fileId);
+                store.removeLastModifiedMillis(fileId);
+                store.fileIdToLastModifiedMap().sync();
                 store.fileIdToKindMap().sync();
             }
         }

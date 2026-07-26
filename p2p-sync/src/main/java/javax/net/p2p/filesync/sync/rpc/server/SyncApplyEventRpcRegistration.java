@@ -26,7 +26,7 @@ public final class SyncApplyEventRpcRegistration {
         int storeId = config.getStoreId();
         SharedStorage.registerStorageLocation(storeId, rootDir.toFile());
 
-        SyncReceiverStateStore stateStore = new SyncReceiverStateStore(dsHome.resolve("receiver"));
+        SyncReceiverStateStore stateStore = new SyncReceiverStateStore(dsHome.resolve("receiver"), config.getReceiverPendingExpireMillis());
         SyncEventApplier applier = new SyncEventApplier(rootDir);
         SyncReceiverRpcService service = new SyncReceiverRpcService(storeId, rootDir, stateStore, applier, config.getConflictPolicy());
 

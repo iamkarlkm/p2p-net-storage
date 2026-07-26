@@ -34,6 +34,7 @@ public final class SyncReceiverRpcService {
         if (req == null) {
             return SyncEventAck.newBuilder().setOk(false).setMessage("empty request").build();
         }
+        stateStore.cleanupExpiredPending();
         long eventUid = req.getEventUid();
         if (stateStore.isCompleted(eventUid)) {
             return SyncEventAck.newBuilder()
@@ -125,6 +126,7 @@ public final class SyncReceiverRpcService {
         if (req == null) {
             return SyncEventAck.newBuilder().setOk(false).setMessage("empty request").build();
         }
+        stateStore.cleanupExpiredPending();
         long eventUid = req.getEventUid();
         if (stateStore.isCompleted(eventUid)) {
             return SyncEventAck.newBuilder()

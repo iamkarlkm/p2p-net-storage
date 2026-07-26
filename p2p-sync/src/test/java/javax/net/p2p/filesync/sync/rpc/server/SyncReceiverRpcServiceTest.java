@@ -3,6 +3,7 @@ package javax.net.p2p.filesync.sync.rpc.server;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import javax.net.p2p.rpc.sync.proto.SyncEventAck;
 import java.nio.file.attribute.FileTime;
 import javax.net.p2p.rpc.sync.proto.SyncEventType;
 import javax.net.p2p.rpc.sync.proto.SyncFinalizeRequest;
@@ -185,6 +186,55 @@ public class SyncReceiverRpcServiceTest {
                 .setLastModifiedMillis(ts2)
                 .build());
             Assert.assertTrue(finNew.getOk());
+        }
+    }
+
+    @Test
+    public void shouldCleanupExpiredPendingBeforeNextApply() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_receiver_root_pending_expire_");
+        Path state = Files.createTempDirectory("p2p_sync_receiver_state_pending_expire_");
+
+        try (SyncReceiverStateStore store = new SyncReceiverStateStore(state, 50L)) {
+            SyncEventApplier applier = new SyncEventApplier(root);
+            SyncReceiverRpcService svc = new SyncReceiverRpcService(123, root, store, applier);
+
+            long ts = System.currentTimeMillis() - 3_000L;
+            SyncEventAck apply1 = svc.applyEvent(SyncEventRequest.newBuilder()
+                .setTaskId(1L)
+                .setEventUid(3001L)
+                .setFileId(1L)
+                .setPath("a/b.txt")
+                .setDirectory(false)
+                .setType(SyncEventType.MODIFY)
+                .setLastModifiedMillis(ts)
+                .build());
+            Assert.assertTrue(apply1.getOk());
+            Assert.assertTrue(apply1.getNeedsUpload());
+
+            Thread.sleep(80L);
+
+            SyncEventAck apply2 = svc.applyEvent(SyncEventRequest.newBuilder()
+                .setTaskId(1L)
+                .setEventUid(3002L)
+                .setFileId(2L)
+                .setPath("a/b.txt")
+                .setDirectory(false)
+                .setType(SyncEventType.MODIFY)
+                .setLastModifiedMillis(ts + 1L)
+                .build());
+            Assert.assertTrue(apply2.getOk());
+            Assert.assertTrue(apply2.getNeedsUpload());
+
+            SyncEventAck fin1 = svc.finalizeEvent(SyncFinalizeRequest.newBuilder()
+                .setTaskId(1L)
+                .setEventUid(3001L)
+                .setPath("a/b.txt")
+                .setDirectory(false)
+                .setType(SyncEventType.MODIFY)
+                .setLastModifiedMillis(ts)
+                .build());
+            Assert.assertFalse(fin1.getOk());
+            Assert.assertEquals("event is not pending", fin1.getMessage());
         }
     }
 

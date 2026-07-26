@@ -23,7 +23,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import com.q3lives.ds.collections.DsHashSet;
@@ -41,8 +40,6 @@ public final class P2PDirectorySyncService implements AutoCloseable {
     private final AtomicBoolean watchReady = new AtomicBoolean(false);
     private final ExecutorService watchExecutor;
     private final ExecutorService eventExecutor;
-    private final ScheduledExecutorService heartbeatExecutor;
-
     private volatile WatchService watchService;
     private volatile P2PSyncStateStore store;
     private volatile Path rootDir;
@@ -89,7 +86,6 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         this.queueEngine = new P2PSyncQueueEngine(config.getMaxRetryCount(), config.getRetryBackoffMillis());
         this.watchExecutor = Executors.newSingleThreadExecutor(r -> new Thread(r, "p2p-sync-watch"));
         this.eventExecutor = Executors.newSingleThreadExecutor(r -> new Thread(r, "p2p-sync-events"));
-        this.heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "p2p-sync-heartbeat"));
         this.includeMatchers = compileMatchers(config.getIncludeGlobs());
         this.excludeMatchers = compileMatchers(config.getExcludeGlobs());
     }
@@ -112,14 +108,6 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         initialScan();
         store.swapEventTablesForStartup();
         drainStage(store, QueueStage.STARTUP, 2048);
-
-        // 记录最近成功运行时间：每秒落一次，用于下次启动时按 lastModified 过滤需要入队的事件
-        this.heartbeatExecutor.scheduleAtFixedRate(() -> {
-            P2PSyncStateStore s = this.store;
-            if (s != null && running.get()) {
-                s.setLastSuccessRunMillis(System.currentTimeMillis());
-            }
-        }, 0, 1, TimeUnit.SECONDS);
 
         this.eventExecutor.submit(this::eventLoop);
         this.watchExecutor.submit(this::watchLoop);
@@ -193,6 +181,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         long id = localStore.getOrCreateFileId(relativePath);
         Boolean prevDir = localStore.isDirectory(id);
         localStore.putKind(id, true);
+        localStore.putLastModifiedMillis(id, readLastModifiedMillis(absoluteDir));
         if (prevDir == null) {
             if (shouldEnqueueByLastRun(absoluteDir, lastRunMillis)) {
                 localStore.enqueueDirCreate(id);
@@ -307,6 +296,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         String relativePath = toStableRelativePath(rootDir, absoluteDir);
         long id = localStore.getOrCreateFileId(relativePath);
         localStore.putKind(id, true);
+        localStore.putLastModifiedMillis(id, readLastModifiedMillis(absoluteDir));
         localStore.enqueueDirCreate(id);
     }
 
@@ -359,6 +349,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         }
         if (directory) {
             localStore.enqueueDirDelete(id);
+            localStore.removeLastModifiedMillis(id);
         } else {
             localStore.enqueueFileDelete(id);
             localStore.removeLastModifiedMillis(id);
@@ -520,7 +511,6 @@ public final class P2PDirectorySyncService implements AutoCloseable {
                 log.warn("close watchService failed", e);
             }
         }
-        shutdownExecutor(heartbeatExecutor);
         shutdownExecutor(watchExecutor);
         shutdownExecutor(eventExecutor);
 
@@ -540,6 +530,14 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         } catch (InterruptedException e) {
             executor.shutdownNow();
             Thread.currentThread().interrupt();
+        }
+    }
+
+    private static long readLastModifiedMillis(Path path) {
+        try {
+            return Files.getLastModifiedTime(path).toMillis();
+        } catch (IOException e) {
+            return 0L;
         }
     }
 }

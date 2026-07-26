@@ -204,4 +204,27 @@ public class P2PSyncConfigTest {
             System.clearProperty("p2p.key.dir");
         }
     }
+
+    @Test
+    public void shouldApplyReceiverPendingExpireMillisFromInlineYaml() throws Exception {
+        Path baseDir = Files.createTempDirectory("p2p_sync_cfg_receiver_pending_expire_");
+        try {
+            System.setProperty("p2p.sync.inlineBaseDir", baseDir.toString());
+            System.setProperty("p2p.sync.inlineYaml", ""
+                + "taskId: 1\n"
+                + "localDir: \"./data\"\n"
+                + "receiverPendingExpireMillis: 45000\n");
+
+            P2PSyncConfig cfg = P2PSyncConfig.load();
+
+            Assert.assertEquals(45000L, cfg.getReceiverPendingExpireMillis());
+        } finally {
+            System.clearProperty("p2p.sync.inlineYaml");
+            System.clearProperty("p2p.sync.inlineBaseDir");
+            System.clearProperty("p2p.auth.inlineYaml");
+            System.clearProperty("p2p.auth.inlineBaseDir");
+            System.clearProperty("p2p.auth.yaml");
+            System.clearProperty("p2p.key.dir");
+        }
+    }
 }

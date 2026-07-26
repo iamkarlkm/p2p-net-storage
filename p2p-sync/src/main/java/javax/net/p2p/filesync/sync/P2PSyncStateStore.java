@@ -130,6 +130,17 @@ public final class P2PSyncStateStore implements AutoCloseable {
         meta.sync();
     }
 
+    public void advanceLastSuccessRunMillis(long epochMillis) {
+        if (epochMillis <= 0L) {
+            return;
+        }
+        long current = getLastSuccessRunMillis();
+        if (epochMillis <= current) {
+            return;
+        }
+        setLastSuccessRunMillis(epochMillis);
+    }
+
     public Path getDsHome() {
         return dsHome;
     }
