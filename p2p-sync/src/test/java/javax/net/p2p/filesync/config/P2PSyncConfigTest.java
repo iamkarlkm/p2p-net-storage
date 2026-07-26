@@ -4,6 +4,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import javax.net.p2p.auth.config.AuthConfig;
+import javax.net.p2p.filesync.sync.rpc.server.SyncConflictPolicy;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -34,6 +35,7 @@ public class P2PSyncConfigTest {
             Assert.assertEquals("u1", cfg.getUserInfo().get("userId"));
             Assert.assertEquals("u1", cfg.getLoginInfo().get("username"));
             Assert.assertEquals(1, cfg.getRemoteEndpoints().size());
+            Assert.assertEquals(SyncConflictPolicy.FAIL_FAST, cfg.getConflictPolicy());
         } finally {
             System.clearProperty("p2p.sync.inlineYaml");
             System.clearProperty("p2p.sync.inlineBaseDir");
@@ -89,6 +91,29 @@ public class P2PSyncConfigTest {
             Assert.assertEquals(authYaml.toAbsolutePath().toString(), cfg.getAuthYaml());
             Assert.assertEquals(authYaml.toAbsolutePath().toString(), System.getProperty("p2p.auth.yaml"));
             Assert.assertFalse(AuthConfig.load().isEnabled());
+        } finally {
+            System.clearProperty("p2p.sync.inlineYaml");
+            System.clearProperty("p2p.sync.inlineBaseDir");
+            System.clearProperty("p2p.auth.inlineYaml");
+            System.clearProperty("p2p.auth.inlineBaseDir");
+            System.clearProperty("p2p.auth.yaml");
+            System.clearProperty("p2p.key.dir");
+        }
+    }
+
+    @Test
+    public void shouldLoadConflictPolicyFromInlineYaml() throws Exception {
+        Path baseDir = Files.createTempDirectory("p2p_sync_cfg_conflict_policy_");
+        try {
+            System.setProperty("p2p.sync.inlineBaseDir", baseDir.toString());
+            System.setProperty("p2p.sync.inlineYaml", ""
+                + "taskId: 1\n"
+                + "localDir: \"./data\"\n"
+                + "conflictPolicy: LAST_WRITE_WINS\n");
+
+            P2PSyncConfig cfg = P2PSyncConfig.load();
+
+            Assert.assertEquals(SyncConflictPolicy.LAST_WRITE_WINS, cfg.getConflictPolicy());
         } finally {
             System.clearProperty("p2p.sync.inlineYaml");
             System.clearProperty("p2p.sync.inlineBaseDir");

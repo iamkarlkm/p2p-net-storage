@@ -28,7 +28,7 @@ public final class SyncApplyEventRpcRegistration {
 
         SyncReceiverStateStore stateStore = new SyncReceiverStateStore(dsHome.resolve("receiver"));
         SyncEventApplier applier = new SyncEventApplier(rootDir);
-        SyncReceiverRpcService service = new SyncReceiverRpcService(storeId, rootDir, stateStore, applier);
+        SyncReceiverRpcService service = new SyncReceiverRpcService(storeId, rootDir, stateStore, applier, config.getConflictPolicy());
 
         RpcBootstrap.registerUnary(SyncRpcServices.SYNC_SERVICE, SyncRpcServices.APPLY_EVENT, "v1", true, SyncEventRequest.class, SyncEventAck.class,
             (ctx, req) -> service.applyEvent(req));

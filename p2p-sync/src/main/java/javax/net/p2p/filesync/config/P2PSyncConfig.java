@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import javax.net.p2p.auth.config.AuthConfig;
+import javax.net.p2p.filesync.sync.rpc.server.SyncConflictPolicy;
 import org.yaml.snakeyaml.Yaml;
 
 public class P2PSyncConfig {
@@ -25,6 +26,7 @@ public class P2PSyncConfig {
     private Map<String, String> loginInfo;
     private AuthConfig auth;
     private String authYaml;
+    private SyncConflictPolicy conflictPolicy;
 
     public P2PSyncConfig() {
     }
@@ -117,6 +119,14 @@ public class P2PSyncConfig {
         this.authYaml = authYaml;
     }
 
+    public SyncConflictPolicy getConflictPolicy() {
+        return conflictPolicy;
+    }
+
+    public void setConflictPolicy(SyncConflictPolicy conflictPolicy) {
+        this.conflictPolicy = conflictPolicy;
+    }
+
     public static P2PSyncConfig load() {
         String inlineYaml = System.getProperty("p2p.sync.inlineYaml");
         if (inlineYaml != null && !inlineYaml.trim().isEmpty()) {
@@ -172,6 +182,10 @@ public class P2PSyncConfig {
             if (!dir.isAbsolute()) {
                 cfg.dsHome = new File(yamlBaseDir, cfg.dsHome).getAbsolutePath();
             }
+        }
+
+        if (cfg.conflictPolicy == null) {
+            cfg.conflictPolicy = SyncConflictPolicy.FAIL_FAST;
         }
 
         applyAuthOverrides(cfg, yamlBaseDir);

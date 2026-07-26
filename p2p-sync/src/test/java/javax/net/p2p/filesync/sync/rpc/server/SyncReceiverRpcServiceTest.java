@@ -126,6 +126,68 @@ public class SyncReceiverRpcServiceTest {
         }
     }
 
+    @Test
+    public void shouldPreferNewerPendingWriteWhenLastWriteWins() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_receiver_root_conflict_lww_");
+        Path state = Files.createTempDirectory("p2p_sync_receiver_state_conflict_lww_");
+
+        try (SyncReceiverStateStore store = new SyncReceiverStateStore(state)) {
+            SyncEventApplier applier = new SyncEventApplier(root);
+            SyncReceiverRpcService svc = new SyncReceiverRpcService(123, root, store, applier, SyncConflictPolicy.LAST_WRITE_WINS);
+
+            long ts1 = System.currentTimeMillis() - 3_000;
+            long ts2 = ts1 + 2_000;
+            javax.net.p2p.rpc.sync.proto.SyncEventAck apply1 = svc.applyEvent(SyncEventRequest.newBuilder()
+                .setTaskId(1L)
+                .setEventUid(2001L)
+                .setFileId(1L)
+                .setPath("a/b.txt")
+                .setDirectory(false)
+                .setType(SyncEventType.MODIFY)
+                .setLastModifiedMillis(ts1)
+                .build());
+            Assert.assertTrue(apply1.getOk());
+            Assert.assertTrue(apply1.getNeedsUpload());
+
+            javax.net.p2p.rpc.sync.proto.SyncEventAck apply2 = svc.applyEvent(SyncEventRequest.newBuilder()
+                .setTaskId(1L)
+                .setEventUid(2002L)
+                .setFileId(2L)
+                .setPath("a/b.txt")
+                .setDirectory(false)
+                .setType(SyncEventType.MODIFY)
+                .setLastModifiedMillis(ts2)
+                .build());
+            Assert.assertTrue(apply2.getOk());
+            Assert.assertTrue(apply2.getNeedsUpload());
+
+            javax.net.p2p.rpc.sync.proto.SyncEventAck finOld = svc.finalizeEvent(SyncFinalizeRequest.newBuilder()
+                .setTaskId(1L)
+                .setEventUid(2001L)
+                .setPath("a/b.txt")
+                .setDirectory(false)
+                .setType(SyncEventType.MODIFY)
+                .setLastModifiedMillis(ts1)
+                .build());
+            Assert.assertFalse(finOld.getOk());
+            Assert.assertEquals("event is not pending", finOld.getMessage());
+
+            Path f = root.resolve("a/b.txt");
+            writeUtf8(f, "newer");
+            Files.setLastModifiedTime(f, FileTime.fromMillis(ts2));
+
+            javax.net.p2p.rpc.sync.proto.SyncEventAck finNew = svc.finalizeEvent(SyncFinalizeRequest.newBuilder()
+                .setTaskId(1L)
+                .setEventUid(2002L)
+                .setPath("a/b.txt")
+                .setDirectory(false)
+                .setType(SyncEventType.MODIFY)
+                .setLastModifiedMillis(ts2)
+                .build());
+            Assert.assertTrue(finNew.getOk());
+        }
+    }
+
     private static void writeUtf8(Path path, String value) throws Exception {
         Files.write(path, value.getBytes(StandardCharsets.UTF_8));
     }

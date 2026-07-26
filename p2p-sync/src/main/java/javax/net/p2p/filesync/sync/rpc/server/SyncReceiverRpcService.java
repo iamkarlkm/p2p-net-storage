@@ -15,13 +15,19 @@ public final class SyncReceiverRpcService {
     private final Path rootDir;
     private final SyncReceiverStateStore stateStore;
     private final SyncEventApplier applier;
+    private final SyncConflictPolicy conflictPolicy;
     private static final String WRITE_CONFLICT = "write_conflict";
 
     public SyncReceiverRpcService(int storeId, Path rootDir, SyncReceiverStateStore stateStore, SyncEventApplier applier) {
+        this(storeId, rootDir, stateStore, applier, SyncConflictPolicy.FAIL_FAST);
+    }
+
+    public SyncReceiverRpcService(int storeId, Path rootDir, SyncReceiverStateStore stateStore, SyncEventApplier applier, SyncConflictPolicy conflictPolicy) {
         this.storeId = storeId;
         this.rootDir = rootDir.toAbsolutePath().normalize();
         this.stateStore = stateStore;
         this.applier = applier;
+        this.conflictPolicy = conflictPolicy == null ? SyncConflictPolicy.FAIL_FAST : conflictPolicy;
     }
 
     public SyncEventAck applyEvent(SyncEventRequest req) {
@@ -80,13 +86,17 @@ public final class SyncReceiverRpcService {
         }
 
         long pathKey = hashPathKey(req.getTaskId(), req.getPath());
-        if (!stateStore.tryAcquirePendingPath(pathKey, eventUid)) {
+        if (!stateStore.tryAcquirePendingPath(pathKey, eventUid, req.getLastModifiedMillis())) {
+            if (conflictPolicy == SyncConflictPolicy.LAST_WRITE_WINS && takeoverPendingPath(req, pathKey, eventUid)) {
+                // claimed by newer event
+            } else {
             return SyncEventAck.newBuilder()
                 .setEventUid(eventUid)
                 .setOk(false)
                 .setStoreId(storeId)
                 .setMessage(WRITE_CONFLICT)
                 .build();
+            }
         }
 
         SyncEventRequest prepare = SyncEventRequest.newBuilder(req).setLastModifiedMillis(0L).build();
@@ -238,5 +248,23 @@ public final class SyncReceiverRpcService {
         String p = path == null ? "" : path.replace('\\', '/');
         byte[] b = (taskId + "\n" + p).getBytes(StandardCharsets.UTF_8);
         return XXHashUtil.hash64(b);
+    }
+
+    private boolean takeoverPendingPath(SyncEventRequest req, long pathKey, long eventUid) {
+        Long owner = stateStore.getPendingOwnerEventUid(pathKey);
+        if (owner == null || owner.longValue() == eventUid) {
+            return stateStore.tryAcquirePendingPath(pathKey, eventUid, req.getLastModifiedMillis());
+        }
+        Long ownerLastModified = stateStore.getPendingOwnerLastModified(pathKey);
+        long incomingLastModified = req.getLastModifiedMillis();
+        long currentLastModified = ownerLastModified == null ? Long.MIN_VALUE : ownerLastModified.longValue();
+        if (incomingLastModified < currentLastModified) {
+            return false;
+        }
+        Long displacedOwner = stateStore.forceAcquirePendingPath(pathKey, eventUid, incomingLastModified);
+        if (displacedOwner != null && displacedOwner.longValue() != eventUid) {
+            stateStore.removePending(displacedOwner.longValue());
+        }
+        return true;
     }
 }
