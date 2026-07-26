@@ -43,6 +43,10 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         server.start();
     }
 
+    int getPort() {
+        return server.getAddress().getPort();
+    }
+
     @Override
     public void close() {
         server.stop(0);
