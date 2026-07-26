@@ -369,7 +369,7 @@ public class P2PDirectorySyncE2ETest {
 
             String queuesJson = sendHttp("GET", "http://127.0.0.1:" + monitor.getPort() + "/sync/api/queues?limit=20", null);
             Assert.assertTrue(queuesJson.contains("\"replicaFailureCategorySummary\""));
-            Assert.assertTrue(queuesJson.contains("\"reason\":\"NETWORK\""));
+            assertContainsInOrder(queuesJson, "\"reason\":\"NETWORK\"", "\"recommendedAction\":\"RETRY_NETWORK_REPLICAS\"");
             Assert.assertTrue(queuesJson.contains("\"replicaCategorySummary\":\"NETWORK=1\""));
 
             receiver3 = ReceiverNode.start(taskId, 563);
@@ -446,7 +446,7 @@ public class P2PDirectorySyncE2ETest {
             }, 10, TimeUnit.SECONDS);
 
             String queuesJson = sendHttp("GET", "http://127.0.0.1:" + monitor.getPort() + "/sync/api/queues?limit=20", null);
-            Assert.assertTrue(queuesJson.contains("\"reason\":\"CONFLICT\""));
+            assertContainsInOrder(queuesJson, "\"reason\":\"CONFLICT\"", "\"recommendedAction\":\"MANUAL_RETRY_OR_DISCARD_REPLICAS\"");
             Assert.assertTrue(queuesJson.contains("\"replicaCategorySummary\":\"CONFLICT=1\""));
 
             int replica1Baseline = replica1Calls.get();
@@ -499,6 +499,9 @@ public class P2PDirectorySyncE2ETest {
             long fileId = svc.getStore().getOrCreateFileId("retry-limit-hello.txt");
             waitUntil(() -> svc.getStore().fileCreatesFailed().contains(Long.valueOf(fileId)), 10, TimeUnit.SECONDS);
             waitUntil(() -> "retry_limit_exceeded".equals(svc.getStore().getFailedReason(FileSyncEventType.CREATE, false, fileId)), 10, TimeUnit.SECONDS);
+
+            String queuesJson = sendHttp("GET", "http://127.0.0.1:" + monitor.getPort() + "/sync/api/queues?limit=20", null);
+            assertContainsInOrder(queuesJson, "\"reason\":\"RETRY_LIMIT\"", "\"recommendedAction\":\"MANUAL_RETRY_OR_DISCARD_REPLICAS\"");
 
             int replica1Baseline = replica1Calls.get();
             int replica2Baseline = replica2Calls.get();
@@ -582,6 +585,13 @@ public class P2PDirectorySyncE2ETest {
             }
         }
         return false;
+    }
+
+    private static void assertContainsInOrder(String text, String first, String second) {
+        int firstIndex = text.indexOf(first);
+        Assert.assertTrue("missing fragment: " + first + ", text=" + text, firstIndex >= 0);
+        int secondIndex = text.indexOf(second, firstIndex);
+        Assert.assertTrue("missing ordered fragment: " + second + ", text=" + text, secondIndex > firstIndex);
     }
 
     private static int randomTcpPort() throws Exception {
