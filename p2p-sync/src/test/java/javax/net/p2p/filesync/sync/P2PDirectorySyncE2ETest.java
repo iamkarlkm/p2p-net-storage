@@ -8,6 +8,8 @@ import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import javax.net.p2p.client.P2PClientTcp;
 import javax.net.p2p.filesync.config.P2PSyncConfig;
@@ -105,6 +107,71 @@ public class P2PDirectorySyncE2ETest {
         }
     }
 
+    @Test
+    public void shouldReplayOnlyFailedReplicaAfterManualRetry() throws Exception {
+        long taskId = 104L;
+        Path senderRoot = Files.createTempDirectory("p2p_sync_sender_root_recover_");
+        Path senderState = Files.createTempDirectory("p2p_sync_sender_state_recover_");
+        AtomicInteger replica1Calls = new AtomicInteger();
+        AtomicInteger replica2Calls = new AtomicInteger();
+        RecoverableHandler recoverable = new RecoverableHandler();
+        ReceiverNode receiver3 = null;
+        CountingHandler counted3 = null;
+        try (ReceiverNode receiver1 = ReceiverNode.start(taskId, 531);
+             ReceiverNode receiver2 = ReceiverNode.start(taskId, 532);
+             ManagedTcpHandler handler1 = ManagedTcpHandler.connect(taskId, receiver1.port);
+             ManagedTcpHandler handler2 = ManagedTcpHandler.connect(taskId, receiver2.port);
+             CountingHandler counted1 = new CountingHandler(handler1, replica1Calls);
+             CountingHandler counted2 = new CountingHandler(handler2, replica2Calls);
+             MultiEndpointRpcSyncEventHandler fanOut = MultiEndpointRpcSyncEventHandler.forHandlers(
+                 taskId,
+                 Arrays.asList(counted1, counted2, recoverable));
+             P2PDirectorySyncService svc = new P2PDirectorySyncService(senderConfig(taskId, senderRoot, senderState), fanOut)) {
+            svc.start();
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            Path senderFile = senderRoot.resolve("recover").resolve("hello.txt");
+            Files.createDirectories(senderFile.getParent());
+            writeUtf8(senderFile, "recover sync");
+
+            assertFileSynced(receiver1.root.resolve("recover").resolve("hello.txt"), "recover sync",
+                Files.getLastModifiedTime(senderFile).toMillis());
+            assertFileSynced(receiver2.root.resolve("recover").resolve("hello.txt"), "recover sync",
+                Files.getLastModifiedTime(senderFile).toMillis());
+
+            long fileId = svc.getStore().getOrCreateFileId("recover/hello.txt");
+            waitUntil(() -> svc.getStore().fileCreatesFailed().contains(Long.valueOf(fileId)), 10, TimeUnit.SECONDS);
+            int replica1Baseline = replica1Calls.get();
+            int replica2Baseline = replica2Calls.get();
+            int recoverableBaseline = recoverable.getAttemptCount();
+            Assert.assertTrue(replica1Baseline > 0);
+            Assert.assertTrue(replica2Baseline > 0);
+            Assert.assertTrue(recoverableBaseline > 0);
+
+            receiver3 = ReceiverNode.start(taskId, 533);
+            counted3 = new CountingHandler(ManagedTcpHandler.connect(taskId, receiver3.port), new AtomicInteger());
+            recoverable.recover(counted3);
+
+            Assert.assertTrue(svc.getStore().retryFailed(FileSyncEventType.CREATE, false, fileId));
+            Path receiver3File = receiver3.root.resolve("recover").resolve("hello.txt");
+            waitUntil(() -> Files.isRegularFile(receiver3File), 10, TimeUnit.SECONDS);
+            waitUntil(() -> "recover sync".equals(readUtf8(receiver3File)), 10, TimeUnit.SECONDS);
+            waitUntil(() -> !svc.getStore().fileCreatesFailed().contains(Long.valueOf(fileId)), 10, TimeUnit.SECONDS);
+
+            Assert.assertEquals(replica1Baseline, replica1Calls.get());
+            Assert.assertEquals(replica2Baseline, replica2Calls.get());
+            Assert.assertEquals(recoverableBaseline + 1, recoverable.getAttemptCount());
+            Assert.assertEquals(1, counted3.calls.get());
+        } finally {
+            if (counted3 != null) {
+                counted3.close();
+            }
+            if (receiver3 != null) {
+                receiver3.close();
+            }
+        }
+    }
+
     private static P2PSyncConfig senderConfig(long taskId, Path senderRoot, Path senderState) {
         P2PSyncConfig senderCfg = new P2PSyncConfig();
         senderCfg.setTaskId(taskId);
@@ -152,6 +219,53 @@ public class P2PDirectorySyncE2ETest {
 
     private static FileSyncEventHandler failingHandler(String reason) {
         return (type, fileId, relativePath, absolutePath, directory, acker) -> acker.fail(reason);
+    }
+
+    private static final class CountingHandler implements FileSyncEventHandler, AutoCloseable {
+        private final FileSyncEventHandler delegate;
+        private final AtomicInteger calls;
+
+        private CountingHandler(FileSyncEventHandler delegate, AtomicInteger calls) {
+            this.delegate = delegate;
+            this.calls = calls;
+        }
+
+        @Override
+        public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
+            calls.incrementAndGet();
+            delegate.handle(type, fileId, relativePath, absolutePath, directory, acker);
+        }
+
+        @Override
+        public void close() throws Exception {
+            if (delegate instanceof AutoCloseable) {
+                ((AutoCloseable) delegate).close();
+            }
+        }
+    }
+
+    private static final class RecoverableHandler implements FileSyncEventHandler {
+        private final AtomicReference<FileSyncEventHandler> delegateRef = new AtomicReference<>();
+        private final AtomicInteger attempts = new AtomicInteger();
+
+        @Override
+        public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
+            attempts.incrementAndGet();
+            FileSyncEventHandler delegate = delegateRef.get();
+            if (delegate == null) {
+                acker.fail("network_unreachable");
+                return;
+            }
+            delegate.handle(type, fileId, relativePath, absolutePath, directory, acker);
+        }
+
+        private void recover(FileSyncEventHandler delegate) {
+            delegateRef.set(delegate);
+        }
+
+        private int getAttemptCount() {
+            return attempts.get();
+        }
     }
 
     private static final class ManagedTcpHandler implements FileSyncEventHandler, AutoCloseable {

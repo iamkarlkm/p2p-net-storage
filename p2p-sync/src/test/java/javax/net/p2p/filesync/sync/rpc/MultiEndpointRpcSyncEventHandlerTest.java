@@ -3,6 +3,7 @@ package javax.net.p2p.filesync.sync.rpc;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.net.p2p.filesync.sync.FileSyncAcker;
@@ -120,6 +121,59 @@ public class MultiEndpointRpcSyncEventHandlerTest {
         Assert.assertEquals(1, failCount.get());
         Assert.assertTrue(reasonRef.get(), reasonRef.get().contains("network_unreachable"));
         Assert.assertTrue(reasonRef.get(), reasonRef.get().contains("handler-2"));
+    }
+
+    @Test
+    public void shouldOnlyReplayPendingReplicaAfterRetry() {
+        AtomicInteger replica1Calls = new AtomicInteger();
+        AtomicInteger replica2Calls = new AtomicInteger();
+        AtomicBoolean replica2Recovered = new AtomicBoolean(false);
+        MultiEndpointRpcSyncEventHandler handler = MultiEndpointRpcSyncEventHandler.forHandlers(101L, Arrays.asList(
+            ackingHandler(replica1Calls),
+            (type, fileId, relativePath, absolutePath, directory, acker) -> {
+                replica2Calls.incrementAndGet();
+                if (replica2Recovered.get()) {
+                    acker.ack();
+                    return;
+                }
+                acker.retry();
+            }
+        ));
+
+        AtomicInteger ackCount = new AtomicInteger();
+        AtomicInteger retryCount = new AtomicInteger();
+        AtomicInteger failCount = new AtomicInteger();
+        FileSyncAcker aggregate = new FileSyncAcker() {
+            @Override
+            public void ack() {
+                ackCount.incrementAndGet();
+            }
+
+            @Override
+            public void retry() {
+                retryCount.incrementAndGet();
+            }
+
+            @Override
+            public void fail(String reason) {
+                failCount.incrementAndGet();
+            }
+        };
+
+        handler.handle(FileSyncEventType.MODIFY, 1L, "a.txt", samplePath(), false, aggregate);
+        Assert.assertEquals(1, replica1Calls.get());
+        Assert.assertEquals(1, replica2Calls.get());
+        Assert.assertEquals(0, ackCount.get());
+        Assert.assertEquals(1, retryCount.get());
+        Assert.assertEquals(0, failCount.get());
+
+        replica2Recovered.set(true);
+        handler.handle(FileSyncEventType.MODIFY, 1L, "a.txt", samplePath(), false, aggregate);
+        Assert.assertEquals(1, replica1Calls.get());
+        Assert.assertEquals(2, replica2Calls.get());
+        Assert.assertEquals(1, ackCount.get());
+        Assert.assertEquals(1, retryCount.get());
+        Assert.assertEquals(0, failCount.get());
     }
 
     private static FileSyncEventHandler ackingHandler(AtomicInteger calls) {

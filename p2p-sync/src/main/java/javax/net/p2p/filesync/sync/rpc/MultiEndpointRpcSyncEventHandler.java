@@ -4,7 +4,9 @@ import java.net.InetSocketAddress;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -26,23 +28,16 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
     private static final String WRITE_CONFLICT = "write_conflict";
     private final long taskId;
     private final List<EndpointClient> clients;
+    private final Map<EventKey, DeliveryState> deliveryStates;
 
     public MultiEndpointRpcSyncEventHandler(long taskId, List<InetSocketAddress> endpoints) {
-        this.taskId = taskId;
         Objects.requireNonNull(endpoints, "endpoints");
         if (endpoints.isEmpty()) {
             throw new IllegalArgumentException("endpoints is empty");
         }
-        this.clients = new ArrayList<>(endpoints.size());
-        for (InetSocketAddress ep : endpoints) {
-            P2PTransportClient transportClient = P2PFallbackConnector.connect(ep);
-            RpcClient rpc = new P2PRpcClient(transportClient.getMessageService());
-            P2PFileService fileClient = transportClient.getTransport() == P2PTransport.TCP
-                ? new P2PUtils((P2PClientTcp) transportClient.getMessageService())
-                : new P2PUDPUtils(transportClient.getMessageService());
-            RpcSyncEventHandler handler = new RpcSyncEventHandler(rpc, fileClient, taskId);
-            clients.add(new EndpointClient(endpointLabel(ep), ep, transportClient, handler));
-        }
+        this.taskId = taskId;
+        this.clients = buildClients(taskId, endpoints);
+        this.deliveryStates = new ConcurrentHashMap<>();
     }
 
     public static MultiEndpointRpcSyncEventHandler forHandlers(long taskId, List<FileSyncEventHandler> handlers) {
@@ -62,18 +57,29 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
     private MultiEndpointRpcSyncEventHandler(long taskId, List<EndpointClient> clients, boolean trusted) {
         this.taskId = taskId;
         this.clients = clients;
+        this.deliveryStates = new ConcurrentHashMap<>();
     }
 
     @Override
     public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
         Objects.requireNonNull(acker, "acker");
-        AtomicInteger remaining = new AtomicInteger(clients.size());
+        EventKey eventKey = new EventKey(type, directory, fileId);
+        DeliveryState deliveryState = deliveryStates.computeIfAbsent(eventKey, key -> new DeliveryState(clients.size()));
+        List<PendingDispatch> pending = pendingDispatches(deliveryState);
+        if (pending.isEmpty()) {
+            deliveryStates.remove(eventKey, deliveryState);
+            acker.ack();
+            return;
+        }
+        AtomicInteger remaining = new AtomicInteger(pending.size());
         AtomicReference<AggregateResult> result = new AtomicReference<>(new AggregateResult(AggregateAction.ACK, ""));
-        for (EndpointClient client : clients) {
+        for (PendingDispatch dispatch : pending) {
+            EndpointClient client = dispatch.client;
             try {
                 client.handler.handle(type, fileId, relativePath, absolutePath, directory, new FileSyncAcker() {
                     @Override
                     public void ack() {
+                        deliveryState.markAcked(dispatch.index);
                         finish(AggregateAction.ACK, "");
                     }
 
@@ -99,6 +105,7 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
                                 acker.retry();
                                 return;
                             }
+                            deliveryStates.remove(eventKey, deliveryState);
                             acker.ack();
                         }
                     }
@@ -112,6 +119,7 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
                     } else if (finalResult.action == AggregateAction.RETRY) {
                         acker.retry();
                     } else {
+                        deliveryStates.remove(eventKey, deliveryState);
                         acker.ack();
                     }
                 }
@@ -142,6 +150,30 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
             return prev;
         }
         return new AggregateResult(nextAction, nextReason == null ? "" : nextReason);
+    }
+
+    private static List<EndpointClient> buildClients(long taskId, List<InetSocketAddress> endpoints) {
+        List<EndpointClient> clients = new ArrayList<>(endpoints.size());
+        for (InetSocketAddress ep : endpoints) {
+            P2PTransportClient transportClient = P2PFallbackConnector.connect(ep);
+            RpcClient rpc = new P2PRpcClient(transportClient.getMessageService());
+            P2PFileService fileClient = transportClient.getTransport() == P2PTransport.TCP
+                ? new P2PUtils((P2PClientTcp) transportClient.getMessageService())
+                : new P2PUDPUtils(transportClient.getMessageService());
+            RpcSyncEventHandler handler = new RpcSyncEventHandler(rpc, fileClient, taskId);
+            clients.add(new EndpointClient(endpointLabel(ep), ep, transportClient, handler));
+        }
+        return clients;
+    }
+
+    private List<PendingDispatch> pendingDispatches(DeliveryState deliveryState) {
+        List<PendingDispatch> pending = new ArrayList<>(clients.size());
+        for (int i = 0; i < clients.size(); i++) {
+            if (!deliveryState.isAcked(i)) {
+                pending.add(new PendingDispatch(i, clients.get(i)));
+            }
+        }
+        return pending;
     }
 
     private static String decorateReason(String label, String reason) {
@@ -181,6 +213,63 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
         private AggregateResult(AggregateAction action, String reason) {
             this.action = action;
             this.reason = reason;
+        }
+    }
+
+    private static final class PendingDispatch {
+        private final int index;
+        private final EndpointClient client;
+
+        private PendingDispatch(int index, EndpointClient client) {
+            this.index = index;
+            this.client = client;
+        }
+    }
+
+    private static final class DeliveryState {
+        private final boolean[] acked;
+
+        private DeliveryState(int size) {
+            this.acked = new boolean[size];
+        }
+
+        private synchronized boolean isAcked(int index) {
+            return acked[index];
+        }
+
+        private synchronized void markAcked(int index) {
+            acked[index] = true;
+        }
+    }
+
+    private static final class EventKey {
+        private final FileSyncEventType type;
+        private final boolean directory;
+        private final long fileId;
+
+        private EventKey(FileSyncEventType type, boolean directory, long fileId) {
+            this.type = type;
+            this.directory = directory;
+            this.fileId = fileId;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) {
+                return true;
+            }
+            if (!(obj instanceof EventKey)) {
+                return false;
+            }
+            EventKey other = (EventKey) obj;
+            return directory == other.directory
+                && fileId == other.fileId
+                && type == other.type;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(type, Boolean.valueOf(directory), Long.valueOf(fileId));
         }
     }
 
