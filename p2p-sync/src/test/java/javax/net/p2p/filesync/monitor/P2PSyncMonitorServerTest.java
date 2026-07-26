@@ -85,6 +85,9 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("data-category-action"));
                 Assert.assertTrue(index.contains("建议重试"));
                 Assert.assertTrue(index.contains("建议放弃"));
+                Assert.assertTrue(index.contains("本次批量动作剩余失败预览"));
+                Assert.assertTrue(index.contains("renderBatchResultPreview"));
+                Assert.assertTrue(index.contains("window.lastBatchResult"));
                 Assert.assertTrue(index.contains(">replicaRecoveryClass</th>"));
                 Assert.assertTrue(index.contains(">replicaCategories</th>"));
                 Assert.assertTrue(index.contains(">replicaReasons</th>"));
