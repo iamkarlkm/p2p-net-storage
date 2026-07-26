@@ -63,6 +63,7 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("data-action"));
                 Assert.assertTrue(index.contains("data-batch-action"));
                 Assert.assertTrue(index.contains("批量重试可自动恢复副本"));
+                Assert.assertTrue(index.contains("批量放弃人工介入副本"));
                 Assert.assertTrue(index.contains("document.addEventListener('click'"));
                 Assert.assertTrue(index.contains("class=\"page\""));
                 Assert.assertTrue(index.contains("class=\"section\""));
@@ -261,6 +262,53 @@ public class P2PSyncMonitorServerTest {
 
                 Assert.assertTrue(store.fileDeletesFailed().contains(Long.valueOf(cappedId)));
                 Assert.assertTrue(hasReplicaState(store, FileSyncEventType.DELETE, false, cappedId, "node-d", P2PSyncStateStore.REPLICA_FAILED));
+            }
+        }
+    }
+
+    @Test
+    public void shouldBatchDiscardManualReplicasViaHttp() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_monitor_root_batch_discard_");
+        Path state = Files.createTempDirectory("p2p_sync_monitor_state_batch_discard_");
+        P2PSyncConfig cfg = new P2PSyncConfig();
+        cfg.setTaskId(103L);
+        cfg.setLocalDir(root.toString());
+        cfg.setDsHome(state.toString());
+        cfg.setMaxRetryCount(2);
+
+        try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, null)) {
+            svc.start();
+            P2PSyncStateStore store = svc.getStore();
+            long manualId = store.getOrCreateFileId("manual.txt");
+            long cappedId = store.getOrCreateFileId("capped.txt");
+            long autoId = store.getOrCreateFileId("auto.txt");
+            store.markFailed(FileSyncEventType.CREATE, false, manualId, "write_conflict");
+            store.markReplicaState(FileSyncEventType.CREATE, false, manualId, "node-a", P2PSyncStateStore.REPLICA_FAILED);
+            store.markReplicaState(FileSyncEventType.CREATE, false, manualId, "node-b", P2PSyncStateStore.REPLICA_FAILED);
+            store.markFailed(FileSyncEventType.MODIFY, false, cappedId, "stale");
+            store.markReplicaState(FileSyncEventType.MODIFY, false, cappedId, "node-c", P2PSyncStateStore.REPLICA_FAILED);
+            store.incrementRetryCount(FileSyncEventType.MODIFY, false, cappedId);
+            store.incrementRetryCount(FileSyncEventType.MODIFY, false, cappedId);
+            store.markFailed(FileSyncEventType.DELETE, false, autoId, "stale");
+            store.markReplicaState(FileSyncEventType.DELETE, false, autoId, "node-d", P2PSyncStateStore.REPLICA_FAILED);
+
+            try (P2PSyncMonitorServer server = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
+                server.start();
+                String response = send("POST",
+                    "http://127.0.0.1:" + server.getPort() + "/sync/api/failed/discard-manual-replicas",
+                    "");
+                Assert.assertTrue(response.contains("\"ok\":true"));
+                Assert.assertTrue(response.contains("\"touchedFileCount\":2"));
+                Assert.assertTrue(response.contains("\"discardedReplicaCount\":3"));
+
+                Assert.assertFalse(store.fileCreatesFailed().contains(Long.valueOf(manualId)));
+                Assert.assertEquals(0, store.getReplicaStates(FileSyncEventType.CREATE, false, manualId).size());
+
+                Assert.assertFalse(store.fileModifiesFailed().contains(Long.valueOf(cappedId)));
+                Assert.assertEquals(0, store.getReplicaStates(FileSyncEventType.MODIFY, false, cappedId).size());
+
+                Assert.assertTrue(store.fileDeletesFailed().contains(Long.valueOf(autoId)));
+                Assert.assertTrue(hasReplicaState(store, FileSyncEventType.DELETE, false, autoId, "node-d", P2PSyncStateStore.REPLICA_FAILED));
             }
         }
     }

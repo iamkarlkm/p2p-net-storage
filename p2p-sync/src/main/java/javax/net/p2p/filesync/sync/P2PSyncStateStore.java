@@ -505,32 +505,49 @@ public final class P2PSyncStateStore implements AutoCloseable {
     }
 
     public boolean discardFailedReplica(FileSyncEventType type, boolean directory, long fileId, String label) {
+        return discardFailedReplicas(type, directory, fileId, java.util.Collections.singletonList(label)) > 0;
+    }
+
+    public int discardFailedReplicas(FileSyncEventType type, boolean directory, long fileId, List<String> labels) {
         int code = codeFor(type, directory);
-        if (code < 0 || label == null || label.trim().isEmpty()) {
-            return false;
+        if (code < 0 || labels == null || labels.isEmpty()) {
+            return 0;
         }
         DsHashSet failed = failedSetForCode(code);
         if (failed == null || !failed.contains(Long.valueOf(fileId))) {
-            return false;
+            return 0;
         }
         long key = failedKey(code, fileId);
         Map<String, String> states = readReplicaStateMap(key);
-        String safeLabel = sanitizeReplicaToken(label);
-        String current = states.get(safeLabel);
-        if (current == null || REPLICA_ACKED.equals(current)) {
-            return false;
+        Set<String> uniqueLabels = new LinkedHashSet<String>();
+        for (String label : labels) {
+            String safeLabel = sanitizeReplicaToken(label);
+            if (!safeLabel.isEmpty()) {
+                uniqueLabels.add(safeLabel);
+            }
         }
-        states.put(safeLabel, REPLICA_DISCARDED);
+        int updated = 0;
+        for (String safeLabel : uniqueLabels) {
+            String current = states.get(safeLabel);
+            if (current == null || REPLICA_ACKED.equals(current) || REPLICA_DISCARDED.equals(current)) {
+                continue;
+            }
+            states.put(safeLabel, REPLICA_DISCARDED);
+            updated++;
+        }
+        if (updated <= 0) {
+            return 0;
+        }
         if (allReplicaStatesSatisfied(states)) {
             failed.remove(Long.valueOf(fileId));
             failed.sync();
             removeFailedReason(code, fileId);
             clearRetryCount(type, directory, fileId);
             clearReplicaStates(type, directory, fileId);
-            return true;
+            return updated;
         }
         writeReplicaStateMap(key, states);
-        return true;
+        return updated;
     }
 
     public int incrementRetryCount(FileSyncEventType type, boolean directory, long fileId) {
