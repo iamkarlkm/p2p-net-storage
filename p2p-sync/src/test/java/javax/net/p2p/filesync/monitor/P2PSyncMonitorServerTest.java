@@ -44,6 +44,7 @@ public class P2PSyncMonitorServerTest {
             store.markFailed(FileSyncEventType.CREATE, false, fileId, "write_conflict");
             store.markFailed(FileSyncEventType.DELETE, false, staleId, "stale");
             store.incrementRetryCount(FileSyncEventType.CREATE, false, fileId);
+            store.incrementRetryCount(FileSyncEventType.CREATE, false, fileId);
             store.markRetriedNow(FileSyncEventType.CREATE, false, fileId);
             store.enqueueFileModify(store.getOrCreateFileId("active.txt"));
 
@@ -61,7 +62,7 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"failed_file_delete\""));
                 Assert.assertTrue(json.contains("\"fileId\":\""));
                 Assert.assertTrue(json.contains("\"path\":\"failed.txt\""));
-                Assert.assertTrue(json.contains("\"retryCount\":1"));
+                Assert.assertTrue(json.contains("\"retryCount\":2"));
                 Assert.assertTrue(json.contains("\"failedAtMillis\":"));
                 Assert.assertTrue(json.contains("\"lastRetriedAtMillis\":"));
                 Assert.assertTrue(json.contains("\"reason\":\"write_conflict\""));
@@ -70,10 +71,13 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"failedCount\":2"));
                 Assert.assertTrue(json.contains("\"uploadingCount\":1"));
                 Assert.assertTrue(json.contains("\"oldestFailedAtMillis\":"));
-                Assert.assertTrue(json.contains("\"maxRetryCount\":1"));
+                Assert.assertTrue(json.contains("\"maxRetryCount\":2"));
                 Assert.assertTrue(json.contains("\"failureSummary\""));
                 Assert.assertTrue(json.contains("\"totalFailedItems\":2"));
+                Assert.assertTrue(json.contains("\"hotFailedItems\""));
+                Assert.assertTrue(json.contains("\"size\":2"));
                 Assert.assertTrue(json.contains("\"reason\":\"stale\""));
+                Assert.assertTrue(json.contains("\"retryCount\":2"));
                 Assert.assertTrue(json.contains("\"count\":1"));
                 Assert.assertTrue(json.contains("\"uploads\""));
                 Assert.assertTrue(json.contains("\"uploadPolicy\""));
