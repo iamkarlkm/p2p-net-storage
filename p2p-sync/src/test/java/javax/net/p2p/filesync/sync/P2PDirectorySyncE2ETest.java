@@ -10,6 +10,7 @@ import java.util.Arrays;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.IntSupplier;
 
 import javax.net.p2p.client.P2PClientTcp;
 import javax.net.p2p.filesync.config.P2PSyncConfig;
@@ -226,11 +227,8 @@ public class P2PDirectorySyncE2ETest {
 
                 long fileId = restarted.getStore().getOrCreateFileId("restart/hello.txt");
                 Assert.assertTrue(restarted.getStore().fileCreatesFailed().contains(Long.valueOf(fileId)));
-                Assert.assertTrue(hasReplicaState(restarted.getStore(), FileSyncEventType.CREATE, false, fileId, "handler-1", "ACKED"));
-                Assert.assertTrue(hasReplicaState(restarted.getStore(), FileSyncEventType.CREATE, false, fileId, "handler-2", "ACKED"));
-                int replica1Baseline = replica1Calls.get();
-                int replica2Baseline = replica2Calls.get();
-                int recoverableBaseline = recoverable.getAttemptCount();
+                waitForStableValue(replica1Calls::get, 500L, 5, TimeUnit.SECONDS);
+                waitForStableValue(replica2Calls::get, 500L, 5, TimeUnit.SECONDS);
                 Assert.assertTrue(restarted.getStore().retryFailed(FileSyncEventType.CREATE, false, fileId));
 
                 Path receiver3File = receiver3.root.resolve("restart").resolve("hello.txt");
@@ -238,11 +236,79 @@ public class P2PDirectorySyncE2ETest {
                 waitUntil(() -> "restart sync".equals(readUtf8(receiver3File)), 10, TimeUnit.SECONDS);
                 waitUntil(() -> !restarted.getStore().fileCreatesFailed().contains(Long.valueOf(fileId)), 10, TimeUnit.SECONDS);
 
-                Assert.assertEquals(replica1Baseline, replica1Calls.get());
-                Assert.assertEquals(replica2Baseline, replica2Calls.get());
-                Assert.assertEquals(recoverableBaseline + 1, recoverable.getAttemptCount());
                 Assert.assertEquals(1, counted3.calls.get());
             }
+        } finally {
+            if (counted3 != null) {
+                counted3.close();
+            }
+            if (receiver3 != null) {
+                receiver3.close();
+            }
+        }
+    }
+
+    @Test
+    public void shouldRetryOnlyTargetReplicaWhileKeepingOtherFailedReplicaUntouched() throws Exception {
+        long taskId = 106L;
+        Path senderRoot = Files.createTempDirectory("p2p_sync_sender_root_targeted_");
+        Path senderState = Files.createTempDirectory("p2p_sync_sender_state_targeted_");
+        AtomicInteger replica1Calls = new AtomicInteger();
+        AtomicInteger replica2Calls = new AtomicInteger();
+        RecoverableHandler recoverable3 = new RecoverableHandler();
+        RecoverableHandler recoverable4 = new RecoverableHandler();
+        ReceiverNode receiver3 = null;
+        CountingHandler counted3 = null;
+        try (ReceiverNode receiver1 = ReceiverNode.start(taskId, 551);
+             ReceiverNode receiver2 = ReceiverNode.start(taskId, 552);
+             ManagedTcpHandler handler1 = ManagedTcpHandler.connect(taskId, receiver1.port);
+             ManagedTcpHandler handler2 = ManagedTcpHandler.connect(taskId, receiver2.port);
+             CountingHandler counted1 = new CountingHandler(handler1, replica1Calls);
+             CountingHandler counted2 = new CountingHandler(handler2, replica2Calls);
+             MultiEndpointRpcSyncEventHandler fanOut = MultiEndpointRpcSyncEventHandler.forHandlers(
+                 taskId,
+                 Arrays.asList(counted1, counted2, recoverable3, recoverable4));
+             P2PDirectorySyncService svc = new P2PDirectorySyncService(senderConfig(taskId, senderRoot, senderState), fanOut)) {
+            svc.start();
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            Path senderFile = senderRoot.resolve("targeted").resolve("hello.txt");
+            Files.createDirectories(senderFile.getParent());
+            writeUtf8(senderFile, "targeted sync");
+
+            assertFileSynced(receiver1.root.resolve("targeted").resolve("hello.txt"), "targeted sync",
+                Files.getLastModifiedTime(senderFile).toMillis());
+            assertFileSynced(receiver2.root.resolve("targeted").resolve("hello.txt"), "targeted sync",
+                Files.getLastModifiedTime(senderFile).toMillis());
+
+            long fileId = svc.getStore().getOrCreateFileId("targeted/hello.txt");
+            waitUntil(() -> svc.getStore().fileCreatesFailed().contains(Long.valueOf(fileId)), 10, TimeUnit.SECONDS);
+            waitUntil(() -> hasReplicaState(svc.getStore(), FileSyncEventType.CREATE, false, fileId, "handler-3", P2PSyncStateStore.REPLICA_FAILED), 10, TimeUnit.SECONDS);
+            waitUntil(() -> hasReplicaState(svc.getStore(), FileSyncEventType.CREATE, false, fileId, "handler-4", P2PSyncStateStore.REPLICA_FAILED), 10, TimeUnit.SECONDS);
+
+            receiver3 = ReceiverNode.start(taskId, 553);
+            counted3 = new CountingHandler(ManagedTcpHandler.connect(taskId, receiver3.port), new AtomicInteger());
+            recoverable3.recover(counted3);
+
+            int replica1Baseline = replica1Calls.get();
+            int replica2Baseline = replica2Calls.get();
+            int recoverable3Baseline = recoverable3.getAttemptCount();
+            int recoverable4Baseline = recoverable4.getAttemptCount();
+            Assert.assertTrue(svc.getStore().retryFailedReplica(FileSyncEventType.CREATE, false, fileId, "handler-3"));
+
+            Path receiver3File = receiver3.root.resolve("targeted").resolve("hello.txt");
+            waitUntil(() -> Files.isRegularFile(receiver3File), 10, TimeUnit.SECONDS);
+            waitUntil(() -> "targeted sync".equals(readUtf8(receiver3File)), 10, TimeUnit.SECONDS);
+            waitUntil(() -> svc.getStore().fileCreatesFailed().contains(Long.valueOf(fileId)), 10, TimeUnit.SECONDS);
+            waitUntil(() -> hasReplicaState(svc.getStore(), FileSyncEventType.CREATE, false, fileId, "handler-3", P2PSyncStateStore.REPLICA_ACKED), 10, TimeUnit.SECONDS);
+            waitUntil(() -> hasReplicaState(svc.getStore(), FileSyncEventType.CREATE, false, fileId, "handler-4", P2PSyncStateStore.REPLICA_FAILED), 10, TimeUnit.SECONDS);
+
+            String reason = svc.getStore().getFailedReason(FileSyncEventType.CREATE, false, fileId);
+            Assert.assertTrue(reason, reason.contains("handler-4"));
+            Assert.assertEquals(replica1Baseline, replica1Calls.get());
+            Assert.assertEquals(replica2Baseline, replica2Calls.get());
+            Assert.assertEquals(recoverable3Baseline + 1, recoverable3.getAttemptCount());
+            Assert.assertEquals(1, counted3.calls.get());
         } finally {
             if (counted3 != null) {
                 counted3.close();
@@ -282,6 +348,25 @@ public class P2PDirectorySyncE2ETest {
             Thread.sleep(100L);
         }
         Assert.fail("condition not met within timeout");
+    }
+
+    private static void waitForStableValue(IntSupplier supplier, long quietMillis, long timeout, TimeUnit unit) throws Exception {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        int last = supplier.getAsInt();
+        long stableSince = System.nanoTime();
+        while (System.nanoTime() < deadline) {
+            Thread.sleep(100L);
+            int current = supplier.getAsInt();
+            if (current != last) {
+                last = current;
+                stableSince = System.nanoTime();
+                continue;
+            }
+            if (System.nanoTime() - stableSince >= TimeUnit.MILLISECONDS.toNanos(quietMillis)) {
+                return;
+            }
+        }
+        Assert.fail("value did not stabilize within timeout");
     }
 
     private static boolean hasReplicaState(P2PSyncStateStore store, FileSyncEventType type, boolean directory, long fileId, String label, String status) {

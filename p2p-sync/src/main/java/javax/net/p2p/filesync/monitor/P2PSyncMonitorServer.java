@@ -98,6 +98,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             String type = param(uri, "type");
             String dir = param(uri, "dir");
             String fileIdStr = param(uri, "fileId");
+            String replica = param(uri, "replica");
             long fileId = parseLong(fileIdStr, -1L);
             if (fileId <= 0L || type == null || type.isBlank()) {
                 writeJson(exchange, 400, "{\"ok\":false,\"message\":\"missing params\"}");
@@ -114,7 +115,14 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
                 writeJson(exchange, 503, "{\"ok\":false,\"message\":\"store not ready\"}");
                 return;
             }
-            boolean ok = retry ? store.retryFailed(t, directory, fileId) : store.discardFailed(t, directory, fileId);
+            boolean ok;
+            if (replica != null && !replica.isBlank()) {
+                ok = retry
+                    ? store.retryFailedReplica(t, directory, fileId, replica)
+                    : store.discardFailedReplica(t, directory, fileId, replica);
+            } else {
+                ok = retry ? store.retryFailed(t, directory, fileId) : store.discardFailed(t, directory, fileId);
+            }
             writeJson(exchange, 200, ok ? "{\"ok\":true}" : "{\"ok\":false,\"message\":\"not found\"}");
         }
     }
@@ -528,6 +536,14 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         return summary.toString();
     }
 
+    private boolean isReplicaActionable(String status) {
+        if (status == null || status.isEmpty()) {
+            return false;
+        }
+        return !P2PSyncStateStore.REPLICA_ACKED.equals(status)
+            && !P2PSyncStateStore.REPLICA_DISCARDED.equals(status);
+    }
+
     private static String indexHtml() {
         return "<!doctype html>\n"
             + "<html>\n"
@@ -574,6 +590,14 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "        if(reason){\n"
             + "          action = '<button class=\"btn\" data-action=\"retry\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">重试(覆盖同步)</button> ' +\n"
             + "                   '<button class=\"btn\" data-action=\"discard\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">放弃</button>';\n"
+            + "          if(it.replicaStates){\n"
+            + "            for(const replica of it.replicaStates){\n"
+            + "              if(replica && isReplicaActionable(replica.status)){\n"
+            + "                action += '<br/><button class=\"btn\" data-action=\"retry\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\" data-replica=\"'+escAttr(replica.label)+'\">重试副本:'+esc(replica.label)+'</button> ';\n"
+            + "                action += '<button class=\"btn\" data-action=\"discard\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\" data-replica=\"'+escAttr(replica.label)+'\">放弃副本:'+esc(replica.label)+'</button>';\n"
+            + "              }\n"
+            + "            }\n"
+            + "          }\n"
             + "        }\n"
             + "        html += '<tr><td>'+it.fileId+'</td><td>'+it.dir+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.path)+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+retryState+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+it.failedAtMillis+'</td><td>'+it.lastRetriedAtMillis+'</td><td>'+reason+'</td><td>'+action+'</td></tr>';\n"
             + "      }\n"
@@ -669,12 +693,19 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      html += '</table></div>';\n"
             + "      return html;\n"
             + "    }\n"
+            + "    function isReplicaActionable(status){\n"
+            + "      return !!status && status !== 'ACKED' && status !== 'DISCARDED';\n"
+            + "    }\n"
             + "    async function retryIt(fileId, dir, type){\n"
-            + "      await fetch('/sync/api/failed/retry?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});\n"
+            + "      let url = '/sync/api/failed/retry?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type);\n"
+            + "      if(arguments.length > 3 && arguments[3]){url += '&replica='+encodeURIComponent(arguments[3]);}\n"
+            + "      await fetch(url, {method:'POST'});\n"
             + "      await reload();\n"
             + "    }\n"
             + "    async function discardIt(fileId, dir, type){\n"
-            + "      await fetch('/sync/api/failed/discard?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});\n"
+            + "      let url = '/sync/api/failed/discard?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type);\n"
+            + "      if(arguments.length > 3 && arguments[3]){url += '&replica='+encodeURIComponent(arguments[3]);}\n"
+            + "      await fetch(url, {method:'POST'});\n"
             + "      await reload();\n"
             + "    }\n"
             + "    function render(queues, queueMatrix, healthSummary, failureSummary, failureRecoverySummary, hotFailedItems, recentTimeline, uploads, uploadPolicy, retryPolicy, recentCompletedUploads, recentFailedUploads){\n"
@@ -722,10 +753,11 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      const fileId = btn.getAttribute('data-file-id');\n"
             + "      const dir = btn.getAttribute('data-dir');\n"
             + "      const type = btn.getAttribute('data-type');\n"
+            + "      const replica = btn.getAttribute('data-replica');\n"
             + "      if(btn.getAttribute('data-action') === 'retry'){\n"
-            + "        await retryIt(fileId, dir, type);\n"
+            + "        await retryIt(fileId, dir, type, replica);\n"
             + "      } else if(btn.getAttribute('data-action') === 'discard'){\n"
-            + "        await discardIt(fileId, dir, type);\n"
+            + "        await discardIt(fileId, dir, type, replica);\n"
             + "      }\n"
             + "    });\n"
             + "    reload();\n"

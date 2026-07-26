@@ -148,4 +148,44 @@ public class P2PSyncQueueEngineTest {
             Assert.assertEquals(0, store.getRetryCount(FileSyncEventType.MODIFY, false, fileId));
         }
     }
+
+    @Test
+    public void shouldSupportTargetedReplicaRetryAndDiscard() throws Exception {
+        Path state = Files.createTempDirectory("p2p_sync_targeted_replica_state_");
+        try (P2PSyncStateStore store = new P2PSyncStateStore(state)) {
+            long fileId = store.getOrCreateFileId("targeted.txt");
+            store.markFailed(FileSyncEventType.CREATE, false, fileId, "replicas_pending");
+            store.markReplicaState(FileSyncEventType.CREATE, false, fileId, "handler-1", P2PSyncStateStore.REPLICA_ACKED);
+            store.markReplicaState(FileSyncEventType.CREATE, false, fileId, "handler-2", P2PSyncStateStore.REPLICA_FAILED);
+            store.markReplicaState(FileSyncEventType.CREATE, false, fileId, "handler-3", P2PSyncStateStore.REPLICA_FAILED);
+
+            Assert.assertTrue(store.retryFailedReplica(FileSyncEventType.CREATE, false, fileId, "handler-2"));
+            Assert.assertTrue(store.fileCreatesActive().contains(Long.valueOf(fileId)));
+            Assert.assertFalse(store.fileCreatesFailed().contains(Long.valueOf(fileId)));
+            Assert.assertEquals(1, store.getRetryCount(FileSyncEventType.CREATE, false, fileId));
+            Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, false, fileId, "handler-2", P2PSyncStateStore.REPLICA_TARGETED));
+            Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, false, fileId, "handler-3", P2PSyncStateStore.REPLICA_FAILED));
+
+            store.fileCreatesActive().remove(Long.valueOf(fileId));
+            store.fileCreatesActive().sync();
+            store.markFailed(FileSyncEventType.CREATE, false, fileId, "replicas_pending");
+
+            Assert.assertTrue(store.discardFailedReplica(FileSyncEventType.CREATE, false, fileId, "handler-3"));
+            Assert.assertTrue(store.fileCreatesFailed().contains(Long.valueOf(fileId)));
+            Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, false, fileId, "handler-3", P2PSyncStateStore.REPLICA_DISCARDED));
+
+            Assert.assertTrue(store.discardFailedReplica(FileSyncEventType.CREATE, false, fileId, "handler-2"));
+            Assert.assertFalse(store.fileCreatesFailed().contains(Long.valueOf(fileId)));
+            Assert.assertEquals(0, store.getReplicaStates(FileSyncEventType.CREATE, false, fileId).size());
+        }
+    }
+
+    private static boolean hasReplicaState(P2PSyncStateStore store, FileSyncEventType type, boolean directory, long fileId, String label, String status) {
+        for (P2PSyncStateStore.ReplicaState replicaState : store.getReplicaStates(type, directory, fileId)) {
+            if (label.equals(replicaState.getLabel()) && status.equals(replicaState.getStatus())) {
+                return true;
+            }
+        }
+        return false;
+    }
 }

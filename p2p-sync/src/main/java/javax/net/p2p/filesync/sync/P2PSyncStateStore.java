@@ -17,6 +17,12 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public final class P2PSyncStateStore implements AutoCloseable {
 
+    public static final String REPLICA_ACKED = "ACKED";
+    public static final String REPLICA_RETRY = "RETRY";
+    public static final String REPLICA_FAILED = "FAILED";
+    public static final String REPLICA_DISCARDED = "DISCARDED";
+    public static final String REPLICA_TARGETED = "TARGETED";
+
     public enum QueueStage {
         ACTIVE,
         STARTUP,
@@ -448,6 +454,66 @@ public final class P2PSyncStateStore implements AutoCloseable {
         eventKeyToReplicaStateId.sync();
     }
 
+    public boolean retryFailedReplica(FileSyncEventType type, boolean directory, long fileId, String label) {
+        int code = codeFor(type, directory);
+        if (code < 0 || label == null || label.trim().isEmpty()) {
+            return false;
+        }
+        DsHashSet failed = failedSetForCode(code);
+        DsHashSet active = activeSetForCode(code);
+        if (failed == null || active == null || !failed.contains(Long.valueOf(fileId))) {
+            return false;
+        }
+        long key = failedKey(code, fileId);
+        Map<String, String> states = readReplicaStateMap(key);
+        String safeLabel = sanitizeReplicaToken(label);
+        String current = states.get(safeLabel);
+        if (current == null || REPLICA_ACKED.equals(current)) {
+            return false;
+        }
+        states.put(safeLabel, REPLICA_TARGETED);
+        writeReplicaStateMap(key, states);
+        failed.remove(Long.valueOf(fileId));
+        active.add(Long.valueOf(fileId));
+        failed.sync();
+        active.sync();
+        removeFailedReason(code, fileId);
+        incrementRetryCount(type, directory, fileId);
+        markRetriedNow(type, directory, fileId);
+        failedKeyToFailedAtMillis.remove(Long.valueOf(key));
+        failedKeyToFailedAtMillis.sync();
+        return true;
+    }
+
+    public boolean discardFailedReplica(FileSyncEventType type, boolean directory, long fileId, String label) {
+        int code = codeFor(type, directory);
+        if (code < 0 || label == null || label.trim().isEmpty()) {
+            return false;
+        }
+        DsHashSet failed = failedSetForCode(code);
+        if (failed == null || !failed.contains(Long.valueOf(fileId))) {
+            return false;
+        }
+        long key = failedKey(code, fileId);
+        Map<String, String> states = readReplicaStateMap(key);
+        String safeLabel = sanitizeReplicaToken(label);
+        String current = states.get(safeLabel);
+        if (current == null || REPLICA_ACKED.equals(current)) {
+            return false;
+        }
+        states.put(safeLabel, REPLICA_DISCARDED);
+        if (allReplicaStatesSatisfied(states)) {
+            failed.remove(Long.valueOf(fileId));
+            failed.sync();
+            removeFailedReason(code, fileId);
+            clearRetryCount(type, directory, fileId);
+            clearReplicaStates(type, directory, fileId);
+            return true;
+        }
+        writeReplicaStateMap(key, states);
+        return true;
+    }
+
     public int incrementRetryCount(FileSyncEventType type, boolean directory, long fileId) {
         int code = codeFor(type, directory);
         if (code < 0) {
@@ -662,6 +728,22 @@ public final class P2PSyncStateStore implements AutoCloseable {
             return "";
         }
         return value.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim();
+    }
+
+    public static boolean isReplicaSatisfied(String status) {
+        return REPLICA_ACKED.equals(status) || REPLICA_DISCARDED.equals(status);
+    }
+
+    private static boolean allReplicaStatesSatisfied(Map<String, String> states) {
+        if (states == null || states.isEmpty()) {
+            return false;
+        }
+        for (String status : states.values()) {
+            if (!isReplicaSatisfied(status)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static int codeFor(FileSyncEventType type, boolean directory) {

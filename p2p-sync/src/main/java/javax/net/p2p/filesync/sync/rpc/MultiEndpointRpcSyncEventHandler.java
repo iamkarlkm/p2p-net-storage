@@ -27,9 +27,6 @@ import javax.net.p2p.utils.P2PUtils;
 public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHandler, AutoCloseable {
 
     private static final String WRITE_CONFLICT = "write_conflict";
-    private static final String REPLICA_ACKED = "ACKED";
-    private static final String REPLICA_RETRY = "RETRY";
-    private static final String REPLICA_FAILED = "FAILED";
     private final long taskId;
     private final List<EndpointClient> clients;
     private final Map<EventKey, DeliveryState> deliveryStates;
@@ -90,20 +87,22 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
                 client.handler.handle(type, fileId, relativePath, absolutePath, directory, new FileSyncAcker() {
                     @Override
                     public void ack() {
-                        deliveryState.markAcked(dispatch.index);
-                        markReplicaState(type, directory, fileId, client.label, REPLICA_ACKED);
+                        deliveryState.markStatus(dispatch.index, P2PSyncStateStore.REPLICA_ACKED);
+                        markReplicaState(type, directory, fileId, client.label, P2PSyncStateStore.REPLICA_ACKED);
                         finish(AggregateAction.ACK, "");
                     }
 
                     @Override
                     public void retry() {
-                        markReplicaState(type, directory, fileId, client.label, REPLICA_RETRY);
+                        deliveryState.markStatus(dispatch.index, P2PSyncStateStore.REPLICA_RETRY);
+                        markReplicaState(type, directory, fileId, client.label, P2PSyncStateStore.REPLICA_RETRY);
                         finish(AggregateAction.RETRY, "");
                     }
 
                     @Override
                     public void fail(String reason) {
-                        markReplicaState(type, directory, fileId, client.label, REPLICA_FAILED);
+                        deliveryState.markStatus(dispatch.index, P2PSyncStateStore.REPLICA_FAILED);
+                        markReplicaState(type, directory, fileId, client.label, P2PSyncStateStore.REPLICA_FAILED);
                         finish(AggregateAction.FAIL, decorateReason(client.label, reason));
                     }
 
@@ -119,6 +118,10 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
                                 acker.retry();
                                 return;
                             }
+                            if (deliveryState.hasOutstandingReplicas()) {
+                                acker.fail(deliveryState.outstandingReason(clients));
+                                return;
+                            }
                             deliveryStates.remove(eventKey, deliveryState);
                             clearReplicaStates(type, directory, fileId);
                             acker.ack();
@@ -126,7 +129,8 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
                     }
                 });
             } catch (Exception e) {
-                markReplicaState(type, directory, fileId, client.label, REPLICA_RETRY);
+                deliveryState.markStatus(dispatch.index, P2PSyncStateStore.REPLICA_RETRY);
+                markReplicaState(type, directory, fileId, client.label, P2PSyncStateStore.REPLICA_RETRY);
                 result.getAndUpdate(prev -> choose(prev, AggregateAction.RETRY, decorateReason(client.label, e.getMessage())));
                 if (remaining.decrementAndGet() == 0) {
                     AggregateResult finalResult = result.get();
@@ -135,6 +139,10 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
                     } else if (finalResult.action == AggregateAction.RETRY) {
                         acker.retry();
                     } else {
+                        if (deliveryState.hasOutstandingReplicas()) {
+                            acker.fail(deliveryState.outstandingReason(clients));
+                            return;
+                        }
                         deliveryStates.remove(eventKey, deliveryState);
                         clearReplicaStates(type, directory, fileId);
                         acker.ack();
@@ -190,21 +198,19 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
             return state;
         }
         for (P2PSyncStateStore.ReplicaState replicaState : store.getReplicaStates(type, directory, fileId)) {
-            if (REPLICA_ACKED.equals(replicaState.getStatus())) {
-                markAckedByLabel(state, replicaState.getLabel());
-            }
+            markStatusByLabel(state, replicaState.getLabel(), replicaState.getStatus());
         }
         return state;
     }
 
-    private void markAckedByLabel(DeliveryState state, String label) {
+    private void markStatusByLabel(DeliveryState state, String label, String status) {
         if (label == null || label.trim().isEmpty()) {
             return;
         }
         for (int i = 0; i < clients.size(); i++) {
             EndpointClient client = clients.get(i);
             if (label.equals(client.label)) {
-                state.markAcked(i);
+                state.markStatus(i, status);
                 return;
             }
         }
@@ -212,8 +218,9 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
 
     private List<PendingDispatch> pendingDispatches(DeliveryState deliveryState) {
         List<PendingDispatch> pending = new ArrayList<>(clients.size());
+        boolean targeted = deliveryState.hasTargetedReplicas();
         for (int i = 0; i < clients.size(); i++) {
-            if (!deliveryState.isAcked(i)) {
+            if (deliveryState.shouldDispatch(i, targeted)) {
                 pending.add(new PendingDispatch(i, clients.get(i)));
             }
         }
@@ -287,18 +294,62 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
     }
 
     private static final class DeliveryState {
-        private final boolean[] acked;
+        private final String[] statuses;
 
         private DeliveryState(int size) {
-            this.acked = new boolean[size];
+            this.statuses = new String[size];
         }
 
-        private synchronized boolean isAcked(int index) {
-            return acked[index];
+        private synchronized void markStatus(int index, String status) {
+            statuses[index] = status;
         }
 
-        private synchronized void markAcked(int index) {
-            acked[index] = true;
+        private synchronized boolean hasTargetedReplicas() {
+            for (String status : statuses) {
+                if (P2PSyncStateStore.REPLICA_TARGETED.equals(status)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private synchronized boolean shouldDispatch(int index, boolean targetedOnly) {
+            String status = statuses[index];
+            if (P2PSyncStateStore.isReplicaSatisfied(status)) {
+                return false;
+            }
+            if (!targetedOnly) {
+                return true;
+            }
+            return P2PSyncStateStore.REPLICA_TARGETED.equals(status);
+        }
+
+        private synchronized boolean hasOutstandingReplicas() {
+            for (String status : statuses) {
+                if (status != null && !status.isEmpty() && !P2PSyncStateStore.isReplicaSatisfied(status)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private synchronized String outstandingReason(List<EndpointClient> clients) {
+            StringBuilder sb = new StringBuilder("replicas_pending:");
+            boolean first = true;
+            for (int i = 0; i < statuses.length; i++) {
+                String status = statuses[i];
+                if (status == null || status.isEmpty() || P2PSyncStateStore.isReplicaSatisfied(status)) {
+                    continue;
+                }
+                if (!first) {
+                    sb.append(',');
+                }
+                first = false;
+                sb.append(clients.get(i).label);
+                sb.append('=');
+                sb.append(status);
+            }
+            return first ? "replicas_pending" : sb.toString();
         }
     }
 

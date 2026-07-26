@@ -147,8 +147,13 @@ public class P2PSyncMonitorServerTest {
             P2PSyncStateStore store = svc.getStore();
             long retryId = store.getOrCreateFileId("retry.txt");
             long discardId = store.getOrCreateFileId("discard.txt");
+            long targetedId = store.getOrCreateFileId("targeted.txt");
             store.markFailed(FileSyncEventType.MODIFY, false, retryId, "write_conflict");
             store.markFailed(FileSyncEventType.DELETE, false, discardId, "stale");
+            store.markFailed(FileSyncEventType.CREATE, false, targetedId, "replicas_pending");
+            store.markReplicaState(FileSyncEventType.CREATE, false, targetedId, "node-a", P2PSyncStateStore.REPLICA_ACKED);
+            store.markReplicaState(FileSyncEventType.CREATE, false, targetedId, "node-b", P2PSyncStateStore.REPLICA_FAILED);
+            store.markReplicaState(FileSyncEventType.CREATE, false, targetedId, "node-c", P2PSyncStateStore.REPLICA_FAILED);
             store.incrementRetryCount(FileSyncEventType.MODIFY, false, retryId);
             store.incrementRetryCount(FileSyncEventType.DELETE, false, discardId);
 
@@ -167,8 +172,38 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(discardResp.contains("\"ok\":true"));
                 Assert.assertFalse(store.fileDeletesFailed().contains(Long.valueOf(discardId)));
                 Assert.assertEquals(0, store.getRetryCount(FileSyncEventType.DELETE, false, discardId));
+
+                String targetedRetryResp = send("POST",
+                    "http://127.0.0.1:" + server.getPort() + "/sync/api/failed/retry?fileId=" + targetedId
+                        + "&dir=false&type=CREATE&replica=node-b",
+                    "");
+                Assert.assertTrue(targetedRetryResp.contains("\"ok\":true"));
+                Assert.assertFalse(store.fileCreatesFailed().contains(Long.valueOf(targetedId)));
+                Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, false, targetedId, "node-b", P2PSyncStateStore.REPLICA_TARGETED));
+                Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, false, targetedId, "node-c", P2PSyncStateStore.REPLICA_FAILED));
+
+                store.fileCreatesActive().remove(Long.valueOf(targetedId));
+                store.fileCreatesActive().sync();
+                store.markFailed(FileSyncEventType.CREATE, false, targetedId, "replicas_pending");
+
+                String targetedDiscardResp = send("POST",
+                    "http://127.0.0.1:" + server.getPort() + "/sync/api/failed/discard?fileId=" + targetedId
+                        + "&dir=false&type=CREATE&replica=node-c",
+                    "");
+                Assert.assertTrue(targetedDiscardResp.contains("\"ok\":true"));
+                Assert.assertTrue(store.fileCreatesFailed().contains(Long.valueOf(targetedId)));
+                Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, false, targetedId, "node-c", P2PSyncStateStore.REPLICA_DISCARDED));
             }
         }
+    }
+
+    private static boolean hasReplicaState(P2PSyncStateStore store, FileSyncEventType type, boolean directory, long fileId, String label, String status) {
+        for (P2PSyncStateStore.ReplicaState replicaState : store.getReplicaStates(type, directory, fileId)) {
+            if (label.equals(replicaState.getLabel()) && status.equals(replicaState.getStatus())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String send(String method, String url, String body) throws Exception {
