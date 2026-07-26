@@ -140,6 +140,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         root.put("recentTimeline", recentTimelineToMap(limit));
         root.put("uploads", uploadsToMap(limit));
         root.put("uploadPolicy", uploadPolicyToMap());
+        root.put("retryPolicy", retryPolicyToMap());
         root.put("recentCompletedUploads", uploadHistoryToMap(syncService.snapshotRecentCompletedUploads(limit)));
         root.put("recentFailedUploads", uploadHistoryToMap(syncService.snapshotRecentFailedUploads(limit)));
         return toJson(root);
@@ -151,6 +152,15 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         out.put("uploadBlockSizeBytes", Integer.valueOf(P2PConfig.DATA_PUT_BLOCK_SIZE));
         out.put("resumeSupported", Boolean.TRUE);
         out.put("historyRetention", "memory_recent");
+        return out;
+    }
+
+    private Map<String, Object> retryPolicyToMap() {
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("maxRetryCount", Integer.valueOf(syncService.getConfig().getMaxRetryCount()));
+        out.put("retryBackoffMillis", Long.valueOf(syncService.getConfig().getRetryBackoffMillis()));
+        out.put("manualRetryUnrestricted", Boolean.TRUE);
+        out.put("autoRetryMode", "LIMITED_WITH_BACKOFF");
         return out;
     }
 
@@ -469,7 +479,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      const res = await fetch('/sync/api/queues?limit=200');\n"
             + "      const data = await res.json();\n"
             + "      if(!data.ok){document.getElementById('content').innerText = data.message || 'error';return;}\n"
-            + "      render(data.queues, data.queueMatrix, data.healthSummary, data.failureSummary, data.hotFailedItems, data.recentTimeline, data.uploads, data.uploadPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
+            + "      render(data.queues, data.queueMatrix, data.healthSummary, data.failureSummary, data.hotFailedItems, data.recentTimeline, data.uploads, data.uploadPolicy, data.retryPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
             + "    }\n"
             + "    function esc(s){return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}\n"
             + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
@@ -556,6 +566,13 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      html += '</table></div>';\n"
             + "      return html;\n"
             + "    }\n"
+            + "    function renderRetryPolicy(r){\n"
+            + "      let html = '<div class=\"card\"><h3>重试策略</h3>';\n"
+            + "      html += '<table><tr><th>autoRetryMode</th><th>maxRetryCount</th><th>retryBackoffMillis</th><th>manualRetryUnrestricted</th></tr>';\n"
+            + "      html += '<tr><td>'+esc(r.autoRetryMode)+'</td><td>'+r.maxRetryCount+'</td><td>'+r.retryBackoffMillis+'</td><td>'+r.manualRetryUnrestricted+'</td></tr>';\n"
+            + "      html += '</table></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
             + "    function renderUploadPolicy(p){\n"
             + "      let html = '<div class=\"card\"><h3>上传策略</h3>';\n"
             + "      html += '<table><tr><th>mode</th><th>uploadBlockSizeBytes</th><th>resumeSupported</th><th>historyRetention</th></tr>';\n"
@@ -571,7 +588,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      await fetch('/sync/api/failed/discard?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});\n"
             + "      await reload();\n"
             + "    }\n"
-            + "    function render(queues, queueMatrix, healthSummary, failureSummary, hotFailedItems, recentTimeline, uploads, uploadPolicy, recentCompletedUploads, recentFailedUploads){\n"
+            + "    function render(queues, queueMatrix, healthSummary, failureSummary, hotFailedItems, recentTimeline, uploads, uploadPolicy, retryPolicy, recentCompletedUploads, recentFailedUploads){\n"
             + "      const keys = [\n"
             + "        ['新增(文件)', 'file_create'],\n"
             + "        ['修改(文件)', 'file_modify'],\n"
@@ -588,6 +605,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      overview += renderQueueMatrix(queueMatrix || {size:0, items:[]});\n"
             + "      overview += renderHealthSummary(healthSummary || {activeCount:0, failedCount:0, uploadingCount:0, oldestFailedAtMillis:0, maxRetryCount:0});\n"
             + "      overview += renderUploadPolicy(uploadPolicy || {mode:'AUTO_SEGMENT_RESUMABLE', uploadBlockSizeBytes:0, resumeSupported:true, historyRetention:'memory_recent'});\n"
+            + "      overview += renderRetryPolicy(retryPolicy || {autoRetryMode:'LIMITED_WITH_BACKOFF', maxRetryCount:0, retryBackoffMillis:0, manualRetryUnrestricted:true});\n"
             + "      let failed = '';\n"
             + "      failed += renderFailureSummary(failureSummary || {size:0, totalFailedItems:0, items:[]});\n"
             + "      failed += renderHotFailedItems(hotFailedItems || {size:0, items:[]});\n"

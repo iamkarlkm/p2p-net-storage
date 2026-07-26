@@ -36,6 +36,7 @@ public class P2PSyncMonitorServerTest {
         cfg.setLocalDir(root.toString());
         cfg.setDsHome(state.toString());
         cfg.setMaxRetryCount(3);
+        cfg.setRetryBackoffMillis(2500L);
 
         try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, new StaticUploadStatusHandler())) {
             svc.start();
@@ -102,6 +103,11 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"uploadPolicy\""));
                 Assert.assertTrue(json.contains("\"mode\":\"AUTO_SEGMENT_RESUMABLE\""));
                 Assert.assertTrue(json.contains("\"uploadBlockSizeBytes\":"));
+                Assert.assertTrue(json.contains("\"retryPolicy\""));
+                Assert.assertTrue(json.contains("\"autoRetryMode\":\"LIMITED_WITH_BACKOFF\""));
+                Assert.assertTrue(json.contains("\"maxRetryCount\":3"));
+                Assert.assertTrue(json.contains("\"retryBackoffMillis\":2500"));
+                Assert.assertTrue(json.contains("\"manualRetryUnrestricted\":true"));
                 Assert.assertTrue(json.contains("\"recentTimeline\""));
                 Assert.assertTrue(json.contains("\"phase\":\"completed\""));
                 Assert.assertTrue(json.contains("\"phase\":\"failed\""));
