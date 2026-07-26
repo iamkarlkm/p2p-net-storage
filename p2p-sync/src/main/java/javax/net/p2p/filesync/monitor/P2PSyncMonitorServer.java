@@ -137,6 +137,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         root.put("healthSummary", healthSummaryToMap(store, limit));
         root.put("failureSummary", failureSummaryToMap(store));
         root.put("hotFailedItems", hotFailedItemsToMap(store, limit));
+        root.put("recentTimeline", recentTimelineToMap(limit));
         root.put("uploads", uploadsToMap(limit));
         root.put("uploadPolicy", uploadPolicyToMap());
         root.put("recentCompletedUploads", uploadHistoryToMap(syncService.snapshotRecentCompletedUploads(limit)));
@@ -208,6 +209,24 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         row.put("activeCount", Integer.valueOf(activeCount));
         row.put("failedCount", Integer.valueOf(failedCount));
         return row;
+    }
+
+    private Map<String, Object> recentTimelineToMap(int limit) {
+        List<SyncUploadStatus> timeline = new ArrayList<SyncUploadStatus>();
+        timeline.addAll(syncService.snapshotRecentCompletedUploads(limit));
+        timeline.addAll(syncService.snapshotRecentFailedUploads(limit));
+        Collections.sort(timeline, new Comparator<SyncUploadStatus>() {
+            @Override
+            public int compare(SyncUploadStatus left, SyncUploadStatus right) {
+                long leftTime = left.getUpdatedAtMillis();
+                long rightTime = right.getUpdatedAtMillis();
+                return leftTime < rightTime ? 1 : (leftTime == rightTime ? 0 : -1);
+            }
+        });
+        if (timeline.size() > limit) {
+            timeline = new ArrayList<SyncUploadStatus>(timeline.subList(0, limit));
+        }
+        return uploadHistoryToMap(timeline);
     }
 
     private Map<String, Object> hotFailedItemsToMap(P2PSyncStateStore store, int limit) {
@@ -431,7 +450,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      const res = await fetch('/sync/api/queues?limit=200');\n"
             + "      const data = await res.json();\n"
             + "      if(!data.ok){document.getElementById('content').innerText = data.message || 'error';return;}\n"
-            + "      render(data.queues, data.queueMatrix, data.healthSummary, data.failureSummary, data.hotFailedItems, data.uploads, data.uploadPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
+            + "      render(data.queues, data.queueMatrix, data.healthSummary, data.failureSummary, data.hotFailedItems, data.recentTimeline, data.uploads, data.uploadPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
             + "    }\n"
             + "    function esc(s){return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}\n"
             + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
@@ -466,6 +485,15 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      for(const it of u.items){\n"
             + "        const progress = it.totalSegments > 0 ? (it.uploadedSegments + '/' + it.totalSegments) : '-';\n"
             + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.phase)+'</td><td>'+it.fileSize+'</td><td>'+progress+'</td><td>'+esc(it.message)+'</td></tr>';\n"
+            + "      }\n"
+            + "      html += '</table></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
+            + "    function renderTimeline(t){\n"
+            + "      let html = '<div class=\"card\"><h3>最近操作时间线 (size='+t.size+')</h3>';\n"
+            + "      html += '<table><tr><th>path</th><th>phase</th><th>updatedAtMillis</th><th>message</th></tr>';\n"
+            + "      for(const it of t.items){\n"
+            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.phase)+'</td><td>'+it.updatedAtMillis+'</td><td>'+esc(it.message)+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
@@ -519,7 +547,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      await fetch('/sync/api/failed/discard?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});\n"
             + "      await reload();\n"
             + "    }\n"
-            + "    function render(queues, queueMatrix, healthSummary, failureSummary, hotFailedItems, uploads, uploadPolicy, recentCompletedUploads, recentFailedUploads){\n"
+            + "    function render(queues, queueMatrix, healthSummary, failureSummary, hotFailedItems, recentTimeline, uploads, uploadPolicy, recentCompletedUploads, recentFailedUploads){\n"
             + "      const keys = [\n"
             + "        ['新增(文件)', 'file_create'],\n"
             + "        ['修改(文件)', 'file_modify'],\n"
@@ -538,6 +566,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      html += renderUploadPolicy(uploadPolicy || {mode:'AUTO_SEGMENT_RESUMABLE', uploadBlockSizeBytes:0, resumeSupported:true, historyRetention:'memory_recent'});\n"
             + "      html += renderFailureSummary(failureSummary || {size:0, totalFailedItems:0, items:[]});\n"
             + "      html += renderHotFailedItems(hotFailedItems || {size:0, items:[]});\n"
+            + "      html += renderTimeline(recentTimeline || {size:0, items:[]});\n"
             + "      html += renderUploads(uploads || {size:0, items:[]});\n"
             + "      html += renderUploadHistory('最近完成上传', recentCompletedUploads || {size:0, items:[]});\n"
             + "      html += renderUploadHistory('最近失败上传', recentFailedUploads || {size:0, items:[]});\n"
