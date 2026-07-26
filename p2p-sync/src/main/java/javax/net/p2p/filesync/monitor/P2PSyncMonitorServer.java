@@ -9,10 +9,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.concurrent.Executors;
 
 import javax.net.p2p.config.P2PConfig;
@@ -44,6 +46,8 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         this.server.createContext("/sync/api/failed/discard", new FailedActionHandler(false));
         this.server.createContext("/sync/api/failed/retry-auto-recoverable-replicas", new BatchRetryAutoRecoverableReplicasHandler());
         this.server.createContext("/sync/api/failed/discard-manual-replicas", new BatchDiscardManualReplicasHandler());
+        this.server.createContext("/sync/api/failed/retry-replicas-by-category", new BatchReplicaCategoryActionHandler(true));
+        this.server.createContext("/sync/api/failed/discard-replicas-by-category", new BatchReplicaCategoryActionHandler(false));
     }
 
     public void start() {
@@ -159,6 +163,38 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             body.put("ok", Boolean.TRUE);
             body.put("touchedFileCount", Integer.valueOf(result.touchedFileCount));
             body.put("discardedReplicaCount", Integer.valueOf(result.touchedReplicaCount));
+            writeJson(exchange, 200, toJson(body));
+        }
+    }
+
+    private final class BatchReplicaCategoryActionHandler implements HttpHandler {
+
+        private final boolean retry;
+
+        private BatchReplicaCategoryActionHandler(boolean retry) {
+            this.retry = retry;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            P2PSyncStateStore store = syncService.getStore();
+            if (store == null) {
+                writeJson(exchange, 503, "{\"ok\":false,\"message\":\"store not ready\"}");
+                return;
+            }
+            Set<String> categories = parseCategories(exchange.getRequestURI());
+            if (categories.isEmpty()) {
+                writeJson(exchange, 400, "{\"ok\":false,\"message\":\"missing category\"}");
+                return;
+            }
+            BatchReplicaActionResult result = retry
+                ? retryReplicasByCategory(store, categories)
+                : discardReplicasByCategory(store, categories);
+            Map<String, Object> body = new LinkedHashMap<String, Object>();
+            body.put("ok", Boolean.TRUE);
+            body.put("categories", new ArrayList<String>(categories));
+            body.put("touchedFileCount", Integer.valueOf(result.touchedFileCount));
+            body.put(retry ? "retriedReplicaCount" : "discardedReplicaCount", Integer.valueOf(result.touchedReplicaCount));
             writeJson(exchange, 200, toJson(body));
         }
     }
@@ -318,6 +354,26 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         out.put("totalOutstandingReplicas", Integer.valueOf(totalCount(counts)));
         out.put("items", reasonItems(counts));
         return out;
+    }
+
+    private Set<String> parseCategories(URI uri) {
+        String raw = param(uri, "category");
+        if (raw == null || raw.isBlank()) {
+            return Collections.emptySet();
+        }
+        Set<String> categories = new LinkedHashSet<String>();
+        String[] parts = raw.split(",");
+        for (String part : parts) {
+            String category = normalizeReplicaCategoryToken(part);
+            if (!category.isEmpty()) {
+                categories.add(category);
+            }
+        }
+        return categories;
+    }
+
+    private String normalizeReplicaCategoryToken(String category) {
+        return category == null ? "" : category.trim().toUpperCase();
     }
 
     private Map<String, Object> queueMatrixToMap(P2PSyncStateStore store) {
@@ -626,23 +682,26 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             if (!isReplicaActionable(status)) {
                 continue;
             }
-            String replicaReason;
-            if (P2PSyncStateStore.REPLICA_TARGETED.equals(status) || P2PSyncStateStore.REPLICA_RETRY.equals(status)) {
-                replicaReason = "retry_scheduled";
-            } else if (P2PSyncStateStore.REPLICA_FAILED.equals(status)) {
-                if (reasonReplica != null && reasonReplica.equals(replicaState.getLabel())) {
-                    replicaReason = normalizedReason;
-                } else if (!manualReason && !autoRetryable) {
-                    replicaReason = "retry_limit_exceeded";
-                } else {
-                    replicaReason = normalizedReason;
-                }
-            } else {
-                replicaReason = normalizedReason;
-            }
+            String replicaReason = resolveReplicaReason(replicaState.getLabel(), status, reasonReplica, normalizedReason, manualReason, autoRetryable);
             addCount(counts, replicaReason, 1);
         }
         return counts;
+    }
+
+    private String resolveReplicaReason(String label, String status, String reasonReplica, String normalizedReason, boolean manualReason, boolean autoRetryable) {
+        if (P2PSyncStateStore.REPLICA_TARGETED.equals(status) || P2PSyncStateStore.REPLICA_RETRY.equals(status)) {
+            return "retry_scheduled";
+        }
+        if (!P2PSyncStateStore.REPLICA_FAILED.equals(status)) {
+            return normalizedReason;
+        }
+        if (reasonReplica != null && reasonReplica.equals(label)) {
+            return normalizedReason;
+        }
+        if (!manualReason && !autoRetryable) {
+            return "retry_limit_exceeded";
+        }
+        return normalizedReason;
     }
 
     private List<Map<String, Object>> reasonItems(Map<String, Integer> counts) {
@@ -780,6 +839,55 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         return result;
     }
 
+    private BatchReplicaActionResult retryReplicasByCategory(P2PSyncStateStore store, Set<String> categories) {
+        BatchReplicaActionResult result = new BatchReplicaActionResult();
+        retryReplicasByCategory(result, store, store.queueRef(QueueKey.FILE_CREATE, QueueStage.FAILED), FileSyncEventType.CREATE, false, categories);
+        retryReplicasByCategory(result, store, store.queueRef(QueueKey.FILE_MODIFY, QueueStage.FAILED), FileSyncEventType.MODIFY, false, categories);
+        retryReplicasByCategory(result, store, store.queueRef(QueueKey.FILE_DELETE, QueueStage.FAILED), FileSyncEventType.DELETE, false, categories);
+        retryReplicasByCategory(result, store, store.queueRef(QueueKey.DIR_CREATE, QueueStage.FAILED), FileSyncEventType.CREATE, true, categories);
+        retryReplicasByCategory(result, store, store.queueRef(QueueKey.DIR_DELETE, QueueStage.FAILED), FileSyncEventType.DELETE, true, categories);
+        return result;
+    }
+
+    private void retryReplicasByCategory(BatchReplicaActionResult result, P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir, Set<String> categories) {
+        batchReplicasByCategory(result, store, set, type, dir, categories, true);
+    }
+
+    private BatchReplicaActionResult discardReplicasByCategory(P2PSyncStateStore store, Set<String> categories) {
+        BatchReplicaActionResult result = new BatchReplicaActionResult();
+        discardReplicasByCategory(result, store, store.queueRef(QueueKey.FILE_CREATE, QueueStage.FAILED), FileSyncEventType.CREATE, false, categories);
+        discardReplicasByCategory(result, store, store.queueRef(QueueKey.FILE_MODIFY, QueueStage.FAILED), FileSyncEventType.MODIFY, false, categories);
+        discardReplicasByCategory(result, store, store.queueRef(QueueKey.FILE_DELETE, QueueStage.FAILED), FileSyncEventType.DELETE, false, categories);
+        discardReplicasByCategory(result, store, store.queueRef(QueueKey.DIR_CREATE, QueueStage.FAILED), FileSyncEventType.CREATE, true, categories);
+        discardReplicasByCategory(result, store, store.queueRef(QueueKey.DIR_DELETE, QueueStage.FAILED), FileSyncEventType.DELETE, true, categories);
+        return result;
+    }
+
+    private void discardReplicasByCategory(BatchReplicaActionResult result, P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir, Set<String> categories) {
+        batchReplicasByCategory(result, store, set, type, dir, categories, false);
+    }
+
+    private void batchReplicasByCategory(BatchReplicaActionResult result, P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir, Set<String> categories, boolean retry) {
+        List<Long> fileIds = new ArrayList<Long>();
+        for (Long o : set) {
+            fileIds.add(o);
+        }
+        for (Long fileIdRef : fileIds) {
+            long fileId = fileIdRef.longValue();
+            List<String> labels = replicaLabelsForCategories(store, type, dir, fileId, categories);
+            if (labels.isEmpty()) {
+                continue;
+            }
+            int updated = retry
+                ? store.retryFailedReplicas(type, dir, fileId, labels)
+                : store.discardFailedReplicas(type, dir, fileId, labels);
+            if (updated > 0) {
+                result.touchedFileCount++;
+                result.touchedReplicaCount += updated;
+            }
+        }
+    }
+
     private void discardManualInterventionReplicas(BatchReplicaActionResult result, P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir) {
         List<Long> fileIds = new ArrayList<Long>();
         for (Long o : set) {
@@ -836,6 +944,31 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
                 continue;
             }
             if (manualReason || !autoRetryable) {
+                labels.add(replicaState.getLabel());
+            }
+        }
+        return labels;
+    }
+
+    private List<String> replicaLabelsForCategories(P2PSyncStateStore store, FileSyncEventType type, boolean dir, long fileId, Set<String> categories) {
+        if (categories == null || categories.isEmpty()) {
+            return Collections.emptyList();
+        }
+        int retryCount = store.getRetryCount(type, dir, fileId);
+        String reason = store.getFailedReason(type, dir, fileId);
+        String reasonReplica = extractReplicaLabel(reason);
+        String normalizedReason = normalizeReplicaReason(reason, retryCount);
+        boolean autoRetryable = isRetryable(retryCount);
+        boolean manualReason = "write_conflict".equals(normalizedReason) || "retry_limit_exceeded".equals(normalizedReason);
+        List<String> labels = new ArrayList<String>();
+        for (P2PSyncStateStore.ReplicaState replicaState : store.getReplicaStates(type, dir, fileId)) {
+            String status = replicaState.getStatus();
+            if (!isReplicaActionable(status)) {
+                continue;
+            }
+            String replicaReason = resolveReplicaReason(replicaState.getLabel(), status, reasonReplica, normalizedReason, manualReason, autoRetryable);
+            String category = replicaReasonCategory(replicaReason);
+            if (categories.contains(category)) {
                 labels.add(replicaState.getLabel());
             }
         }
@@ -985,6 +1118,8 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "    <button class=\"btn\" onclick=\"reload()\">刷新</button>\n"
             + "    <button class=\"btn\" data-batch-action=\"retry-auto-recoverable-replicas\">批量重试可自动恢复副本</button>\n"
             + "    <button class=\"btn\" data-batch-action=\"discard-manual-replicas\">批量放弃人工介入副本</button>\n"
+            + "    <button class=\"btn\" data-batch-action=\"retry-network-replicas\">批量重试 NETWORK 副本</button>\n"
+            + "    <button class=\"btn\" data-batch-action=\"discard-conflict-retry-limit-replicas\">批量放弃 CONFLICT/RETRY_LIMIT 副本</button>\n"
             + "  </div>\n"
             + "  <div id=\"content\"></div>\n"
             + "  <script>\n"
@@ -1162,6 +1297,14 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      await fetch('/sync/api/failed/discard-manual-replicas', {method:'POST'});\n"
             + "      await reload();\n"
             + "    }\n"
+            + "    async function retryReplicasByCategory(category){\n"
+            + "      await fetch('/sync/api/failed/retry-replicas-by-category?category='+encodeURIComponent(category), {method:'POST'});\n"
+            + "      await reload();\n"
+            + "    }\n"
+            + "    async function discardReplicasByCategory(category){\n"
+            + "      await fetch('/sync/api/failed/discard-replicas-by-category?category='+encodeURIComponent(category), {method:'POST'});\n"
+            + "      await reload();\n"
+            + "    }\n"
             + "    function render(queues, queueMatrix, healthSummary, failureSummary, failureRecoverySummary, replicaRecoverySummary, replicaFailureSummary, replicaFailureCategorySummary, hotFailedItems, recentTimeline, uploads, uploadPolicy, retryPolicy, recentCompletedUploads, recentFailedUploads){\n"
             + "      const keys = [\n"
             + "        ['新增(文件)', 'file_create'],\n"
@@ -1211,6 +1354,10 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "          await retryAutoRecoverableReplicas();\n"
             + "        } else if(batchBtn.getAttribute('data-batch-action') === 'discard-manual-replicas'){\n"
             + "          await discardManualReplicas();\n"
+            + "        } else if(batchBtn.getAttribute('data-batch-action') === 'retry-network-replicas'){\n"
+            + "          await retryReplicasByCategory('NETWORK');\n"
+            + "        } else if(batchBtn.getAttribute('data-batch-action') === 'discard-conflict-retry-limit-replicas'){\n"
+            + "          await discardReplicasByCategory('CONFLICT,RETRY_LIMIT');\n"
             + "        }\n"
             + "        return;\n"
             + "      }\n"

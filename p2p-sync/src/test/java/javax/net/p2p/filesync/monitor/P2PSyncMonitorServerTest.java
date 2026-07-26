@@ -64,6 +64,8 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("data-batch-action"));
                 Assert.assertTrue(index.contains("批量重试可自动恢复副本"));
                 Assert.assertTrue(index.contains("批量放弃人工介入副本"));
+                Assert.assertTrue(index.contains("批量重试 NETWORK 副本"));
+                Assert.assertTrue(index.contains("批量放弃 CONFLICT/RETRY_LIMIT 副本"));
                 Assert.assertTrue(index.contains("document.addEventListener('click'"));
                 Assert.assertTrue(index.contains("class=\"page\""));
                 Assert.assertTrue(index.contains("class=\"section\""));
@@ -316,6 +318,68 @@ public class P2PSyncMonitorServerTest {
 
                 Assert.assertTrue(store.fileDeletesFailed().contains(Long.valueOf(autoId)));
                 Assert.assertTrue(hasReplicaState(store, FileSyncEventType.DELETE, false, autoId, "node-d", P2PSyncStateStore.REPLICA_FAILED));
+            }
+        }
+    }
+
+    @Test
+    public void shouldBatchRetryAndDiscardReplicasByCategoryViaHttp() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_monitor_root_batch_category_");
+        Path state = Files.createTempDirectory("p2p_sync_monitor_state_batch_category_");
+        P2PSyncConfig cfg = new P2PSyncConfig();
+        cfg.setTaskId(104L);
+        cfg.setLocalDir(root.toString());
+        cfg.setDsHome(state.toString());
+        cfg.setMaxRetryCount(1);
+
+        try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, null)) {
+            svc.start();
+            P2PSyncStateStore store = svc.getStore();
+            long networkId = store.getOrCreateFileId("network.txt");
+            long conflictId = store.getOrCreateFileId("conflict.txt");
+            long cappedId = store.getOrCreateFileId("capped.txt");
+            long otherId = store.getOrCreateFileId("other.txt");
+            store.markFailed(FileSyncEventType.CREATE, false, networkId, "network_unreachable");
+            store.markReplicaState(FileSyncEventType.CREATE, false, networkId, "node-a", P2PSyncStateStore.REPLICA_FAILED);
+            store.markFailed(FileSyncEventType.MODIFY, false, conflictId, "write_conflict");
+            store.markReplicaState(FileSyncEventType.MODIFY, false, conflictId, "node-b", P2PSyncStateStore.REPLICA_FAILED);
+            store.markFailed(FileSyncEventType.DELETE, false, cappedId, "stale");
+            store.markReplicaState(FileSyncEventType.DELETE, false, cappedId, "node-c", P2PSyncStateStore.REPLICA_FAILED);
+            store.incrementRetryCount(FileSyncEventType.DELETE, false, cappedId);
+            store.markFailed(FileSyncEventType.CREATE, true, otherId, "stale");
+            store.markReplicaState(FileSyncEventType.CREATE, true, otherId, "node-d", P2PSyncStateStore.REPLICA_FAILED);
+
+            try (P2PSyncMonitorServer server = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
+                server.start();
+
+                String retryResp = send("POST",
+                    "http://127.0.0.1:" + server.getPort() + "/sync/api/failed/retry-replicas-by-category?category=NETWORK",
+                    "");
+                Assert.assertTrue(retryResp.contains("\"ok\":true"));
+                Assert.assertTrue(retryResp.contains("\"touchedFileCount\":1"));
+                Assert.assertTrue(retryResp.contains("\"retriedReplicaCount\":1"));
+                Assert.assertTrue(retryResp.contains("\"categories\":[\"NETWORK\"]"));
+                Assert.assertFalse(store.fileCreatesFailed().contains(Long.valueOf(networkId)));
+                Assert.assertTrue(store.fileCreatesActive().contains(Long.valueOf(networkId)));
+                Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, false, networkId, "node-a", P2PSyncStateStore.REPLICA_TARGETED));
+
+                String discardResp = send("POST",
+                    "http://127.0.0.1:" + server.getPort() + "/sync/api/failed/discard-replicas-by-category?category=CONFLICT,RETRY_LIMIT",
+                    "");
+                Assert.assertTrue(discardResp.contains("\"ok\":true"));
+                Assert.assertTrue(discardResp.contains("\"touchedFileCount\":2"));
+                Assert.assertTrue(discardResp.contains("\"discardedReplicaCount\":2"));
+                Assert.assertTrue(discardResp.contains("\"CONFLICT\""));
+                Assert.assertTrue(discardResp.contains("\"RETRY_LIMIT\""));
+
+                Assert.assertFalse(store.fileModifiesFailed().contains(Long.valueOf(conflictId)));
+                Assert.assertEquals(0, store.getReplicaStates(FileSyncEventType.MODIFY, false, conflictId).size());
+
+                Assert.assertFalse(store.fileDeletesFailed().contains(Long.valueOf(cappedId)));
+                Assert.assertEquals(0, store.getReplicaStates(FileSyncEventType.DELETE, false, cappedId).size());
+
+                Assert.assertTrue(store.dirCreatesFailed().contains(Long.valueOf(otherId)));
+                Assert.assertTrue(hasReplicaState(store, FileSyncEventType.CREATE, true, otherId, "node-d", P2PSyncStateStore.REPLICA_FAILED));
             }
         }
     }
