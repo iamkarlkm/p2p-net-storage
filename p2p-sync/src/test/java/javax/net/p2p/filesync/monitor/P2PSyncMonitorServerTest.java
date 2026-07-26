@@ -72,7 +72,9 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("队列明细区"));
                 Assert.assertTrue(index.contains(">replicas</th>"));
                 Assert.assertTrue(index.contains("副本恢复分级汇总"));
+                Assert.assertTrue(index.contains("副本失败原因汇总"));
                 Assert.assertTrue(index.contains(">replicaRecoveryClass</th>"));
+                Assert.assertTrue(index.contains(">replicaReasons</th>"));
 
                 String json = send("GET", "http://127.0.0.1:" + server.getPort() + "/sync/api/queues?limit=20", null);
                 Assert.assertTrue(json.contains("\"ok\":true"));
@@ -93,10 +95,12 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"reason\":\"write_conflict\""));
                 Assert.assertTrue(json.contains("\"replicaStates\""));
                 Assert.assertTrue(json.contains("\"replicaSummary\":\"node-a=ACKED, node-b=FAILED\""));
+                Assert.assertTrue(json.contains("\"replicaReasonSummary\":\"write_conflict=1\""));
                 Assert.assertTrue(json.contains("\"replicaRecoveryClass\":\"MANUAL_INTERVENTION\""));
                 Assert.assertTrue(json.contains("\"outstandingReplicaCount\":1"));
                 Assert.assertTrue(json.contains("\"autoRecoverableReplicaCount\":0"));
                 Assert.assertTrue(json.contains("\"manualReplicaCount\":1"));
+                Assert.assertTrue(json.contains("\"replicaReasonItems\""));
                 Assert.assertTrue(json.contains("\"label\":\"node-a\""));
                 Assert.assertTrue(json.contains("\"status\":\"FAILED\""));
                 Assert.assertTrue(json.contains("\"healthSummary\""));
@@ -113,6 +117,9 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"replicaRecoverySummary\""));
                 Assert.assertTrue(json.contains("\"totalOutstandingReplicas\":2"));
                 Assert.assertTrue(json.contains("\"manualReplicaCount\":1"));
+                Assert.assertTrue(json.contains("\"replicaFailureSummary\""));
+                Assert.assertTrue(json.contains("\"reason\":\"write_conflict\""));
+                Assert.assertTrue(json.contains("\"reason\":\"stale\""));
                 Assert.assertTrue(json.contains("\"hotFailedItems\""));
                 Assert.assertTrue(json.contains("\"size\":2"));
                 Assert.assertTrue(json.contains("\"reason\":\"stale\""));
