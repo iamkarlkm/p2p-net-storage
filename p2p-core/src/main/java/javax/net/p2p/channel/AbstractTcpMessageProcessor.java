@@ -90,22 +90,23 @@
  */
 package javax.net.p2p.channel;
 
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.SimpleChannelInboundHandler;
 import java.io.File;
 import java.net.JarURLConnection;
 import java.net.URL;
 import java.util.Enumeration;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Set;
-import java.util.jar.JarEntry;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.jar.JarEntry;
+
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.api.P2PServiceCategory;
 import javax.net.p2p.interfaces.P2PCommandHandler;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.server.P2PServiceManager;
+
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.SimpleChannelInboundHandler;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
@@ -208,24 +209,29 @@ public abstract class AbstractTcpMessageProcessor extends SimpleChannelInboundHa
             try {
                 Class<?> clazz = Class.forName(className);
                 if (P2PCommandHandler.class.isAssignableFrom(clazz)) {
-                    //P2PCommandHandler handler = clazz.newInstance();
                     P2PCommandHandler handler = (P2PCommandHandler) clazz.getDeclaredConstructor().newInstance();
                     P2PCommand cmd = handler.getCommand();
                     P2PCommandHandler prev = ALL_HANDLER_MAP.putIfAbsent(cmd, handler);
                     if (prev != null) {
-                        throw new RuntimeException("P2PCommandHandler register confilct:" + cmd
-                            + " " + className
-                            + " <> " + prev.getClass().getName());
+                        if (sameHandlerType(prev, handler)) {
+                            handler = prev;
+                        } else {
+                            throw new RuntimeException("P2PCommandHandler register confilct:" + cmd
+                                + " " + className
+                                + " <> " + prev.getClass().getName());
+                        }
                     }
 
-                    CATEGORY_HANDLER_MAP.computeIfAbsent(cmd.getCategory(), k -> new ConcurrentHashMap<>()).put(cmd, handler);
+                    CATEGORY_HANDLER_MAP.computeIfAbsent(cmd.getCategory(), k -> new ConcurrentHashMap<>()).putIfAbsent(cmd, handler);
 
                     if (P2PServiceManager.isEnabled(cmd.getCategory())) {
                         P2PCommandHandler exist = HANDLER_REGISTRY_MAP.putIfAbsent(cmd, handler);
                         if (exist != null && exist != handler) {
-                            throw new RuntimeException("P2PCommandHandler register confilct:" + cmd
-                                + " " + className
-                                + " <> " + exist.getClass().getName());
+                            if (!sameHandlerType(exist, handler)) {
+                                throw new RuntimeException("P2PCommandHandler register confilct:" + cmd
+                                    + " " + className
+                                    + " <> " + exist.getClass().getName());
+                            }
                         }
                     }
                 }
@@ -236,6 +242,13 @@ public abstract class AbstractTcpMessageProcessor extends SimpleChannelInboundHa
                 e.printStackTrace();
             }
         }
+    }
+
+    private static boolean sameHandlerType(P2PCommandHandler existing, P2PCommandHandler incoming) {
+        if (existing == null || incoming == null) {
+            return false;
+        }
+        return existing.getClass().getName().equals(incoming.getClass().getName());
     }
 
     public static void unloadCategory(P2PServiceCategory category) {
