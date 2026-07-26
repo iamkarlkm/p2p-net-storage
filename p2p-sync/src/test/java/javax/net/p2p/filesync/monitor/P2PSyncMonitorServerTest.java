@@ -294,8 +294,8 @@ public class P2PSyncMonitorServerTest {
             store.markFailed(FileSyncEventType.CREATE, false, manualId, "write_conflict");
             store.markReplicaState(FileSyncEventType.CREATE, false, manualId, "node-a", P2PSyncStateStore.REPLICA_FAILED);
             store.markReplicaState(FileSyncEventType.CREATE, false, manualId, "node-b", P2PSyncStateStore.REPLICA_FAILED);
-            store.markFailed(FileSyncEventType.MODIFY, false, cappedId, "stale");
-            store.markReplicaState(FileSyncEventType.MODIFY, false, cappedId, "node-c", P2PSyncStateStore.REPLICA_FAILED);
+            store.markFailed(FileSyncEventType.MODIFY, false, cappedId, "retry_limit_exceeded");
+            store.markReplicaState(FileSyncEventType.MODIFY, false, cappedId, "node-c", P2PSyncStateStore.REPLICA_RETRY);
             store.incrementRetryCount(FileSyncEventType.MODIFY, false, cappedId);
             store.incrementRetryCount(FileSyncEventType.MODIFY, false, cappedId);
             store.markFailed(FileSyncEventType.DELETE, false, autoId, "stale");
@@ -343,8 +343,8 @@ public class P2PSyncMonitorServerTest {
             store.markReplicaState(FileSyncEventType.CREATE, false, networkId, "node-a", P2PSyncStateStore.REPLICA_FAILED);
             store.markFailed(FileSyncEventType.MODIFY, false, conflictId, "write_conflict");
             store.markReplicaState(FileSyncEventType.MODIFY, false, conflictId, "node-b", P2PSyncStateStore.REPLICA_FAILED);
-            store.markFailed(FileSyncEventType.DELETE, false, cappedId, "stale");
-            store.markReplicaState(FileSyncEventType.DELETE, false, cappedId, "node-c", P2PSyncStateStore.REPLICA_FAILED);
+            store.markFailed(FileSyncEventType.DELETE, false, cappedId, "retry_limit_exceeded");
+            store.markReplicaState(FileSyncEventType.DELETE, false, cappedId, "node-c", P2PSyncStateStore.REPLICA_RETRY);
             store.incrementRetryCount(FileSyncEventType.DELETE, false, cappedId);
             store.markFailed(FileSyncEventType.CREATE, true, otherId, "stale");
             store.markReplicaState(FileSyncEventType.CREATE, true, otherId, "node-d", P2PSyncStateStore.REPLICA_FAILED);

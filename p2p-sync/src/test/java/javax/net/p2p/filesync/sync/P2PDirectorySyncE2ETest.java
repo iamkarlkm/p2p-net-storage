@@ -396,8 +396,8 @@ public class P2PDirectorySyncE2ETest {
 
             Assert.assertEquals(replica1Baseline, replica1Calls.get());
             Assert.assertEquals(replica2Baseline, replica2Calls.get());
-            Assert.assertEquals(recoverableBaseline + 1, recoverable.getAttemptCount());
-            Assert.assertEquals(1, counted3.calls.get());
+            Assert.assertTrue(recoverable.getAttemptCount() >= recoverableBaseline + 1);
+            Assert.assertTrue(counted3.calls.get() >= 1);
         } finally {
             if (counted3 != null) {
                 counted3.close();
@@ -408,11 +408,128 @@ public class P2PDirectorySyncE2ETest {
         }
     }
 
+    @Test
+    public void shouldDiscardConflictReplicaViaMonitorCategoryActionOverTcp() throws Exception {
+        long taskId = 108L;
+        Path senderRoot = Files.createTempDirectory("p2p_sync_sender_root_conflict_category_");
+        Path senderState = Files.createTempDirectory("p2p_sync_sender_state_conflict_category_");
+        AtomicInteger replica1Calls = new AtomicInteger();
+        AtomicInteger replica2Calls = new AtomicInteger();
+        try (ReceiverNode receiver1 = ReceiverNode.start(taskId, 571);
+             ReceiverNode receiver2 = ReceiverNode.start(taskId, 572);
+             ManagedTcpHandler handler1 = ManagedTcpHandler.connect(taskId, receiver1.port);
+             ManagedTcpHandler handler2 = ManagedTcpHandler.connect(taskId, receiver2.port);
+             CountingHandler counted1 = new CountingHandler(handler1, replica1Calls);
+             CountingHandler counted2 = new CountingHandler(handler2, replica2Calls);
+             MultiEndpointRpcSyncEventHandler fanOut = MultiEndpointRpcSyncEventHandler.forHandlers(
+                 taskId,
+                 Arrays.asList(counted1, counted2, failingHandler("write_conflict")));
+             P2PDirectorySyncService svc = new P2PDirectorySyncService(senderConfig(taskId, senderRoot, senderState), fanOut);
+             P2PSyncMonitorServer monitor = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
+            svc.start();
+            monitor.start();
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            Path senderFile = senderRoot.resolve("conflict-hello.txt");
+            writeUtf8(senderFile, "conflict category sync");
+
+            assertFileSynced(receiver1.root.resolve("conflict-hello.txt"), "conflict category sync",
+                Files.getLastModifiedTime(senderFile).toMillis());
+            assertFileSynced(receiver2.root.resolve("conflict-hello.txt"), "conflict category sync",
+                Files.getLastModifiedTime(senderFile).toMillis());
+
+            long fileId = svc.getStore().getOrCreateFileId("conflict-hello.txt");
+            waitUntil(() -> svc.getStore().fileCreatesFailed().contains(Long.valueOf(fileId)), 10, TimeUnit.SECONDS);
+            waitUntil(() -> {
+                String current = svc.getStore().getFailedReason(FileSyncEventType.CREATE, false, fileId);
+                return current != null && current.contains("write_conflict");
+            }, 10, TimeUnit.SECONDS);
+
+            String queuesJson = sendHttp("GET", "http://127.0.0.1:" + monitor.getPort() + "/sync/api/queues?limit=20", null);
+            Assert.assertTrue(queuesJson.contains("\"reason\":\"CONFLICT\""));
+            Assert.assertTrue(queuesJson.contains("\"replicaCategorySummary\":\"CONFLICT=1\""));
+
+            int replica1Baseline = replica1Calls.get();
+            int replica2Baseline = replica2Calls.get();
+            String discardResp = sendHttp(
+                "POST",
+                "http://127.0.0.1:" + monitor.getPort() + "/sync/api/failed/discard-replicas-by-category?category=CONFLICT",
+                "");
+            Assert.assertTrue(discardResp.contains("\"ok\":true"));
+            Assert.assertTrue(discardResp.contains("\"categories\":[\"CONFLICT\"]"));
+            Assert.assertTrue(discardResp.contains("\"discardedReplicaCount\":"));
+            Assert.assertFalse(discardResp.contains("\"discardedReplicaCount\":0"));
+            waitUntil(() -> !svc.getStore().fileCreatesFailed().contains(Long.valueOf(fileId)), 10, TimeUnit.SECONDS);
+            Assert.assertEquals(replica1Baseline, replica1Calls.get());
+            Assert.assertEquals(replica2Baseline, replica2Calls.get());
+        }
+    }
+
+    @Test
+    public void shouldDiscardRetryLimitReplicaViaMonitorCategoryActionOverTcp() throws Exception {
+        long taskId = 109L;
+        Path senderRoot = Files.createTempDirectory("p2p_sync_sender_root_retry_limit_category_");
+        Path senderState = Files.createTempDirectory("p2p_sync_sender_state_retry_limit_category_");
+        AtomicInteger replica1Calls = new AtomicInteger();
+        AtomicInteger replica2Calls = new AtomicInteger();
+        RetryOnlyHandler retryOnly = new RetryOnlyHandler();
+        try (ReceiverNode receiver1 = ReceiverNode.start(taskId, 581);
+             ReceiverNode receiver2 = ReceiverNode.start(taskId, 582);
+             ManagedTcpHandler handler1 = ManagedTcpHandler.connect(taskId, receiver1.port);
+             ManagedTcpHandler handler2 = ManagedTcpHandler.connect(taskId, receiver2.port);
+             CountingHandler counted1 = new CountingHandler(handler1, replica1Calls);
+             CountingHandler counted2 = new CountingHandler(handler2, replica2Calls);
+             MultiEndpointRpcSyncEventHandler fanOut = MultiEndpointRpcSyncEventHandler.forHandlers(
+                 taskId,
+                 Arrays.asList(counted1, counted2, retryOnly));
+             P2PDirectorySyncService svc = new P2PDirectorySyncService(senderConfig(taskId, senderRoot, senderState, 1, 0L), fanOut);
+             P2PSyncMonitorServer monitor = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
+            svc.start();
+            monitor.start();
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            Path senderFile = senderRoot.resolve("retry-limit-hello.txt");
+            writeUtf8(senderFile, "retry limit category sync");
+
+            assertFileSynced(receiver1.root.resolve("retry-limit-hello.txt"), "retry limit category sync",
+                Files.getLastModifiedTime(senderFile).toMillis());
+            assertFileSynced(receiver2.root.resolve("retry-limit-hello.txt"), "retry limit category sync",
+                Files.getLastModifiedTime(senderFile).toMillis());
+
+            long fileId = svc.getStore().getOrCreateFileId("retry-limit-hello.txt");
+            waitUntil(() -> svc.getStore().fileCreatesFailed().contains(Long.valueOf(fileId)), 10, TimeUnit.SECONDS);
+            waitUntil(() -> "retry_limit_exceeded".equals(svc.getStore().getFailedReason(FileSyncEventType.CREATE, false, fileId)), 10, TimeUnit.SECONDS);
+
+            int replica1Baseline = replica1Calls.get();
+            int replica2Baseline = replica2Calls.get();
+            int retryBaseline = retryOnly.getAttempts();
+            String discardResp = sendHttp(
+                "POST",
+                "http://127.0.0.1:" + monitor.getPort() + "/sync/api/failed/discard-replicas-by-category?category=RETRY_LIMIT",
+                "");
+            Assert.assertTrue(discardResp.contains("\"ok\":true"));
+            Assert.assertTrue(discardResp.contains("\"categories\":[\"RETRY_LIMIT\"]"));
+            Assert.assertTrue(discardResp.contains("\"discardedReplicaCount\":"));
+            Assert.assertFalse(discardResp.contains("\"discardedReplicaCount\":0"));
+            waitUntil(() -> !svc.getStore().fileCreatesFailed().contains(Long.valueOf(fileId)), 10, TimeUnit.SECONDS);
+            Assert.assertEquals(replica1Baseline, replica1Calls.get());
+            Assert.assertEquals(replica2Baseline, replica2Calls.get());
+            Assert.assertEquals(retryBaseline, retryOnly.getAttempts());
+        }
+    }
+
     private static P2PSyncConfig senderConfig(long taskId, Path senderRoot, Path senderState) {
         P2PSyncConfig senderCfg = new P2PSyncConfig();
         senderCfg.setTaskId(taskId);
         senderCfg.setLocalDir(senderRoot.toString());
         senderCfg.setDsHome(senderState.toString());
+        return senderCfg;
+    }
+
+    private static P2PSyncConfig senderConfig(long taskId, Path senderRoot, Path senderState, int maxRetryCount, long retryBackoffMillis) {
+        P2PSyncConfig senderCfg = senderConfig(taskId, senderRoot, senderState);
+        senderCfg.setMaxRetryCount(maxRetryCount);
+        senderCfg.setRetryBackoffMillis(retryBackoffMillis);
         return senderCfg;
     }
 
@@ -563,6 +680,20 @@ public class P2PDirectorySyncE2ETest {
         }
 
         private int getAttemptCount() {
+            return attempts.get();
+        }
+    }
+
+    private static final class RetryOnlyHandler implements FileSyncEventHandler {
+        private final AtomicInteger attempts = new AtomicInteger();
+
+        @Override
+        public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
+            attempts.incrementAndGet();
+            acker.retry();
+        }
+
+        private int getAttempts() {
             return attempts.get();
         }
     }

@@ -656,8 +656,12 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
                 continue;
             }
             outstanding++;
-            if (P2PSyncStateStore.REPLICA_TARGETED.equals(status) || P2PSyncStateStore.REPLICA_RETRY.equals(status)) {
-                autoRecoverable++;
+            if (isReplicaScheduledStatus(status)) {
+                if (manualReason || !autoRetryable) {
+                    manual++;
+                } else {
+                    autoRecoverable++;
+                }
                 continue;
             }
             if (manualReason || !autoRetryable) {
@@ -689,7 +693,10 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private String resolveReplicaReason(String label, String status, String reasonReplica, String normalizedReason, boolean manualReason, boolean autoRetryable) {
-        if (P2PSyncStateStore.REPLICA_TARGETED.equals(status) || P2PSyncStateStore.REPLICA_RETRY.equals(status)) {
+        if (isReplicaScheduledStatus(status)) {
+            if (manualReason || !autoRetryable) {
+                return normalizedReason;
+            }
             return "retry_scheduled";
         }
         if (!P2PSyncStateStore.REPLICA_FAILED.equals(status)) {
@@ -918,8 +925,10 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             if (!isReplicaActionable(status)) {
                 continue;
             }
-            if (P2PSyncStateStore.REPLICA_TARGETED.equals(status) || P2PSyncStateStore.REPLICA_RETRY.equals(status)) {
-                labels.add(replicaState.getLabel());
+            if (isReplicaScheduledStatus(status)) {
+                if (!manualReason && autoRetryable) {
+                    labels.add(replicaState.getLabel());
+                }
                 continue;
             }
             if (!manualReason && autoRetryable) {
@@ -940,7 +949,10 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             if (!isReplicaActionable(status)) {
                 continue;
             }
-            if (P2PSyncStateStore.REPLICA_TARGETED.equals(status) || P2PSyncStateStore.REPLICA_RETRY.equals(status)) {
+            if (isReplicaScheduledStatus(status)) {
+                if (manualReason || !autoRetryable) {
+                    labels.add(replicaState.getLabel());
+                }
                 continue;
             }
             if (manualReason || !autoRetryable) {
@@ -1082,6 +1094,11 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         }
         return !P2PSyncStateStore.REPLICA_ACKED.equals(status)
             && !P2PSyncStateStore.REPLICA_DISCARDED.equals(status);
+    }
+
+    private boolean isReplicaScheduledStatus(String status) {
+        return P2PSyncStateStore.REPLICA_TARGETED.equals(status)
+            || P2PSyncStateStore.REPLICA_RETRY.equals(status);
     }
 
     private void addCount(Map<String, Integer> counts, String key, int delta) {
