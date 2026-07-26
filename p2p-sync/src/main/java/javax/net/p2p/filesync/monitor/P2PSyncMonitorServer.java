@@ -131,6 +131,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("ok", Boolean.TRUE);
         root.put("queues", queuesToMap(store, limit));
+        root.put("healthSummary", healthSummaryToMap(store, limit));
         root.put("failureSummary", failureSummaryToMap(store));
         root.put("uploads", uploadsToMap(limit));
         root.put("uploadPolicy", uploadPolicyToMap());
@@ -173,6 +174,30 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         return out;
     }
 
+    private Map<String, Object> healthSummaryToMap(P2PSyncStateStore store, int limit) {
+        int activeCount = 0;
+        activeCount += store.queueRef(QueueKey.FILE_CREATE, QueueStage.ACTIVE).size();
+        activeCount += store.queueRef(QueueKey.FILE_MODIFY, QueueStage.ACTIVE).size();
+        activeCount += store.queueRef(QueueKey.FILE_DELETE, QueueStage.ACTIVE).size();
+        activeCount += store.queueRef(QueueKey.DIR_CREATE, QueueStage.ACTIVE).size();
+        activeCount += store.queueRef(QueueKey.DIR_DELETE, QueueStage.ACTIVE).size();
+
+        HealthStats stats = new HealthStats();
+        collectFailedHealth(stats, store, store.queueRef(QueueKey.FILE_CREATE, QueueStage.FAILED), FileSyncEventType.CREATE, false);
+        collectFailedHealth(stats, store, store.queueRef(QueueKey.FILE_MODIFY, QueueStage.FAILED), FileSyncEventType.MODIFY, false);
+        collectFailedHealth(stats, store, store.queueRef(QueueKey.FILE_DELETE, QueueStage.FAILED), FileSyncEventType.DELETE, false);
+        collectFailedHealth(stats, store, store.queueRef(QueueKey.DIR_CREATE, QueueStage.FAILED), FileSyncEventType.CREATE, true);
+        collectFailedHealth(stats, store, store.queueRef(QueueKey.DIR_DELETE, QueueStage.FAILED), FileSyncEventType.DELETE, true);
+
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("activeCount", Integer.valueOf(activeCount));
+        out.put("failedCount", Integer.valueOf(stats.failedCount));
+        out.put("uploadingCount", Integer.valueOf(syncService.snapshotActiveUploads(limit).size()));
+        out.put("oldestFailedAtMillis", Long.valueOf(stats.oldestFailedAtMillis));
+        out.put("maxRetryCount", Integer.valueOf(stats.maxRetryCount));
+        return out;
+    }
+
     private void collectFailureReasons(Map<String, Integer> reasonCounts, P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir) {
         for (Long o : set) {
             long fileId = o.longValue();
@@ -182,6 +207,21 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             }
             Integer current = reasonCounts.get(reason);
             reasonCounts.put(reason, Integer.valueOf(current == null ? 1 : current.intValue() + 1));
+        }
+    }
+
+    private void collectFailedHealth(HealthStats stats, P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir) {
+        for (Long o : set) {
+            long fileId = o.longValue();
+            stats.failedCount++;
+            int retryCount = store.getRetryCount(type, dir, fileId);
+            if (retryCount > stats.maxRetryCount) {
+                stats.maxRetryCount = retryCount;
+            }
+            long failedAtMillis = store.getFailedAtMillis(type, dir, fileId);
+            if (failedAtMillis > 0L && (stats.oldestFailedAtMillis == 0L || failedAtMillis < stats.oldestFailedAtMillis)) {
+                stats.oldestFailedAtMillis = failedAtMillis;
+            }
         }
     }
 
@@ -300,7 +340,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      const res = await fetch('/sync/api/queues?limit=200');\n"
             + "      const data = await res.json();\n"
             + "      if(!data.ok){document.getElementById('content').innerText = data.message || 'error';return;}\n"
-            + "      render(data.queues, data.failureSummary, data.uploads, data.uploadPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
+            + "      render(data.queues, data.healthSummary, data.failureSummary, data.uploads, data.uploadPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
             + "    }\n"
             + "    function esc(s){return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}\n"
             + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
@@ -339,6 +379,13 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      html += '</table></div>';\n"
             + "      return html;\n"
             + "    }\n"
+            + "    function renderHealthSummary(h){\n"
+            + "      let html = '<div class=\"card\"><h3>队列健康概览</h3>';\n"
+            + "      html += '<table><tr><th>activeCount</th><th>failedCount</th><th>uploadingCount</th><th>oldestFailedAtMillis</th><th>maxRetryCount</th></tr>';\n"
+            + "      html += '<tr><td>'+h.activeCount+'</td><td>'+h.failedCount+'</td><td>'+h.uploadingCount+'</td><td>'+h.oldestFailedAtMillis+'</td><td>'+h.maxRetryCount+'</td></tr>';\n"
+            + "      html += '</table></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
             + "    function renderFailureSummary(s){\n"
             + "      let html = '<div class=\"card\"><h3>失败原因汇总 (size='+s.size+', total='+s.totalFailedItems+')</h3>';\n"
             + "      html += '<table><tr><th>reason</th><th>count</th></tr>';\n"
@@ -363,7 +410,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      await fetch('/sync/api/failed/discard?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});\n"
             + "      await reload();\n"
             + "    }\n"
-            + "    function render(queues, failureSummary, uploads, uploadPolicy, recentCompletedUploads, recentFailedUploads){\n"
+            + "    function render(queues, healthSummary, failureSummary, uploads, uploadPolicy, recentCompletedUploads, recentFailedUploads){\n"
             + "      const keys = [\n"
             + "        ['新增(文件)', 'file_create'],\n"
             + "        ['修改(文件)', 'file_modify'],\n"
@@ -377,6 +424,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "        ['失败-删除(目录)', 'failed_dir_delete'],\n"
             + "      ];\n"
             + "      let html = '<div class=\"row\">';\n"
+            + "      html += renderHealthSummary(healthSummary || {activeCount:0, failedCount:0, uploadingCount:0, oldestFailedAtMillis:0, maxRetryCount:0});\n"
             + "      html += renderUploadPolicy(uploadPolicy || {mode:'AUTO_SEGMENT_RESUMABLE', uploadBlockSizeBytes:0, resumeSupported:true, historyRetention:'memory_recent'});\n"
             + "      html += renderFailureSummary(failureSummary || {size:0, totalFailedItems:0, items:[]});\n"
             + "      html += renderUploads(uploads || {size:0, items:[]});\n"
@@ -511,5 +559,11 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         }
         sb.append('"');
         return sb.toString();
+    }
+
+    private static final class HealthStats {
+        private int failedCount;
+        private int maxRetryCount;
+        private long oldestFailedAtMillis;
     }
 }

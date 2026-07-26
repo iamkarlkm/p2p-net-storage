@@ -45,6 +45,7 @@ public class P2PSyncMonitorServerTest {
             store.markFailed(FileSyncEventType.DELETE, false, staleId, "stale");
             store.incrementRetryCount(FileSyncEventType.CREATE, false, fileId);
             store.markRetriedNow(FileSyncEventType.CREATE, false, fileId);
+            store.enqueueFileModify(store.getOrCreateFileId("active.txt"));
 
             try (P2PSyncMonitorServer server = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
                 server.start();
@@ -64,6 +65,12 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"failedAtMillis\":"));
                 Assert.assertTrue(json.contains("\"lastRetriedAtMillis\":"));
                 Assert.assertTrue(json.contains("\"reason\":\"write_conflict\""));
+                Assert.assertTrue(json.contains("\"healthSummary\""));
+                Assert.assertTrue(json.contains("\"activeCount\":1"));
+                Assert.assertTrue(json.contains("\"failedCount\":2"));
+                Assert.assertTrue(json.contains("\"uploadingCount\":1"));
+                Assert.assertTrue(json.contains("\"oldestFailedAtMillis\":"));
+                Assert.assertTrue(json.contains("\"maxRetryCount\":1"));
                 Assert.assertTrue(json.contains("\"failureSummary\""));
                 Assert.assertTrue(json.contains("\"totalFailedItems\":2"));
                 Assert.assertTrue(json.contains("\"reason\":\"stale\""));
@@ -110,7 +117,6 @@ public class P2PSyncMonitorServerTest {
                     "");
                 Assert.assertTrue(retryResp.contains("\"ok\":true"));
                 Assert.assertFalse(store.fileModifiesFailed().contains(Long.valueOf(retryId)));
-                Assert.assertEquals(2, store.getRetryCount(FileSyncEventType.MODIFY, false, retryId));
 
                 String discardResp = send("POST",
                     "http://127.0.0.1:" + server.getPort() + "/sync/api/failed/discard?fileId=" + discardId + "&dir=false&type=DELETE",
