@@ -9,10 +9,12 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+
 import javax.net.p2p.filesync.config.P2PSyncConfig;
 import javax.net.p2p.filesync.sync.FileSyncEventType;
 import javax.net.p2p.filesync.sync.P2PDirectorySyncService;
 import javax.net.p2p.filesync.sync.P2PSyncStateStore;
+
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -38,10 +40,13 @@ public class P2PSyncMonitorServerTest {
                 String index = send("GET", "http://127.0.0.1:" + server.getPort() + "/sync", null);
                 Assert.assertTrue(index.contains("p2p-sync 队列监控"));
                 Assert.assertTrue(index.contains("/sync/api/queues?limit=200"));
+                Assert.assertTrue(index.contains("data-action"));
+                Assert.assertTrue(index.contains("document.addEventListener('click'"));
 
                 String json = send("GET", "http://127.0.0.1:" + server.getPort() + "/sync/api/queues?limit=20", null);
                 Assert.assertTrue(json.contains("\"ok\":true"));
                 Assert.assertTrue(json.contains("\"failed_file_create\""));
+                Assert.assertTrue(json.contains("\"fileId\":\""));
                 Assert.assertTrue(json.contains("\"path\":\"failed.txt\""));
                 Assert.assertTrue(json.contains("\"reason\":\"write_conflict\""));
             }

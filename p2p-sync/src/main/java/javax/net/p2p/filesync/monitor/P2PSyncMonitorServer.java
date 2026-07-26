@@ -1,10 +1,5 @@
 package javax.net.p2p.filesync.monitor;
 
-import com.q3lives.ds.collections.DsHashSet;
-import com.sun.net.httpserver.Headers;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
-import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -17,12 +12,18 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.concurrent.Executors;
+
 import javax.net.p2p.filesync.sync.FileSyncEventType;
-import javax.net.p2p.filesync.sync.PersistentLongQueue;
 import javax.net.p2p.filesync.sync.P2PDirectorySyncService;
 import javax.net.p2p.filesync.sync.P2PSyncStateStore;
 import javax.net.p2p.filesync.sync.P2PSyncStateStore.QueueKey;
 import javax.net.p2p.filesync.sync.P2PSyncStateStore.QueueStage;
+import javax.net.p2p.filesync.sync.PersistentLongQueue;
+
+import com.sun.net.httpserver.Headers;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpServer;
 
 public final class P2PSyncMonitorServer implements AutoCloseable {
 
@@ -169,7 +170,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             }
             long fileId = o.longValue();
             Map<String, Object> m = new LinkedHashMap<>();
-            m.put("fileId", fileId);
+            m.put("fileId", Long.toString(fileId));
             m.put("dir", dir);
             m.put("type", type.name());
             String path = store.getRelativePath(fileId);
@@ -215,6 +216,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      render(data.queues);\n"
             + "    }\n"
             + "    function esc(s){return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}\n"
+            + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
             + "    function renderQueue(title, q){\n"
             + "      let html = '<div class=\"card\"><h3>'+esc(title)+' (size='+q.size+')</h3>';\n"
             + "      html += '<table><tr><th>fileId</th><th>dir</th><th>type</th><th>path</th><th>reason</th><th>action</th></tr>';\n"
@@ -222,8 +224,8 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "        const reason = it.reason ? esc(it.reason) : '';\n"
             + "        let action = '';\n"
             + "        if(reason){\n"
-            + "          action = '<button class=\"btn\" onclick=\"retryIt('+it.fileId+','+it.dir+',\\\\''+it.type+'\\\\')\">重试(覆盖同步)</button> ' +\n"
-            + "                   '<button class=\"btn\" onclick=\"discardIt('+it.fileId+','+it.dir+',\\\\''+it.type+'\\\\')\">放弃</button>';\n"
+            + "          action = '<button class=\"btn\" data-action=\"retry\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">重试(覆盖同步)</button> ' +\n"
+            + "                   '<button class=\"btn\" data-action=\"discard\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">放弃</button>';\n"
             + "        }\n"
             + "        html += '<tr><td>'+it.fileId+'</td><td>'+it.dir+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.path)+'</td><td>'+reason+'</td><td>'+action+'</td></tr>';\n"
             + "      }\n"
@@ -258,6 +260,18 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      html += '</div>';\n"
             + "      document.getElementById('content').innerHTML = html;\n"
             + "    }\n"
+            + "    document.addEventListener('click', async function(e){\n"
+            + "      const btn = e.target.closest('button[data-action]');\n"
+            + "      if(!btn){return;}\n"
+            + "      const fileId = btn.getAttribute('data-file-id');\n"
+            + "      const dir = btn.getAttribute('data-dir');\n"
+            + "      const type = btn.getAttribute('data-type');\n"
+            + "      if(btn.getAttribute('data-action') === 'retry'){\n"
+            + "        await retryIt(fileId, dir, type);\n"
+            + "      } else if(btn.getAttribute('data-action') === 'discard'){\n"
+            + "        await discardIt(fileId, dir, type);\n"
+            + "      }\n"
+            + "    });\n"
             + "    reload();\n"
             + "  </script>\n"
             + "</body>\n"
