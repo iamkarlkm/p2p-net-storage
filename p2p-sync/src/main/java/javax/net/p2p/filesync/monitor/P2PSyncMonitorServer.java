@@ -131,6 +131,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("ok", Boolean.TRUE);
         root.put("queues", queuesToMap(store, limit));
+        root.put("failureSummary", failureSummaryToMap(store));
         root.put("uploads", uploadsToMap(limit));
         root.put("uploadPolicy", uploadPolicyToMap());
         root.put("recentCompletedUploads", uploadHistoryToMap(syncService.snapshotRecentCompletedUploads(limit)));
@@ -145,6 +146,43 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         out.put("resumeSupported", Boolean.TRUE);
         out.put("historyRetention", "memory_recent");
         return out;
+    }
+
+    private Map<String, Object> failureSummaryToMap(P2PSyncStateStore store) {
+        Map<String, Integer> reasonCounts = new LinkedHashMap<String, Integer>();
+        collectFailureReasons(reasonCounts, store, store.queueRef(QueueKey.FILE_CREATE, QueueStage.FAILED), FileSyncEventType.CREATE, false);
+        collectFailureReasons(reasonCounts, store, store.queueRef(QueueKey.FILE_MODIFY, QueueStage.FAILED), FileSyncEventType.MODIFY, false);
+        collectFailureReasons(reasonCounts, store, store.queueRef(QueueKey.FILE_DELETE, QueueStage.FAILED), FileSyncEventType.DELETE, false);
+        collectFailureReasons(reasonCounts, store, store.queueRef(QueueKey.DIR_CREATE, QueueStage.FAILED), FileSyncEventType.CREATE, true);
+        collectFailureReasons(reasonCounts, store, store.queueRef(QueueKey.DIR_DELETE, QueueStage.FAILED), FileSyncEventType.DELETE, true);
+
+        List<Map<String, Object>> items = new ArrayList<Map<String, Object>>();
+        int total = 0;
+        for (Entry<String, Integer> entry : reasonCounts.entrySet()) {
+            Map<String, Object> item = new LinkedHashMap<String, Object>();
+            item.put("reason", entry.getKey());
+            item.put("count", entry.getValue());
+            items.add(item);
+            total += entry.getValue().intValue();
+        }
+
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("size", Integer.valueOf(items.size()));
+        out.put("totalFailedItems", Integer.valueOf(total));
+        out.put("items", items);
+        return out;
+    }
+
+    private void collectFailureReasons(Map<String, Integer> reasonCounts, P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir) {
+        for (Long o : set) {
+            long fileId = o.longValue();
+            String reason = store.getFailedReason(type, dir, fileId);
+            if (reason == null || reason.trim().isEmpty()) {
+                reason = "unknown";
+            }
+            Integer current = reasonCounts.get(reason);
+            reasonCounts.put(reason, Integer.valueOf(current == null ? 1 : current.intValue() + 1));
+        }
     }
 
     private Map<String, Object> uploadsToMap(int limit) {
@@ -262,7 +300,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      const res = await fetch('/sync/api/queues?limit=200');\n"
             + "      const data = await res.json();\n"
             + "      if(!data.ok){document.getElementById('content').innerText = data.message || 'error';return;}\n"
-            + "      render(data.queues, data.uploads, data.uploadPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
+            + "      render(data.queues, data.failureSummary, data.uploads, data.uploadPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
             + "    }\n"
             + "    function esc(s){return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}\n"
             + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
@@ -301,6 +339,15 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      html += '</table></div>';\n"
             + "      return html;\n"
             + "    }\n"
+            + "    function renderFailureSummary(s){\n"
+            + "      let html = '<div class=\"card\"><h3>失败原因汇总 (size='+s.size+', total='+s.totalFailedItems+')</h3>';\n"
+            + "      html += '<table><tr><th>reason</th><th>count</th></tr>';\n"
+            + "      for(const it of s.items){\n"
+            + "        html += '<tr><td>'+esc(it.reason)+'</td><td>'+it.count+'</td></tr>';\n"
+            + "      }\n"
+            + "      html += '</table></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
             + "    function renderUploadPolicy(p){\n"
             + "      let html = '<div class=\"card\"><h3>上传策略</h3>';\n"
             + "      html += '<table><tr><th>mode</th><th>uploadBlockSizeBytes</th><th>resumeSupported</th><th>historyRetention</th></tr>';\n"
@@ -316,7 +363,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      await fetch('/sync/api/failed/discard?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});\n"
             + "      await reload();\n"
             + "    }\n"
-            + "    function render(queues, uploads, uploadPolicy, recentCompletedUploads, recentFailedUploads){\n"
+            + "    function render(queues, failureSummary, uploads, uploadPolicy, recentCompletedUploads, recentFailedUploads){\n"
             + "      const keys = [\n"
             + "        ['新增(文件)', 'file_create'],\n"
             + "        ['修改(文件)', 'file_modify'],\n"
@@ -331,6 +378,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      ];\n"
             + "      let html = '<div class=\"row\">';\n"
             + "      html += renderUploadPolicy(uploadPolicy || {mode:'AUTO_SEGMENT_RESUMABLE', uploadBlockSizeBytes:0, resumeSupported:true, historyRetention:'memory_recent'});\n"
+            + "      html += renderFailureSummary(failureSummary || {size:0, totalFailedItems:0, items:[]});\n"
             + "      html += renderUploads(uploads || {size:0, items:[]});\n"
             + "      html += renderUploadHistory('最近完成上传', recentCompletedUploads || {size:0, items:[]});\n"
             + "      html += renderUploadHistory('最近失败上传', recentFailedUploads || {size:0, items:[]});\n"

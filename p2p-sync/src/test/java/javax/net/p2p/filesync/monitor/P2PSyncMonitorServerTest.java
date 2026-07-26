@@ -40,7 +40,9 @@ public class P2PSyncMonitorServerTest {
             svc.start();
             P2PSyncStateStore store = svc.getStore();
             long fileId = store.getOrCreateFileId("failed.txt");
+            long staleId = store.getOrCreateFileId("stale.txt");
             store.markFailed(FileSyncEventType.CREATE, false, fileId, "write_conflict");
+            store.markFailed(FileSyncEventType.DELETE, false, staleId, "stale");
             store.incrementRetryCount(FileSyncEventType.CREATE, false, fileId);
             store.markRetriedNow(FileSyncEventType.CREATE, false, fileId);
 
@@ -55,12 +57,17 @@ public class P2PSyncMonitorServerTest {
                 String json = send("GET", "http://127.0.0.1:" + server.getPort() + "/sync/api/queues?limit=20", null);
                 Assert.assertTrue(json.contains("\"ok\":true"));
                 Assert.assertTrue(json.contains("\"failed_file_create\""));
+                Assert.assertTrue(json.contains("\"failed_file_delete\""));
                 Assert.assertTrue(json.contains("\"fileId\":\""));
                 Assert.assertTrue(json.contains("\"path\":\"failed.txt\""));
                 Assert.assertTrue(json.contains("\"retryCount\":1"));
                 Assert.assertTrue(json.contains("\"failedAtMillis\":"));
                 Assert.assertTrue(json.contains("\"lastRetriedAtMillis\":"));
                 Assert.assertTrue(json.contains("\"reason\":\"write_conflict\""));
+                Assert.assertTrue(json.contains("\"failureSummary\""));
+                Assert.assertTrue(json.contains("\"totalFailedItems\":2"));
+                Assert.assertTrue(json.contains("\"reason\":\"stale\""));
+                Assert.assertTrue(json.contains("\"count\":1"));
                 Assert.assertTrue(json.contains("\"uploads\""));
                 Assert.assertTrue(json.contains("\"uploadPolicy\""));
                 Assert.assertTrue(json.contains("\"mode\":\"AUTO_SEGMENT_RESUMABLE\""));
