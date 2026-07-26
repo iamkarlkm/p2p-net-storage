@@ -12,9 +12,17 @@ public final class SyncUploadStatus {
     private final int uploadedSegments;
     private final long startedAtMillis;
     private final long updatedAtMillis;
+    private final String message;
 
     public SyncUploadStatus(long eventUid, long fileId, String path, String phase, long fileSize,
         boolean segmented, int totalSegments, int uploadedSegments, long startedAtMillis, long updatedAtMillis) {
+        this(eventUid, fileId, path, phase, fileSize, segmented, totalSegments, uploadedSegments,
+            startedAtMillis, updatedAtMillis, null);
+    }
+
+    public SyncUploadStatus(long eventUid, long fileId, String path, String phase, long fileSize,
+        boolean segmented, int totalSegments, int uploadedSegments, long startedAtMillis, long updatedAtMillis,
+        String message) {
         this.eventUid = eventUid;
         this.fileId = fileId;
         this.path = path;
@@ -25,6 +33,7 @@ public final class SyncUploadStatus {
         this.uploadedSegments = uploadedSegments;
         this.startedAtMillis = startedAtMillis;
         this.updatedAtMillis = updatedAtMillis;
+        this.message = message;
     }
 
     public long getEventUid() {
@@ -65,5 +74,9 @@ public final class SyncUploadStatus {
 
     public long getUpdatedAtMillis() {
         return updatedAtMillis;
+    }
+
+    public String getMessage() {
+        return message;
     }
 }

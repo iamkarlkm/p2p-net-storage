@@ -100,6 +100,11 @@ public class RpcSyncEventHandlerTest {
         Assert.assertEquals("a.txt", fileService.path);
         Assert.assertTrue(fileService.length > 0L);
         Assert.assertNotNull(fileService.md5);
+        SyncUploadStatus failed = waitForRecentFailedStatus(handler, 5, TimeUnit.SECONDS);
+        Assert.assertEquals("a.txt", failed.getPath());
+        Assert.assertEquals("failed", failed.getPhase());
+        Assert.assertTrue(failed.getMessage().contains("remote content check failed"));
+        handler.close();
     }
 
     @Test
@@ -170,6 +175,9 @@ public class RpcSyncEventHandlerTest {
         Assert.assertTrue(ackLatch.await(5, TimeUnit.SECONDS));
         waitUntilNoUploads(handler, 5, TimeUnit.SECONDS);
         Assert.assertTrue(handler.snapshotActiveUploads(10).isEmpty());
+        SyncUploadStatus completed = waitForRecentCompletedStatus(handler, 5, TimeUnit.SECONDS);
+        Assert.assertEquals("big.bin", completed.getPath());
+        Assert.assertEquals("completed", completed.getPhase());
         handler.close();
     }
 
@@ -336,5 +344,31 @@ public class RpcSyncEventHandlerTest {
             Thread.sleep(50L);
         }
         Assert.fail("upload progress not observed in time");
+    }
+
+    private static SyncUploadStatus waitForRecentCompletedStatus(RpcSyncEventHandler handler, long timeout, TimeUnit unit) throws Exception {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            List<SyncUploadStatus> statuses = handler.snapshotRecentCompletedUploads(10);
+            if (!statuses.isEmpty()) {
+                return statuses.get(0);
+            }
+            Thread.sleep(50L);
+        }
+        Assert.fail("recent completed upload history not exposed in time");
+        return null;
+    }
+
+    private static SyncUploadStatus waitForRecentFailedStatus(RpcSyncEventHandler handler, long timeout, TimeUnit unit) throws Exception {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            List<SyncUploadStatus> statuses = handler.snapshotRecentFailedUploads(10);
+            if (!statuses.isEmpty()) {
+                return statuses.get(0);
+            }
+            Thread.sleep(50L);
+        }
+        Assert.fail("recent failed upload history not exposed in time");
+        return null;
     }
 }

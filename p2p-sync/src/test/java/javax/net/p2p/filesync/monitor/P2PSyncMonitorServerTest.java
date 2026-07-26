@@ -60,6 +60,11 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"size\":1"));
                 Assert.assertTrue(json.contains("\"phase\":\"uploading\""));
                 Assert.assertTrue(json.contains("\"segmented\":true"));
+                Assert.assertTrue(json.contains("\"recentCompletedUploads\""));
+                Assert.assertTrue(json.contains("\"recentFailedUploads\""));
+                Assert.assertTrue(json.contains("\"phase\":\"completed\""));
+                Assert.assertTrue(json.contains("\"phase\":\"failed\""));
+                Assert.assertTrue(json.contains("\"message\":\"write_conflict\""));
             }
         }
     }
@@ -144,6 +149,20 @@ public class P2PSyncMonitorServerTest {
             return Collections.singletonList(new SyncUploadStatus(
                 1001L, 1002L, "big.bin", "uploading", 16L * 1024L * 1024L, true, 2, 1,
                 System.currentTimeMillis() - 500L, System.currentTimeMillis()));
+        }
+
+        @Override
+        public List<SyncUploadStatus> snapshotRecentCompletedUploads(int limit) {
+            return Collections.singletonList(new SyncUploadStatus(
+                2001L, 2002L, "done.bin", "completed", 8L * 1024L, false, 1, 1,
+                System.currentTimeMillis() - 1000L, System.currentTimeMillis() - 800L, ""));
+        }
+
+        @Override
+        public List<SyncUploadStatus> snapshotRecentFailedUploads(int limit) {
+            return Collections.singletonList(new SyncUploadStatus(
+                3001L, 3002L, "fail.bin", "failed", 4L * 1024L, false, 1, 0,
+                System.currentTimeMillis() - 1500L, System.currentTimeMillis() - 1200L, "write_conflict"));
         }
     }
 }

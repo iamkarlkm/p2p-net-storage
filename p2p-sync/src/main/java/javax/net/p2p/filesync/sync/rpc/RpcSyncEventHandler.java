@@ -4,8 +4,10 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -46,7 +48,11 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
     private final ExecutorService uploadExecutor;
     private final ScheduledExecutorService uploadProgressExecutor;
     private final Map<Long, UploadStatusEntry> activeUploads = new ConcurrentHashMap<Long, UploadStatusEntry>();
+    private final Object historyLock = new Object();
+    private final Deque<SyncUploadStatus> recentCompletedUploads = new ArrayDeque<SyncUploadStatus>();
+    private final Deque<SyncUploadStatus> recentFailedUploads = new ArrayDeque<SyncUploadStatus>();
     private static final String WRITE_CONFLICT = "write_conflict";
+    private static final int MAX_RECENT_HISTORY = 20;
 
     public RpcSyncEventHandler(RpcClient rpcClient, P2PFileService fileClient, long taskId) {
         this.rpcClient = Objects.requireNonNull(rpcClient, "rpcClient");
@@ -76,6 +82,10 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
         uploadExecutor.shutdownNow();
         uploadProgressExecutor.shutdownNow();
         activeUploads.clear();
+        synchronized (historyLock) {
+            recentCompletedUploads.clear();
+            recentFailedUploads.clear();
+        }
     }
 
     @Override
@@ -99,6 +109,16 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
             out.add(entry.snapshot());
         }
         return out;
+    }
+
+    @Override
+    public List<SyncUploadStatus> snapshotRecentCompletedUploads(int limit) {
+        return snapshotRecentHistory(recentCompletedUploads, limit);
+    }
+
+    @Override
+    public List<SyncUploadStatus> snapshotRecentFailedUploads(int limit) {
+        return snapshotRecentHistory(recentFailedUploads, limit);
     }
 
     @Override
@@ -201,6 +221,7 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
         }).whenComplete((ack, ex) -> {
             if (ex != null || ack == null) {
                 activeUploads.remove(Long.valueOf(eventUid));
+                recordFailed(statusEntry, buildFailureMessage(ex, ack == null ? null : ack.getMessage()));
                 log.error("p2p-sync finalize failed: taskId={}, path={}, eventUid={}, ackNull={}, ex={}",
                     taskId, relativePath, eventUid, ack == null, ex == null ? "null" : ex.toString());
                 acker.retry();
@@ -208,20 +229,56 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
             }
             if (ack.getOk() && ack.getEventUid() == eventUid) {
                 activeUploads.remove(Long.valueOf(eventUid));
+                recordCompleted(statusEntry);
                 log.info("p2p-sync finalize acked: taskId={}, path={}, eventUid={}", taskId, relativePath, eventUid);
                 acker.ack();
                 return;
             }
             if (!ack.getOk() && isWriteConflict(ack.getMessage())) {
                 activeUploads.remove(Long.valueOf(eventUid));
+                recordFailed(statusEntry, ack.getMessage());
                 log.error("p2p-sync write conflict: phase=finalize, taskId={}, path={}, eventUid={}, msg={}",
                     taskId, relativePath, eventUid, ack.getMessage());
                 acker.fail(ack.getMessage());
                 return;
             }
             activeUploads.remove(Long.valueOf(eventUid));
+            recordFailed(statusEntry, buildFailureMessage(null, ack.getMessage()));
             acker.retry();
         });
+    }
+
+    private List<SyncUploadStatus> snapshotRecentHistory(Deque<SyncUploadStatus> history, int limit) {
+        synchronized (historyLock) {
+            List<SyncUploadStatus> out = new ArrayList<SyncUploadStatus>();
+            int max = limit <= 0 ? Integer.MAX_VALUE : limit;
+            for (SyncUploadStatus status : history) {
+                if (out.size() >= max) {
+                    break;
+                }
+                out.add(status);
+            }
+            return out;
+        }
+    }
+
+    private void recordCompleted(UploadStatusEntry entry) {
+        entry.setPhase("completed");
+        addHistory(recentCompletedUploads, entry.snapshot(null));
+    }
+
+    private void recordFailed(UploadStatusEntry entry, String message) {
+        entry.setPhase("failed");
+        addHistory(recentFailedUploads, entry.snapshot(message));
+    }
+
+    private void addHistory(Deque<SyncUploadStatus> history, SyncUploadStatus status) {
+        synchronized (historyLock) {
+            history.addFirst(status);
+            while (history.size() > MAX_RECENT_HISTORY) {
+                history.removeLast();
+            }
+        }
     }
 
     private ScheduledFuture<?> startUploadProgress(final UploadStatusEntry entry) {
@@ -267,6 +324,20 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
 
     private static boolean isWriteConflict(String msg) {
         return msg != null && (msg.equals(WRITE_CONFLICT) || msg.startsWith(WRITE_CONFLICT + ":"));
+    }
+
+    private static String buildFailureMessage(Throwable ex, String fallback) {
+        if (fallback != null && !fallback.trim().isEmpty()) {
+            return fallback;
+        }
+        if (ex == null) {
+            return "upload_failed";
+        }
+        String msg = ex.getMessage();
+        if (msg == null || msg.trim().isEmpty()) {
+            return ex.getClass().getSimpleName();
+        }
+        return msg;
     }
 
     private static SyncEventType toProtoType(FileSyncEventType type) {
@@ -362,8 +433,12 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
         }
 
         private SyncUploadStatus snapshot() {
+            return snapshot(null);
+        }
+
+        private SyncUploadStatus snapshot(String message) {
             return new SyncUploadStatus(eventUid, fileId, path, phase, fileSize, segmented,
-                totalSegments, uploadedSegments.get(), startedAtMillis, updatedAtMillis);
+                totalSegments, uploadedSegments.get(), startedAtMillis, updatedAtMillis, message);
         }
 
         private static int segmentCount(long fileSize) {

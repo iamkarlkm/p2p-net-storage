@@ -61,6 +61,20 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         return ((SyncUploadStatusProvider) eventHandler).snapshotActiveUploads(limit);
     }
 
+    public List<SyncUploadStatus> snapshotRecentCompletedUploads(int limit) {
+        if (!(eventHandler instanceof SyncUploadStatusProvider)) {
+            return Collections.emptyList();
+        }
+        return ((SyncUploadStatusProvider) eventHandler).snapshotRecentCompletedUploads(limit);
+    }
+
+    public List<SyncUploadStatus> snapshotRecentFailedUploads(int limit) {
+        if (!(eventHandler instanceof SyncUploadStatusProvider)) {
+            return Collections.emptyList();
+        }
+        return ((SyncUploadStatusProvider) eventHandler).snapshotRecentFailedUploads(limit);
+    }
+
     boolean isWatchReady() {
         return watchReady.get();
     }
