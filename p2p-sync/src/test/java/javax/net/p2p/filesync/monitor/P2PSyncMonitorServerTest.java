@@ -91,6 +91,10 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("clearedFailedItems="));
                 Assert.assertTrue(index.contains("clearedCategories="));
                 Assert.assertTrue(index.contains("clearedPreviewPaths="));
+                Assert.assertTrue(index.contains("formatDeltaSummary"));
+                Assert.assertTrue(index.contains("formatRemainingSummary"));
+                Assert.assertTrue(index.contains(">cleared</th>"));
+                Assert.assertTrue(index.contains(">remaining</th>"));
                 Assert.assertTrue(index.contains(">replicaRecoveryClass</th>"));
                 Assert.assertTrue(index.contains(">replicaCategories</th>"));
                 Assert.assertTrue(index.contains(">replicaReasons</th>"));
