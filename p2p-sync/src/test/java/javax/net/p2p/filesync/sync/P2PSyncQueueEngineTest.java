@@ -36,7 +36,7 @@ public class P2PSyncQueueEngineTest {
                 acker.ack();
             };
 
-            P2PSyncQueueEngine engine = new P2PSyncQueueEngine();
+            P2PSyncQueueEngine engine = new P2PSyncQueueEngine(3, 0L);
             AtomicBoolean running = new AtomicBoolean(true);
 
             Assert.assertEquals(1, engine.processBatch(store, P2PSyncStateStore.QueueStage.ACTIVE, 10, root, handler, running));
@@ -86,7 +86,7 @@ public class P2PSyncQueueEngineTest {
                 acker.retry();
             };
 
-            P2PSyncQueueEngine engine = new P2PSyncQueueEngine(2);
+            P2PSyncQueueEngine engine = new P2PSyncQueueEngine(2, 0L);
             AtomicBoolean running = new AtomicBoolean(true);
 
             Assert.assertEquals(1, engine.processBatch(store, P2PSyncStateStore.QueueStage.ACTIVE, 10, root, handler, running));
@@ -106,6 +106,46 @@ public class P2PSyncQueueEngineTest {
             Assert.assertEquals("retry_limit_exceeded", store.getFailedReason(FileSyncEventType.MODIFY, false, fileId));
             Assert.assertTrue(store.getFailedAtMillis(FileSyncEventType.MODIFY, false, fileId) > 0L);
             Assert.assertEquals(3, calls.get());
+        }
+    }
+
+    @Test
+    public void shouldDelayAutoRetryUntilBackoffElapsed() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_queue_retry_backoff_root_");
+        Path state = Files.createTempDirectory("p2p_sync_queue_retry_backoff_state_");
+        Files.write(root.resolve("c.txt"), "v1".getBytes(StandardCharsets.UTF_8));
+
+        try (P2PSyncStateStore store = new P2PSyncStateStore(state)) {
+            long fileId = store.getOrCreateFileId("c.txt");
+            store.putKind(fileId, false);
+            store.enqueueFileModify(fileId);
+
+            AtomicInteger calls = new AtomicInteger();
+            FileSyncEventHandler handler = (type, id, rel, abs, dir, acker) -> {
+                if (calls.getAndIncrement() == 0) {
+                    acker.retry();
+                    return;
+                }
+                acker.ack();
+            };
+
+            P2PSyncQueueEngine engine = new P2PSyncQueueEngine(3, 150L);
+            AtomicBoolean running = new AtomicBoolean(true);
+
+            Assert.assertEquals(1, engine.processBatch(store, P2PSyncStateStore.QueueStage.ACTIVE, 10, root, handler, running));
+            Assert.assertEquals(1, store.getRetryCount(FileSyncEventType.MODIFY, false, fileId));
+            Assert.assertTrue(store.fileModifiesActive().contains(Long.valueOf(fileId)));
+
+            Assert.assertEquals(0, engine.processBatch(store, P2PSyncStateStore.QueueStage.ACTIVE, 10, root, handler, running));
+            Assert.assertEquals(1, calls.get());
+            Assert.assertTrue(store.fileModifiesActive().contains(Long.valueOf(fileId)));
+
+            Thread.sleep(220L);
+
+            Assert.assertEquals(1, engine.processBatch(store, P2PSyncStateStore.QueueStage.ACTIVE, 10, root, handler, running));
+            Assert.assertEquals(2, calls.get());
+            Assert.assertFalse(store.fileModifiesActive().contains(Long.valueOf(fileId)));
+            Assert.assertEquals(0, store.getRetryCount(FileSyncEventType.MODIFY, false, fileId));
         }
     }
 }

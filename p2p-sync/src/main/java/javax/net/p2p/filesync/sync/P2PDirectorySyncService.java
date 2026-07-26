@@ -82,7 +82,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
     public P2PDirectorySyncService(P2PSyncConfig config, FileSyncEventHandler eventHandler) {
         this.config = Objects.requireNonNull(config, "config");
         this.eventHandler = eventHandler == null ? (t, id, rel, abs, dir, acker) -> acker.ack() : eventHandler;
-        this.queueEngine = new P2PSyncQueueEngine(config.getMaxRetryCount());
+        this.queueEngine = new P2PSyncQueueEngine(config.getMaxRetryCount(), config.getRetryBackoffMillis());
         this.watchExecutor = Executors.newSingleThreadExecutor(r -> new Thread(r, "p2p-sync-watch"));
         this.eventExecutor = Executors.newSingleThreadExecutor(r -> new Thread(r, "p2p-sync-events"));
         this.heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(r -> new Thread(r, "p2p-sync-heartbeat"));

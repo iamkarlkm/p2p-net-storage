@@ -21,13 +21,19 @@ final class P2PSyncQueueEngine {
     };
 
     private final int maxRetryCount;
+    private final long retryBackoffMillis;
 
     P2PSyncQueueEngine() {
-        this(3);
+        this(3, 2000L);
     }
 
     P2PSyncQueueEngine(int maxRetryCount) {
+        this(maxRetryCount, 2000L);
+    }
+
+    P2PSyncQueueEngine(int maxRetryCount, long retryBackoffMillis) {
         this.maxRetryCount = maxRetryCount <= 0 ? 3 : maxRetryCount;
+        this.retryBackoffMillis = retryBackoffMillis < 0L ? 2000L : retryBackoffMillis;
     }
 
     boolean isEmpty(P2PSyncStateStore store, QueueStage stage) {
@@ -86,6 +92,9 @@ final class P2PSyncQueueEngine {
             if (isInflight(store, fileId)) {
                 continue;
             }
+            if (fromStage == QueueStage.ACTIVE && isRetryBackoffPending(store, def, fileId)) {
+                continue;
+            }
             inflight.add(fileId);
             it.remove();
             String relativePath = store.getRelativePath(fileId);
@@ -94,6 +103,20 @@ final class P2PSyncQueueEngine {
             processed++;
         }
         return processed;
+    }
+
+    private boolean isRetryBackoffPending(P2PSyncStateStore store, QueueDef def, long fileId) {
+        if (retryBackoffMillis == 0L) {
+            return false;
+        }
+        if (store.getRetryCount(def.type, def.directory, fileId) <= 0) {
+            return false;
+        }
+        long lastRetriedAtMillis = store.getLastRetriedAtMillis(def.type, def.directory, fileId);
+        if (lastRetriedAtMillis <= 0L) {
+            return false;
+        }
+        return System.currentTimeMillis() - lastRetriedAtMillis < retryBackoffMillis;
     }
 
     private static boolean isInflight(P2PSyncStateStore store, long fileId) {

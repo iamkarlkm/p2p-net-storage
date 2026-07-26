@@ -181,4 +181,27 @@ public class P2PSyncConfigTest {
             System.clearProperty("p2p.key.dir");
         }
     }
+
+    @Test
+    public void shouldApplyRetryBackoffMillisFromInlineYaml() throws Exception {
+        Path baseDir = Files.createTempDirectory("p2p_sync_cfg_retry_backoff_");
+        try {
+            System.setProperty("p2p.sync.inlineBaseDir", baseDir.toString());
+            System.setProperty("p2p.sync.inlineYaml", ""
+                + "taskId: 1\n"
+                + "localDir: \"./data\"\n"
+                + "retryBackoffMillis: 1500\n");
+
+            P2PSyncConfig cfg = P2PSyncConfig.load();
+
+            Assert.assertEquals(1500L, cfg.getRetryBackoffMillis());
+        } finally {
+            System.clearProperty("p2p.sync.inlineYaml");
+            System.clearProperty("p2p.sync.inlineBaseDir");
+            System.clearProperty("p2p.auth.inlineYaml");
+            System.clearProperty("p2p.auth.inlineBaseDir");
+            System.clearProperty("p2p.auth.yaml");
+            System.clearProperty("p2p.key.dir");
+        }
+    }
 }

@@ -29,6 +29,7 @@ public class P2PSyncConfig {
     private String dsHome;
     private int uploadBlockSizeBytes;
     private int maxRetryCount = 3;
+    private long retryBackoffMillis = 2000L;
     private Map<String, String> userInfo;
     private Map<String, String> loginInfo;
     private AuthConfig auth;
@@ -124,6 +125,14 @@ public class P2PSyncConfig {
 
     public void setMaxRetryCount(int maxRetryCount) {
         this.maxRetryCount = maxRetryCount;
+    }
+
+    public long getRetryBackoffMillis() {
+        return retryBackoffMillis;
+    }
+
+    public void setRetryBackoffMillis(long retryBackoffMillis) {
+        this.retryBackoffMillis = retryBackoffMillis;
     }
 
     public Map<String, String> getUserInfo() {
@@ -255,6 +264,9 @@ public class P2PSyncConfig {
         }
         if (cfg.maxRetryCount <= 0) {
             cfg.maxRetryCount = 3;
+        }
+        if (cfg.retryBackoffMillis < 0L) {
+            cfg.retryBackoffMillis = 2000L;
         }
         P2PConfig.DATA_PUT_BLOCK_SIZE = cfg.uploadBlockSizeBytes;
         return cfg;
