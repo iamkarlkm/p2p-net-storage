@@ -23,6 +23,7 @@ import javax.net.p2p.utils.P2PUtils;
 
 public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHandler, AutoCloseable {
 
+    private static final String WRITE_CONFLICT = "write_conflict";
     private final long taskId;
     private final List<EndpointClient> clients;
 
@@ -40,18 +41,20 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
                 ? new P2PUtils((P2PClientTcp) transportClient.getMessageService())
                 : new P2PUDPUtils(transportClient.getMessageService());
             RpcSyncEventHandler handler = new RpcSyncEventHandler(rpc, fileClient, taskId);
-            clients.add(new EndpointClient(ep, transportClient, handler));
+            clients.add(new EndpointClient(endpointLabel(ep), ep, transportClient, handler));
         }
     }
 
-    static MultiEndpointRpcSyncEventHandler forHandlers(long taskId, List<FileSyncEventHandler> handlers) {
+    public static MultiEndpointRpcSyncEventHandler forHandlers(long taskId, List<FileSyncEventHandler> handlers) {
         Objects.requireNonNull(handlers, "handlers");
         if (handlers.isEmpty()) {
             throw new IllegalArgumentException("handlers is empty");
         }
         List<EndpointClient> clients = new ArrayList<>(handlers.size());
+        int idx = 0;
         for (FileSyncEventHandler handler : handlers) {
-            clients.add(new EndpointClient(null, null, Objects.requireNonNull(handler, "handler")));
+            idx++;
+            clients.add(new EndpointClient("handler-" + idx, null, null, Objects.requireNonNull(handler, "handler")));
         }
         return new MultiEndpointRpcSyncEventHandler(taskId, clients, true);
     }
@@ -81,7 +84,7 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
 
                     @Override
                     public void fail(String reason) {
-                        finish(AggregateAction.FAIL, reason == null ? "" : reason);
+                        finish(AggregateAction.FAIL, decorateReason(client.label, reason));
                     }
 
                     private void finish(AggregateAction action, String reason) {
@@ -101,7 +104,7 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
                     }
                 });
             } catch (Exception e) {
-                result.getAndUpdate(prev -> choose(prev, AggregateAction.RETRY, e.getMessage()));
+                result.getAndUpdate(prev -> choose(prev, AggregateAction.RETRY, decorateReason(client.label, e.getMessage())));
                 if (remaining.decrementAndGet() == 0) {
                     AggregateResult finalResult = result.get();
                     if (finalResult.action == AggregateAction.FAIL) {
@@ -141,6 +144,24 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
         return new AggregateResult(nextAction, nextReason == null ? "" : nextReason);
     }
 
+    private static String decorateReason(String label, String reason) {
+        String safeReason = reason == null ? "" : reason.trim();
+        if (safeReason.isEmpty() || WRITE_CONFLICT.equals(safeReason) || safeReason.startsWith(WRITE_CONFLICT + ":")) {
+            return safeReason;
+        }
+        if (label == null || label.trim().isEmpty()) {
+            return safeReason;
+        }
+        return safeReason + " [replica=" + label + "]";
+    }
+
+    private static String endpointLabel(InetSocketAddress endpoint) {
+        if (endpoint == null) {
+            return "";
+        }
+        return endpoint.getHostString() + ":" + endpoint.getPort();
+    }
+
     private enum AggregateAction {
         ACK(0),
         RETRY(1),
@@ -164,11 +185,13 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
     }
 
     private static final class EndpointClient {
+        private final String label;
         private final InetSocketAddress endpoint;
         private final P2PTransportClient transportClient;
         private final FileSyncEventHandler handler;
 
-        private EndpointClient(InetSocketAddress endpoint, P2PTransportClient transportClient, FileSyncEventHandler handler) {
+        private EndpointClient(String label, InetSocketAddress endpoint, P2PTransportClient transportClient, FileSyncEventHandler handler) {
+            this.label = label;
             this.endpoint = endpoint;
             this.transportClient = transportClient;
             this.handler = handler;

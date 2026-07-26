@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.net.p2p.filesync.sync.FileSyncAcker;
 import javax.net.p2p.filesync.sync.FileSyncEventHandler;
 import javax.net.p2p.filesync.sync.FileSyncEventType;
@@ -87,14 +88,14 @@ public class MultiEndpointRpcSyncEventHandlerTest {
         AtomicInteger calls = new AtomicInteger();
         MultiEndpointRpcSyncEventHandler handler = MultiEndpointRpcSyncEventHandler.forHandlers(101L, Arrays.asList(
             ackingHandler(calls),
-            failingHandler(calls, "write_conflict"),
+            failingHandler(calls, "network_unreachable"),
             retryingHandler(calls)
         ));
 
         AtomicInteger ackCount = new AtomicInteger();
         AtomicInteger retryCount = new AtomicInteger();
         AtomicInteger failCount = new AtomicInteger();
-        AtomicInteger reasonCount = new AtomicInteger();
+        AtomicReference<String> reasonRef = new AtomicReference<>("");
         handler.handle(FileSyncEventType.CREATE, 1L, "a.txt", samplePath(), false, new FileSyncAcker() {
             @Override
             public void ack() {
@@ -109,9 +110,7 @@ public class MultiEndpointRpcSyncEventHandlerTest {
             @Override
             public void fail(String reason) {
                 failCount.incrementAndGet();
-                if ("write_conflict".equals(reason)) {
-                    reasonCount.incrementAndGet();
-                }
+                reasonRef.set(reason == null ? "" : reason);
             }
         });
 
@@ -119,7 +118,8 @@ public class MultiEndpointRpcSyncEventHandlerTest {
         Assert.assertEquals(0, ackCount.get());
         Assert.assertEquals(0, retryCount.get());
         Assert.assertEquals(1, failCount.get());
-        Assert.assertEquals(1, reasonCount.get());
+        Assert.assertTrue(reasonRef.get(), reasonRef.get().contains("network_unreachable"));
+        Assert.assertTrue(reasonRef.get(), reasonRef.get().contains("handler-2"));
     }
 
     private static FileSyncEventHandler ackingHandler(AtomicInteger calls) {
