@@ -4,6 +4,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.ExecutorService;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
@@ -19,16 +20,17 @@ import javax.net.p2p.rpc.sync.proto.SyncEventAck;
 import javax.net.p2p.rpc.sync.proto.SyncEventRequest;
 import javax.net.p2p.rpc.sync.proto.SyncEventType;
 import javax.net.p2p.rpc.sync.proto.SyncFinalizeRequest;
+import javax.net.p2p.utils.SecurityUtils;
 import javax.net.p2p.utils.XXHashUtil;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
-public final class RpcSyncEventHandler implements FileSyncEventHandler {
+public final class RpcSyncEventHandler implements FileSyncEventHandler, AutoCloseable {
 
     private final RpcClient rpcClient;
     private final P2PFileService fileClient;
     private final long taskId;
-    private final Executor uploadExecutor;
+    private final ExecutorService uploadExecutor;
     private static final String WRITE_CONFLICT = "write_conflict";
 
     public RpcSyncEventHandler(RpcClient rpcClient, P2PFileService fileClient, long taskId) {
@@ -44,6 +46,11 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler {
                 return t;
             }
         });
+    }
+
+    @Override
+    public void close() {
+        uploadExecutor.shutdownNow();
     }
 
     @Override
@@ -101,29 +108,40 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler {
 
     private void uploadAndFinalize(int storeId, long eventUid, FileSyncEventType type, String relativePath, Path absolutePath, long lastModifiedMillis, FileSyncAcker acker) {
         // 两阶段：ApplyEvent 通过 -> 上传文件内容 -> FinalizeEvent 才算最终 ACK
-        java.util.concurrent.CompletableFuture.runAsync(() -> {
+        java.util.concurrent.CompletableFuture.supplyAsync(() -> {
             try {
+                FileContentMetadata metadata = loadFileContentMetadata(absolutePath);
                 fileClient.putFileData(storeId, relativePath, absolutePath.toFile());
+                if (!fileClient.checkWithMd5(storeId, relativePath, metadata.getLength(), metadata.getMd5())) {
+                    throw new IllegalStateException("remote content check failed");
+                }
+                return metadata;
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
-        }, uploadExecutor).thenCompose(ignored -> {
+        }, uploadExecutor).thenCompose(metadata -> {
+            long finalizeLastModifiedMillis = resolveLastModifiedMillis(absolutePath, lastModifiedMillis);
+            log.info("p2p-sync finalize dispatch: taskId={}, path={}, eventUid={}, lastModifiedMillis={}",
+                taskId, relativePath, eventUid, finalizeLastModifiedMillis);
             SyncFinalizeRequest fin = SyncFinalizeRequest.newBuilder()
                 .setTaskId(taskId)
                 .setEventUid(eventUid)
                 .setPath(relativePath == null ? "" : relativePath)
                 .setDirectory(false)
                 .setType(toProtoType(type))
-                .setLastModifiedMillis(lastModifiedMillis)
+                .setLastModifiedMillis(finalizeLastModifiedMillis)
                 .build();
             RpcCallOptions options = RpcCallOptions.withDeadline(System.currentTimeMillis() + 10_000).withIdempotent(true);
             return rpcClient.unaryAsync(SyncRpcServices.SYNC_SERVICE, SyncRpcServices.FINALIZE_EVENT, fin, SyncEventAck.class, options);
         }).whenComplete((ack, ex) -> {
             if (ex != null || ack == null) {
+                log.error("p2p-sync finalize failed: taskId={}, path={}, eventUid={}, ackNull={}, ex={}",
+                    taskId, relativePath, eventUid, ack == null, ex == null ? "null" : ex.toString());
                 acker.retry();
                 return;
             }
             if (ack.getOk() && ack.getEventUid() == eventUid) {
+                log.info("p2p-sync finalize acked: taskId={}, path={}, eventUid={}", taskId, relativePath, eventUid);
                 acker.ack();
                 return;
             }
@@ -135,6 +153,23 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler {
             }
             acker.retry();
         });
+    }
+
+    private static FileContentMetadata loadFileContentMetadata(Path absolutePath) throws Exception {
+        long length = Files.size(absolutePath);
+        String md5 = SecurityUtils.getFileMD5String(absolutePath.toFile());
+        if (md5 == null || md5.trim().isEmpty()) {
+            throw new IllegalStateException("failed to compute file md5");
+        }
+        return new FileContentMetadata(length, md5);
+    }
+
+    private static long resolveLastModifiedMillis(Path absolutePath, long fallback) {
+        try {
+            return Files.getLastModifiedTime(absolutePath).toMillis();
+        } catch (Exception ignored) {
+            return fallback;
+        }
     }
 
     private static boolean isWriteConflict(String msg) {
@@ -162,5 +197,23 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler {
         buf.putInt(pathBytes.length);
         buf.put(pathBytes);
         return XXHashUtil.hash64(buf.array());
+    }
+
+    private static final class FileContentMetadata {
+        private final long length;
+        private final String md5;
+
+        private FileContentMetadata(long length, String md5) {
+            this.length = length;
+            this.md5 = md5;
+        }
+
+        private long getLength() {
+            return length;
+        }
+
+        private String getMd5() {
+            return md5;
+        }
     }
 }

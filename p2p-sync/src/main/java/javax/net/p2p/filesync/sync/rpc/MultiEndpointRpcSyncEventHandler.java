@@ -5,14 +5,17 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+import javax.net.p2p.client.P2PClientTcp;
 import javax.net.p2p.filesync.sync.FileSyncAcker;
 import javax.net.p2p.filesync.sync.FileSyncEventHandler;
 import javax.net.p2p.filesync.sync.FileSyncEventType;
 import javax.net.p2p.filesync.sync.transport.P2PFallbackConnector;
 import javax.net.p2p.filesync.sync.transport.P2PTransport;
 import javax.net.p2p.filesync.sync.transport.P2PTransportClient;
+import javax.net.p2p.interfaces.P2PFileService;
 import javax.net.p2p.rpc.api.RpcClient;
 import javax.net.p2p.rpc.client.P2PRpcClient;
 import javax.net.p2p.utils.P2PUDPUtils;
@@ -22,7 +25,6 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
 
     private final long taskId;
     private final List<EndpointClient> clients;
-    private final AtomicInteger rr = new AtomicInteger(ThreadLocalRandom.current().nextInt());
 
     public MultiEndpointRpcSyncEventHandler(long taskId, List<InetSocketAddress> endpoints) {
         this.taskId = taskId;
@@ -34,36 +36,139 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
         for (InetSocketAddress ep : endpoints) {
             P2PTransportClient transportClient = P2PFallbackConnector.connect(ep);
             RpcClient rpc = new P2PRpcClient(transportClient.getMessageService());
-            var fileClient = transportClient.getTransport() == P2PTransport.UDP
-                ? new P2PUDPUtils(transportClient.getMessageService())
-                : new P2PUtils(transportClient.getMessageService());
+            P2PFileService fileClient = transportClient.getTransport() == P2PTransport.TCP
+                ? new P2PUtils((P2PClientTcp) transportClient.getMessageService())
+                : new P2PUDPUtils(transportClient.getMessageService());
             RpcSyncEventHandler handler = new RpcSyncEventHandler(rpc, fileClient, taskId);
             clients.add(new EndpointClient(ep, transportClient, handler));
         }
     }
 
+    static MultiEndpointRpcSyncEventHandler forHandlers(long taskId, List<FileSyncEventHandler> handlers) {
+        Objects.requireNonNull(handlers, "handlers");
+        if (handlers.isEmpty()) {
+            throw new IllegalArgumentException("handlers is empty");
+        }
+        List<EndpointClient> clients = new ArrayList<>(handlers.size());
+        for (FileSyncEventHandler handler : handlers) {
+            clients.add(new EndpointClient(null, null, Objects.requireNonNull(handler, "handler")));
+        }
+        return new MultiEndpointRpcSyncEventHandler(taskId, clients, true);
+    }
+
+    private MultiEndpointRpcSyncEventHandler(long taskId, List<EndpointClient> clients, boolean trusted) {
+        this.taskId = taskId;
+        this.clients = clients;
+    }
+
     @Override
     public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
-        int idx = Math.floorMod(rr.getAndIncrement(), clients.size());
-        clients.get(idx).handler.handle(type, fileId, relativePath, absolutePath, directory, acker);
+        Objects.requireNonNull(acker, "acker");
+        AtomicInteger remaining = new AtomicInteger(clients.size());
+        AtomicReference<AggregateResult> result = new AtomicReference<>(new AggregateResult(AggregateAction.ACK, ""));
+        for (EndpointClient client : clients) {
+            try {
+                client.handler.handle(type, fileId, relativePath, absolutePath, directory, new FileSyncAcker() {
+                    @Override
+                    public void ack() {
+                        finish(AggregateAction.ACK, "");
+                    }
+
+                    @Override
+                    public void retry() {
+                        finish(AggregateAction.RETRY, "");
+                    }
+
+                    @Override
+                    public void fail(String reason) {
+                        finish(AggregateAction.FAIL, reason == null ? "" : reason);
+                    }
+
+                    private void finish(AggregateAction action, String reason) {
+                        result.getAndUpdate(prev -> choose(prev, action, reason));
+                        if (remaining.decrementAndGet() == 0) {
+                            AggregateResult finalResult = result.get();
+                            if (finalResult.action == AggregateAction.FAIL) {
+                                acker.fail(finalResult.reason);
+                                return;
+                            }
+                            if (finalResult.action == AggregateAction.RETRY) {
+                                acker.retry();
+                                return;
+                            }
+                            acker.ack();
+                        }
+                    }
+                });
+            } catch (Exception e) {
+                result.getAndUpdate(prev -> choose(prev, AggregateAction.RETRY, e.getMessage()));
+                if (remaining.decrementAndGet() == 0) {
+                    AggregateResult finalResult = result.get();
+                    if (finalResult.action == AggregateAction.FAIL) {
+                        acker.fail(finalResult.reason);
+                    } else if (finalResult.action == AggregateAction.RETRY) {
+                        acker.retry();
+                    } else {
+                        acker.ack();
+                    }
+                }
+            }
+        }
     }
 
     @Override
     public void close() {
         for (EndpointClient c : clients) {
             try {
-                c.transportClient.close();
+                if (c.handler instanceof AutoCloseable) {
+                    ((AutoCloseable) c.handler).close();
+                }
             } catch (Exception ignored) {
             }
+            try {
+                if (c.transportClient != null) {
+                    c.transportClient.close();
+                }
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private static AggregateResult choose(AggregateResult prev, AggregateAction nextAction, String nextReason) {
+        if (prev.action.priority >= nextAction.priority) {
+            return prev;
+        }
+        return new AggregateResult(nextAction, nextReason == null ? "" : nextReason);
+    }
+
+    private enum AggregateAction {
+        ACK(0),
+        RETRY(1),
+        FAIL(2);
+
+        private final int priority;
+
+        AggregateAction(int priority) {
+            this.priority = priority;
+        }
+    }
+
+    private static final class AggregateResult {
+        private final AggregateAction action;
+        private final String reason;
+
+        private AggregateResult(AggregateAction action, String reason) {
+            this.action = action;
+            this.reason = reason;
         }
     }
 
     private static final class EndpointClient {
         private final InetSocketAddress endpoint;
         private final P2PTransportClient transportClient;
-        private final RpcSyncEventHandler handler;
+        private final FileSyncEventHandler handler;
 
-        private EndpointClient(InetSocketAddress endpoint, P2PTransportClient transportClient, RpcSyncEventHandler handler) {
+        private EndpointClient(InetSocketAddress endpoint, P2PTransportClient transportClient, FileSyncEventHandler handler) {
             this.endpoint = endpoint;
             this.transportClient = transportClient;
             this.handler = handler;

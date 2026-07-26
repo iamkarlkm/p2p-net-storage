@@ -415,35 +415,27 @@ public final class P2PSyncStateStore implements AutoCloseable {
     public void swapEventTablesForStartup() {
         swapPairForStartupFile();
         swapPairForStartupDir();
+        fileCreatesActive.sync();
+        fileModifiesActive.sync();
+        fileDeletesActive.sync();
+        dirCreatesActive.sync();
+        dirDeletesActive.sync();
+        fileCreatesStartup.sync();
+        fileModifiesStartup.sync();
+        fileDeletesStartup.sync();
+        dirCreatesStartup.sync();
+        dirDeletesStartup.sync();
     }
 
     private void swapPairForStartupFile() {
-        moveAll(fileCreatesStartup, fileCreatesActive);
-        DsHashSet t1 = fileCreatesActive;
-        fileCreatesActive = fileCreatesStartup;
-        fileCreatesStartup = t1;
-
-        moveAll(fileModifiesStartup, fileModifiesActive);
-        DsHashSet t2 = fileModifiesActive;
-        fileModifiesActive = fileModifiesStartup;
-        fileModifiesStartup = t2;
-
-        moveAll(fileDeletesStartup, fileDeletesActive);
-        DsHashSet t3 = fileDeletesActive;
-        fileDeletesActive = fileDeletesStartup;
-        fileDeletesStartup = t3;
+        moveAll(fileCreatesActive, fileCreatesStartup);
+        moveAll(fileModifiesActive, fileModifiesStartup);
+        moveAll(fileDeletesActive, fileDeletesStartup);
     }
 
     private void swapPairForStartupDir() {
-        moveAll(dirCreatesStartup, dirCreatesActive);
-        DsHashSet t1 = dirCreatesActive;
-        dirCreatesActive = dirCreatesStartup;
-        dirCreatesStartup = t1;
-
-        moveAll(dirDeletesStartup, dirDeletesActive);
-        DsHashSet t2 = dirDeletesActive;
-        dirDeletesActive = dirDeletesStartup;
-        dirDeletesStartup = t2;
+        moveAll(dirCreatesActive, dirCreatesStartup);
+        moveAll(dirDeletesActive, dirDeletesStartup);
     }
 
     private static void moveAll(DsHashSet from, DsHashSet to) {

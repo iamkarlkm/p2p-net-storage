@@ -12,6 +12,10 @@
     <dependencies>
         <dependency>
             <groupId>com.q3lives</groupId>
+            <artifactId>p2p-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.q3lives</groupId>
             <artifactId>p2p-transfer</artifactId>
         </dependency>
         <dependency>

@@ -130,7 +130,7 @@ public final class SyncEventApplier {
         if (!Files.exists(path)) {
             return;
         }
-        Files.walkFileTree(path, new SimpleFileVisitor<>() {
+        Files.walkFileTree(path, new SimpleFileVisitor<Path>() {
             @Override
             public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
                 Files.deleteIfExists(file);

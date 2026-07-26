@@ -1,5 +1,6 @@
 package javax.net.p2p.filesync.config;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import javax.net.p2p.auth.config.AuthConfig;
@@ -28,8 +29,8 @@ public class P2PSyncConfigTest {
 
             Assert.assertEquals(1L, cfg.getTaskId());
             Assert.assertTrue(cfg.getLocalDir().contains("data"));
-            Assert.assertTrue(Path.of(cfg.getLocalDir()).isAbsolute());
-            Assert.assertTrue(Path.of(cfg.getDsHome()).isAbsolute());
+            Assert.assertTrue(java.nio.file.Paths.get(cfg.getLocalDir()).isAbsolute());
+            Assert.assertTrue(java.nio.file.Paths.get(cfg.getDsHome()).isAbsolute());
             Assert.assertEquals("u1", cfg.getUserInfo().get("userId"));
             Assert.assertEquals("u1", cfg.getLoginInfo().get("username"));
             Assert.assertEquals(1, cfg.getRemoteEndpoints().size());
@@ -75,7 +76,7 @@ public class P2PSyncConfigTest {
     public void shouldApplyAuthYamlPathOverrides() throws Exception {
         Path baseDir = Files.createTempDirectory("p2p_sync_cfg_auth_yaml_");
         Path authYaml = baseDir.resolve("auth.yaml");
-        Files.writeString(authYaml, "enabled: false\n");
+        Files.write(authYaml, "enabled: false\n".getBytes(StandardCharsets.UTF_8));
         try {
             System.setProperty("p2p.sync.inlineBaseDir", baseDir.toString());
             System.setProperty("p2p.sync.inlineYaml", ""

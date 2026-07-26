@@ -5,6 +5,7 @@ import java.nio.file.FileSystems;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardWatchEventKinds;
 import java.nio.file.WatchEvent;
@@ -32,6 +33,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
     private final FileSyncEventHandler eventHandler;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean watchReady = new AtomicBoolean(false);
     private final ExecutorService watchExecutor;
     private final ExecutorService eventExecutor;
     private final ScheduledExecutorService heartbeatExecutor;
@@ -43,6 +45,10 @@ public final class P2PDirectorySyncService implements AutoCloseable {
 
     public P2PSyncStateStore getStore() {
         return store;
+    }
+
+    boolean isWatchReady() {
+        return watchReady.get();
     }
 
     public P2PDirectorySyncService(P2PSyncConfig config, FileSyncEventHandler eventHandler) {
@@ -57,7 +63,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         if (!running.compareAndSet(false, true)) {
             return;
         }
-        this.rootDir = Path.of(config.getLocalDir()).toAbsolutePath().normalize();
+        this.rootDir = Paths.get(config.getLocalDir()).toAbsolutePath().normalize();
         try {
             Files.createDirectories(rootDir);
         } catch (IOException e) {
@@ -85,8 +91,8 @@ public final class P2PDirectorySyncService implements AutoCloseable {
     }
 
     private static Path resolveDsHome(P2PSyncConfig config, Path rootDir) {
-        if (config.getDsHome() != null && !config.getDsHome().isBlank()) {
-            return Path.of(config.getDsHome()).toAbsolutePath().normalize();
+        if (config.getDsHome() != null && !config.getDsHome().trim().isEmpty()) {
+            return Paths.get(config.getDsHome()).toAbsolutePath().normalize();
         }
         return rootDir.resolve(".p2p-sync").resolve("task-" + config.getTaskId()).toAbsolutePath().normalize();
     }
@@ -108,7 +114,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
             long fileId = entry.getKey().longValue();
             boolean directory = entry.getValue() != null && entry.getValue().longValue() == 1L;
             String relativePath = localStore.getRelativePath(fileId);
-            if (relativePath == null || relativePath.isBlank()) {
+            if (relativePath == null || relativePath.trim().isEmpty()) {
                 continue;
             }
             Path abs = root.resolve(relativePath);
@@ -194,6 +200,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         try (WatchService ws = FileSystems.getDefault().newWatchService()) {
             this.watchService = ws;
             registerAllDirs(rootDir, ws, keyToDir);
+            watchReady.set(true);
             while (running.get()) {
                 WatchKey key = ws.poll(500, TimeUnit.MILLISECONDS);
                 if (key == null) {
@@ -213,6 +220,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
                 log.error("watchLoop failed", e);
             }
         } finally {
+            watchReady.set(false);
             this.watchService = null;
         }
     }
@@ -352,7 +360,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
 
     private static void registerAllDirs(Path start, WatchService ws, Map<WatchKey, Path> keyToDir) {
         try {
-            Files.walkFileTree(start, new SimpleFileVisitor<>() {
+            Files.walkFileTree(start, new SimpleFileVisitor<Path>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
                     WatchKey key = dir.register(ws,
@@ -401,6 +409,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         if (!running.compareAndSet(true, false)) {
             return;
         }
+        watchReady.set(false);
         WatchService ws = this.watchService;
         if (ws != null) {
             try {

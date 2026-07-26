@@ -1,5 +1,6 @@
 package javax.net.p2p.filesync.sync.rpc.server;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
@@ -22,7 +23,7 @@ public class SyncReceiverRpcServiceTest {
 
             long eventUid = 1000L;
             long ts = System.currentTimeMillis() - 3_000;
-            var applyAck = svc.applyEvent(SyncEventRequest.newBuilder()
+            javax.net.p2p.rpc.sync.proto.SyncEventAck applyAck = svc.applyEvent(SyncEventRequest.newBuilder()
                 .setTaskId(1L)
                 .setEventUid(eventUid)
                 .setFileId(1L)
@@ -36,10 +37,10 @@ public class SyncReceiverRpcServiceTest {
             Assert.assertEquals(123, applyAck.getStoreId());
 
             Path f = root.resolve("a/b.txt");
-            Files.writeString(f, "hello");
+            writeUtf8(f, "hello");
             Files.setLastModifiedTime(f, FileTime.fromMillis(ts));
 
-            var finAck = svc.finalizeEvent(SyncFinalizeRequest.newBuilder()
+            javax.net.p2p.rpc.sync.proto.SyncEventAck finAck = svc.finalizeEvent(SyncFinalizeRequest.newBuilder()
                 .setTaskId(1L)
                 .setEventUid(eventUid)
                 .setPath("a/b.txt")
@@ -49,7 +50,7 @@ public class SyncReceiverRpcServiceTest {
                 .build());
             Assert.assertTrue(finAck.getOk());
 
-            var dupAck = svc.applyEvent(SyncEventRequest.newBuilder()
+            javax.net.p2p.rpc.sync.proto.SyncEventAck dupAck = svc.applyEvent(SyncEventRequest.newBuilder()
                 .setTaskId(1L)
                 .setEventUid(eventUid)
                 .setFileId(1L)
@@ -73,7 +74,7 @@ public class SyncReceiverRpcServiceTest {
             SyncReceiverRpcService svc = new SyncReceiverRpcService(123, root, store, applier);
 
             long ts = System.currentTimeMillis() - 3_000;
-            var apply1 = svc.applyEvent(SyncEventRequest.newBuilder()
+            javax.net.p2p.rpc.sync.proto.SyncEventAck apply1 = svc.applyEvent(SyncEventRequest.newBuilder()
                 .setTaskId(1L)
                 .setEventUid(1001L)
                 .setFileId(1L)
@@ -85,7 +86,7 @@ public class SyncReceiverRpcServiceTest {
             Assert.assertTrue(apply1.getOk());
             Assert.assertTrue(apply1.getNeedsUpload());
 
-            var apply2 = svc.applyEvent(SyncEventRequest.newBuilder()
+            javax.net.p2p.rpc.sync.proto.SyncEventAck apply2 = svc.applyEvent(SyncEventRequest.newBuilder()
                 .setTaskId(1L)
                 .setEventUid(1002L)
                 .setFileId(2L)
@@ -98,10 +99,10 @@ public class SyncReceiverRpcServiceTest {
             Assert.assertEquals("write_conflict", apply2.getMessage());
 
             Path f = root.resolve("a/b.txt");
-            Files.writeString(f, "hello");
+            writeUtf8(f, "hello");
             Files.setLastModifiedTime(f, FileTime.fromMillis(ts));
 
-            var fin1 = svc.finalizeEvent(SyncFinalizeRequest.newBuilder()
+            javax.net.p2p.rpc.sync.proto.SyncEventAck fin1 = svc.finalizeEvent(SyncFinalizeRequest.newBuilder()
                 .setTaskId(1L)
                 .setEventUid(1001L)
                 .setPath("a/b.txt")
@@ -111,7 +112,7 @@ public class SyncReceiverRpcServiceTest {
                 .build());
             Assert.assertTrue(fin1.getOk());
 
-            var apply3 = svc.applyEvent(SyncEventRequest.newBuilder()
+            javax.net.p2p.rpc.sync.proto.SyncEventAck apply3 = svc.applyEvent(SyncEventRequest.newBuilder()
                 .setTaskId(1L)
                 .setEventUid(1003L)
                 .setFileId(3L)
@@ -123,5 +124,9 @@ public class SyncReceiverRpcServiceTest {
             Assert.assertTrue(apply3.getOk());
             Assert.assertTrue(apply3.getNeedsUpload());
         }
+    }
+
+    private static void writeUtf8(Path path, String value) throws Exception {
+        Files.write(path, value.getBytes(StandardCharsets.UTF_8));
     }
 }

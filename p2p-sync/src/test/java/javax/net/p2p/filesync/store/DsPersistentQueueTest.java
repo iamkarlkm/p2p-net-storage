@@ -27,7 +27,7 @@ public class DsPersistentQueueTest {
             for (PersistentQueue.Entry<String> e : q) {
                 values.add(e.getValue());
             }
-            Assert.assertEquals(List.of("a", "b"), values);
+            Assert.assertEquals(java.util.Arrays.asList("a", "b"), values);
         }
 
         try (DsPersistentQueue<String> q = new DsPersistentQueue<>(home, "q1", PersistentCodec.stringCodec())) {
@@ -48,7 +48,7 @@ public class DsPersistentQueueTest {
             for (PersistentQueue.Entry<String> e : q) {
                 values.add(e.getValue());
             }
-            Assert.assertEquals(List.of("b", "c"), values);
+            Assert.assertEquals(java.util.Arrays.asList("b", "c"), values);
         }
     }
 

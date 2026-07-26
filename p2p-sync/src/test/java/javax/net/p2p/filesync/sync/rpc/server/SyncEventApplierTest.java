@@ -14,7 +14,7 @@ public class SyncEventApplierTest {
     public void shouldRejectPathTraversal() throws Exception {
         Path root = Files.createTempDirectory("p2p_sync_receiver_root_");
         SyncEventApplier applier = new SyncEventApplier(root);
-        var ack = applier.apply(SyncEventRequest.newBuilder()
+        javax.net.p2p.rpc.sync.proto.SyncEventAck ack = applier.apply(SyncEventRequest.newBuilder()
             .setTaskId(1L)
             .setEventUid(1L)
             .setPath("../evil")
@@ -30,7 +30,7 @@ public class SyncEventApplierTest {
         Path root = Files.createTempDirectory("p2p_sync_receiver_root2_");
         SyncEventApplier applier = new SyncEventApplier(root);
 
-            var ack1 = applier.apply(SyncEventRequest.newBuilder()
+            javax.net.p2p.rpc.sync.proto.SyncEventAck ack1 = applier.apply(SyncEventRequest.newBuilder()
                 .setTaskId(1L)
                 .setEventUid(100L)
                 .setPath("dir1")
@@ -41,7 +41,7 @@ public class SyncEventApplierTest {
             Assert.assertTrue(Files.isDirectory(root.resolve("dir1")));
 
             long ts = System.currentTimeMillis() - 5_000;
-            var ack2 = applier.apply(SyncEventRequest.newBuilder()
+            javax.net.p2p.rpc.sync.proto.SyncEventAck ack2 = applier.apply(SyncEventRequest.newBuilder()
                 .setTaskId(1L)
                 .setEventUid(101L)
                 .setPath("dir1/a.txt")
@@ -57,7 +57,7 @@ public class SyncEventApplierTest {
             Assert.assertTrue(Math.abs(actual1 - ts) <= 2_000);
 
             Files.setLastModifiedTime(root.resolve("dir1/a.txt"), FileTime.fromMillis(ts - 1_000));
-            var ack4 = applier.apply(SyncEventRequest.newBuilder()
+            javax.net.p2p.rpc.sync.proto.SyncEventAck ack4 = applier.apply(SyncEventRequest.newBuilder()
                 .setTaskId(1L)
                 .setEventUid(102L)
                 .setPath("dir1/a.txt")

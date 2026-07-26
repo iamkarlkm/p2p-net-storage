@@ -6,7 +6,7 @@ public interface PersistentCodec<T> {
     T decode(String encoded);
 
     static PersistentCodec<String> stringCodec() {
-        return new PersistentCodec<>() {
+        return new PersistentCodec<String>() {
             @Override
             public String encode(String value) {
                 return value == null ? "" : value;
@@ -19,4 +19,3 @@ public interface PersistentCodec<T> {
         };
     }
 }
-

@@ -1,6 +1,7 @@
 package javax.net.p2p.filesync.sync.rpc.server;
 
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Objects;
 import javax.net.p2p.filesync.config.P2PSyncConfig;
 import javax.net.p2p.rpc.server.RpcBootstrap;
@@ -17,10 +18,10 @@ public final class SyncApplyEventRpcRegistration {
 
     public static AutoCloseable register(P2PSyncConfig config) {
         Objects.requireNonNull(config, "config");
-        Path rootDir = Path.of(config.getLocalDir()).toAbsolutePath().normalize();
-        Path dsHome = config.getDsHome() == null || config.getDsHome().isBlank()
+        Path rootDir = Paths.get(config.getLocalDir()).toAbsolutePath().normalize();
+        Path dsHome = config.getDsHome() == null || config.getDsHome().trim().isEmpty()
             ? rootDir.resolve(".p2p-sync").resolve("task-" + config.getTaskId()).toAbsolutePath().normalize()
-            : Path.of(config.getDsHome()).toAbsolutePath().normalize();
+            : Paths.get(config.getDsHome()).toAbsolutePath().normalize();
 
         int storeId = config.getStoreId();
         SharedStorage.registerStorageLocation(storeId, rootDir.toFile());

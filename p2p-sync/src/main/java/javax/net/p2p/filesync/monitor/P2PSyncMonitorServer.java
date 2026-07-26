@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.concurrent.Executors;
 import javax.net.p2p.filesync.sync.FileSyncEventType;
 import javax.net.p2p.filesync.sync.PersistentLongQueue;
@@ -180,90 +181,88 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private static String indexHtml() {
-        return """
-            <!doctype html>
-            <html>
-            <head>
-              <meta charset="utf-8"/>
-              <meta name="viewport" content="width=device-width, initial-scale=1"/>
-              <title>p2p-sync monitor</title>
-              <style>
-                body{font-family:system-ui,Arial; margin:16px;}
-                table{border-collapse:collapse; width:100%; margin:12px 0;}
-                th,td{border:1px solid #ddd; padding:6px 8px; font-size:12px;}
-                th{background:#f6f6f6; text-align:left;}
-                .row{display:flex; gap:16px; flex-wrap:wrap;}
-                .card{flex:1 1 420px; border:1px solid #ddd; padding:12px;}
-                .btn{padding:4px 8px; border:1px solid #666; background:#fff; cursor:pointer;}
-              </style>
-            </head>
-            <body>
-              <h2>p2p-sync 队列监控</h2>
-              <div>
-                <button class="btn" onclick="reload()">刷新</button>
-              </div>
-              <div id="content"></div>
-              <script>
-                async function reload(){
-                  const res = await fetch('/sync/api/queues?limit=200');
-                  const data = await res.json();
-                  if(!data.ok){document.getElementById('content').innerText = data.message || 'error';return;}
-                  render(data.queues);
-                }
-                function esc(s){return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}
-                function renderQueue(title, q){
-                  let html = '<div class="card"><h3>'+esc(title)+' (size='+q.size+')</h3>';
-                  html += '<table><tr><th>fileId</th><th>dir</th><th>type</th><th>path</th><th>reason</th><th>action</th></tr>';
-                  for(const it of q.items){
-                    const reason = it.reason ? esc(it.reason) : '';
-                    let action = '';
-                    if(reason){
-                      action = '<button class="btn" onclick="retryIt('+it.fileId+','+it.dir+',\\''+it.type+'\\')">重试(覆盖同步)</button> ' +
-                               '<button class="btn" onclick="discardIt('+it.fileId+','+it.dir+',\\''+it.type+'\\')">放弃</button>';
-                    }
-                    html += '<tr><td>'+it.fileId+'</td><td>'+it.dir+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.path)+'</td><td>'+reason+'</td><td>'+action+'</td></tr>';
-                  }
-                  html += '</table></div>';
-                  return html;
-                }
-                async function retryIt(fileId, dir, type){
-                  await fetch('/sync/api/failed/retry?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});
-                  await reload();
-                }
-                async function discardIt(fileId, dir, type){
-                  await fetch('/sync/api/failed/discard?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});
-                  await reload();
-                }
-                function render(queues){
-                  const keys = [
-                    ['新增(文件)', 'file_create'],
-                    ['修改(文件)', 'file_modify'],
-                    ['删除(文件)', 'file_delete'],
-                    ['新增(目录)', 'dir_create'],
-                    ['删除(目录)', 'dir_delete'],
-                    ['失败-新增(文件)', 'failed_file_create'],
-                    ['失败-修改(文件)', 'failed_file_modify'],
-                    ['失败-删除(文件)', 'failed_file_delete'],
-                    ['失败-新增(目录)', 'failed_dir_create'],
-                    ['失败-删除(目录)', 'failed_dir_delete'],
-                  ];
-                  let html = '<div class="row">';
-                  for(const [title,key] of keys){
-                    html += renderQueue(title, queues[key]);
-                  }
-                  html += '</div>';
-                  document.getElementById('content').innerHTML = html;
-                }
-                reload();
-              </script>
-            </body>
-            </html>
-            """;
+        return "<!doctype html>\n"
+            + "<html>\n"
+            + "<head>\n"
+            + "  <meta charset=\"utf-8\"/>\n"
+            + "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>\n"
+            + "  <title>p2p-sync monitor</title>\n"
+            + "  <style>\n"
+            + "    body{font-family:system-ui,Arial; margin:16px;}\n"
+            + "    table{border-collapse:collapse; width:100%; margin:12px 0;}\n"
+            + "    th,td{border:1px solid #ddd; padding:6px 8px; font-size:12px;}\n"
+            + "    th{background:#f6f6f6; text-align:left;}\n"
+            + "    .row{display:flex; gap:16px; flex-wrap:wrap;}\n"
+            + "    .card{flex:1 1 420px; border:1px solid #ddd; padding:12px;}\n"
+            + "    .btn{padding:4px 8px; border:1px solid #666; background:#fff; cursor:pointer;}\n"
+            + "  </style>\n"
+            + "</head>\n"
+            + "<body>\n"
+            + "  <h2>p2p-sync 队列监控</h2>\n"
+            + "  <div>\n"
+            + "    <button class=\"btn\" onclick=\"reload()\">刷新</button>\n"
+            + "  </div>\n"
+            + "  <div id=\"content\"></div>\n"
+            + "  <script>\n"
+            + "    async function reload(){\n"
+            + "      const res = await fetch('/sync/api/queues?limit=200');\n"
+            + "      const data = await res.json();\n"
+            + "      if(!data.ok){document.getElementById('content').innerText = data.message || 'error';return;}\n"
+            + "      render(data.queues);\n"
+            + "    }\n"
+            + "    function esc(s){return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}\n"
+            + "    function renderQueue(title, q){\n"
+            + "      let html = '<div class=\"card\"><h3>'+esc(title)+' (size='+q.size+')</h3>';\n"
+            + "      html += '<table><tr><th>fileId</th><th>dir</th><th>type</th><th>path</th><th>reason</th><th>action</th></tr>';\n"
+            + "      for(const it of q.items){\n"
+            + "        const reason = it.reason ? esc(it.reason) : '';\n"
+            + "        let action = '';\n"
+            + "        if(reason){\n"
+            + "          action = '<button class=\"btn\" onclick=\"retryIt('+it.fileId+','+it.dir+',\\\\''+it.type+'\\\\')\">重试(覆盖同步)</button> ' +\n"
+            + "                   '<button class=\"btn\" onclick=\"discardIt('+it.fileId+','+it.dir+',\\\\''+it.type+'\\\\')\">放弃</button>';\n"
+            + "        }\n"
+            + "        html += '<tr><td>'+it.fileId+'</td><td>'+it.dir+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.path)+'</td><td>'+reason+'</td><td>'+action+'</td></tr>';\n"
+            + "      }\n"
+            + "      html += '</table></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
+            + "    async function retryIt(fileId, dir, type){\n"
+            + "      await fetch('/sync/api/failed/retry?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});\n"
+            + "      await reload();\n"
+            + "    }\n"
+            + "    async function discardIt(fileId, dir, type){\n"
+            + "      await fetch('/sync/api/failed/discard?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});\n"
+            + "      await reload();\n"
+            + "    }\n"
+            + "    function render(queues){\n"
+            + "      const keys = [\n"
+            + "        ['新增(文件)', 'file_create'],\n"
+            + "        ['修改(文件)', 'file_modify'],\n"
+            + "        ['删除(文件)', 'file_delete'],\n"
+            + "        ['新增(目录)', 'dir_create'],\n"
+            + "        ['删除(目录)', 'dir_delete'],\n"
+            + "        ['失败-新增(文件)', 'failed_file_create'],\n"
+            + "        ['失败-修改(文件)', 'failed_file_modify'],\n"
+            + "        ['失败-删除(文件)', 'failed_file_delete'],\n"
+            + "        ['失败-新增(目录)', 'failed_dir_create'],\n"
+            + "        ['失败-删除(目录)', 'failed_dir_delete'],\n"
+            + "      ];\n"
+            + "      let html = '<div class=\"row\">';\n"
+            + "      for(const [title,key] of keys){\n"
+            + "        html += renderQueue(title, queues[key]);\n"
+            + "      }\n"
+            + "      html += '</div>';\n"
+            + "      document.getElementById('content').innerHTML = html;\n"
+            + "    }\n"
+            + "    reload();\n"
+            + "  </script>\n"
+            + "</body>\n"
+            + "</html>\n";
     }
 
     private static String param(URI uri, String key) {
         String q = uri.getRawQuery();
-        if (q == null || q.isBlank()) {
+        if (q == null || q.trim().isEmpty()) {
             return null;
         }
         for (String part : q.split("&")) {
@@ -284,7 +283,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private static long parseLong(String v, long def) {
-        if (v == null || v.isBlank()) {
+        if (v == null || v.trim().isEmpty()) {
             return def;
         }
         try {
@@ -313,14 +312,15 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
 
     private static String toJson(Object v) {
         if (v == null) return "null";
-        if (v instanceof Boolean b) return b ? "true" : "false";
-        if (v instanceof Number n) return n.toString();
-        if (v instanceof String s) return quote(s);
-        if (v instanceof Map<?, ?> m) {
+        if (v instanceof Boolean) return ((Boolean) v).booleanValue() ? "true" : "false";
+        if (v instanceof Number) return v.toString();
+        if (v instanceof String) return quote((String) v);
+        if (v instanceof Map<?, ?>) {
+            Map<?, ?> m = (Map<?, ?>) v;
             StringBuilder sb = new StringBuilder();
             sb.append('{');
             boolean first = true;
-            for (var e : m.entrySet()) {
+            for (Entry<?, ?> e : m.entrySet()) {
                 if (!first) sb.append(',');
                 first = false;
                 sb.append(quote(String.valueOf(e.getKey())));
@@ -330,7 +330,8 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             sb.append('}');
             return sb.toString();
         }
-        if (v instanceof List<?> list) {
+        if (v instanceof List<?>) {
+            List<?> list = (List<?>) v;
             StringBuilder sb = new StringBuilder();
             sb.append('[');
             boolean first = true;

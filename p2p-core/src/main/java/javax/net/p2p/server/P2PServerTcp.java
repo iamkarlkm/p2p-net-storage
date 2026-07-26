@@ -13,6 +13,7 @@ import java.io.FileOutputStream;
 import java.io.PrintStream;
 import javax.net.p2p.channel.PipelineInitializer;
 import javax.net.p2p.codec.P2PWrapperEncoder;
+import javax.net.p2p.common.ExecutorServicePool;
 import javax.net.p2p.startup.P2PStartupChecks;
 import lombok.extern.slf4j.Slf4j;
 /**
@@ -37,6 +38,7 @@ public class P2PServerTcp {
             throw new RuntimeException("同一服务正在运行，请先关闭后再操作,监听端口->" + port);
         }
         P2PStartupChecks.runOrThrow();
+        ExecutorServicePool.createServerPools();
         ServerMessageProcessor.registerProcessors();
 //        try {
 //            HdfsUtil.initFileSysytem();
@@ -70,6 +72,7 @@ public class P2PServerTcp {
             bossGroup.shutdownGracefully();
             workerGroup.shutdownGracefully();
         } finally {
+            ExecutorServicePool.releaseP2PServerPools();
             if (bossGroup != null && workerGroup != null) {
                 bossGroup.shutdownGracefully();
                 workerGroup.shutdownGracefully();

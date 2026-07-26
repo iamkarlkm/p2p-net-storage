@@ -5,6 +5,7 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.StringReader;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -118,11 +119,11 @@ public class P2PSyncConfig {
 
     public static P2PSyncConfig load() {
         String inlineYaml = System.getProperty("p2p.sync.inlineYaml");
-        if (inlineYaml != null && !inlineYaml.isBlank()) {
+        if (inlineYaml != null && !inlineYaml.trim().isEmpty()) {
             Yaml yaml = new Yaml();
             P2PSyncConfig cfg = yaml.loadAs(new StringReader(inlineYaml), P2PSyncConfig.class);
             String baseDir = System.getProperty("p2p.sync.inlineBaseDir");
-            File yamlBaseDir = baseDir == null || baseDir.isBlank()
+            File yamlBaseDir = baseDir == null || baseDir.trim().isEmpty()
                 ? new File(System.getProperty("user.dir", ".")).getAbsoluteFile()
                 : new File(baseDir).getAbsoluteFile();
             return resolveAndValidate(cfg, yamlBaseDir);
@@ -131,7 +132,7 @@ public class P2PSyncConfig {
         String path = System.getProperty("p2p.sync.yaml");
         try {
             Yaml yaml = new Yaml();
-            if (path != null && !path.isBlank()) {
+            if (path != null && !path.trim().isEmpty()) {
                 try (InputStream in = new FileInputStream(path)) {
                     P2PSyncConfig cfg = yaml.loadAs(in, P2PSyncConfig.class);
                     return resolveAndValidate(cfg, new File(path).getParentFile());
@@ -159,15 +160,15 @@ public class P2PSyncConfig {
             cfg.remoteEndpoints = new ArrayList<>();
         }
 
-        if (cfg.localDir != null && !cfg.localDir.isBlank()) {
-            Path dir = Path.of(cfg.localDir);
+        if (cfg.localDir != null && !cfg.localDir.trim().isEmpty()) {
+            Path dir = Paths.get(cfg.localDir);
             if (!dir.isAbsolute()) {
                 cfg.localDir = new File(yamlBaseDir, cfg.localDir).getAbsolutePath();
             }
         }
 
-        if (cfg.dsHome != null && !cfg.dsHome.isBlank()) {
-            Path dir = Path.of(cfg.dsHome);
+        if (cfg.dsHome != null && !cfg.dsHome.trim().isEmpty()) {
+            Path dir = Paths.get(cfg.dsHome);
             if (!dir.isAbsolute()) {
                 cfg.dsHome = new File(yamlBaseDir, cfg.dsHome).getAbsolutePath();
             }
@@ -178,7 +179,7 @@ public class P2PSyncConfig {
         if (cfg.taskId == 0L) {
             throw new IllegalArgumentException("taskId is required");
         }
-        if (cfg.localDir == null || cfg.localDir.isBlank()) {
+        if (cfg.localDir == null || cfg.localDir.trim().isEmpty()) {
             throw new IllegalArgumentException("localDir is required");
         }
         if (cfg.storeId == 0) {
@@ -194,7 +195,7 @@ public class P2PSyncConfig {
     }
 
     private static void applyAuthOverrides(P2PSyncConfig cfg, File yamlBaseDir) {
-        if (cfg.auth != null && cfg.authYaml != null && !cfg.authYaml.isBlank()) {
+        if (cfg.auth != null && cfg.authYaml != null && !cfg.authYaml.trim().isEmpty()) {
             throw new IllegalArgumentException("auth and authYaml cannot both be set");
         }
         if (cfg.auth != null) {
@@ -205,8 +206,8 @@ public class P2PSyncConfig {
             System.clearProperty("p2p.auth.yaml");
             return;
         }
-        if (cfg.authYaml != null && !cfg.authYaml.isBlank()) {
-            Path p = Path.of(cfg.authYaml);
+        if (cfg.authYaml != null && !cfg.authYaml.trim().isEmpty()) {
+            Path p = Paths.get(cfg.authYaml);
             if (!p.isAbsolute()) {
                 p = yamlBaseDir.toPath().toAbsolutePath().normalize().resolve(cfg.authYaml).normalize();
                 cfg.authYaml = p.toString();

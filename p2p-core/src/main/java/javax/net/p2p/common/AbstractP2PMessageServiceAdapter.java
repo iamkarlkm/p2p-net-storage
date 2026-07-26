@@ -505,6 +505,12 @@ public abstract class AbstractP2PMessageServiceAdapter extends ReferencedSinglet
         if (cmd == P2PCommand.UDP_FRAME_ACK || cmd == P2PCommand.UDP_FRAME_RESET || cmd == P2PCommand.UDP_RELIABILITY_ACK || cmd == P2PCommand.UDP_STREAM_ACK2) {
             return;
         }
+        // Long-running handlers first emit STD_ACCEPTED and later send the
+        // terminal response with the same seq. Keep waiting for the final one.
+        if (cmd == P2PCommand.STD_ACCEPTED) {
+            log.info("complete response accepted:{}", response);
+            return;
+        }
         log.info("complete response:{}", response);
         if (checkStreamMessage(response)) {//非流消息或流结束,返回调用者
             ChannelAwaitOnMessage<P2PWrapper> responseFuture = RESPONSE_FUTURE_MAP.remove(response.getSeq());

@@ -1,5 +1,6 @@
 package javax.net.p2p.filesync.sync;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
@@ -19,8 +20,8 @@ public class P2PDirectorySyncServiceTest {
         Path root = Files.createTempDirectory("p2p_sync_root_");
         Path state = Files.createTempDirectory("p2p_sync_state_");
         Files.createDirectories(root.resolve("sub"));
-        Files.writeString(root.resolve("a.txt"), "v1");
-        Files.writeString(root.resolve("sub").resolve("c.txt"), "v1");
+        writeUtf8(root.resolve("a.txt"), "v1");
+        writeUtf8(root.resolve("sub").resolve("c.txt"), "v1");
 
         P2PSyncConfig cfg = new P2PSyncConfig();
         cfg.setTaskId(1L);
@@ -50,7 +51,7 @@ public class P2PDirectorySyncServiceTest {
         Path root = Files.createTempDirectory("p2p_sync_root2_");
         Path state = Files.createTempDirectory("p2p_sync_state2_");
         Path file = root.resolve("b.txt");
-        Files.writeString(file, "v1");
+        writeUtf8(file, "v1");
 
         P2PSyncConfig cfg = new P2PSyncConfig();
         cfg.setTaskId(2L);
@@ -63,7 +64,7 @@ public class P2PDirectorySyncServiceTest {
         }
 
         Thread.sleep(10);
-        Files.writeString(file, "v2");
+        writeUtf8(file, "v2");
 
         CountDownLatch latch = new CountDownLatch(1);
         List<FileSyncEventType> types = Collections.synchronizedList(new ArrayList<>());
@@ -86,7 +87,7 @@ public class P2PDirectorySyncServiceTest {
         Path root = Files.createTempDirectory("p2p_sync_root3_");
         Path state = Files.createTempDirectory("p2p_sync_state3_");
         Path file = root.resolve("old.txt");
-        Files.writeString(file, "v1");
+        writeUtf8(file, "v1");
 
         long lastRun = System.currentTimeMillis();
         Files.setLastModifiedTime(file, FileTime.fromMillis(lastRun - 10_000));
@@ -119,7 +120,7 @@ public class P2PDirectorySyncServiceTest {
     public void shouldMoveToFailedQueueOnFail() throws Exception {
         Path root = Files.createTempDirectory("p2p_sync_root_failed_");
         Path state = Files.createTempDirectory("p2p_sync_state_failed_");
-        Files.writeString(root.resolve("a.txt"), "v1");
+        writeUtf8(root.resolve("a.txt"), "v1");
 
         P2PSyncConfig cfg = new P2PSyncConfig();
         cfg.setTaskId(4L);
@@ -143,5 +144,67 @@ public class P2PDirectorySyncServiceTest {
             long fileId = store.getOrCreateFileId("a.txt");
             Assert.assertTrue(store.fileCreatesFailed().contains(Long.valueOf(fileId)));
         }
+    }
+
+    @Test
+    public void shouldTreatRenameAsDeletePlusCreate() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_root_rename_");
+        Path state = Files.createTempDirectory("p2p_sync_state_rename_");
+        Path oldFile = root.resolve("old.txt");
+        Path newFile = root.resolve("new.txt");
+        writeUtf8(oldFile, "v1");
+
+        P2PSyncConfig cfg = new P2PSyncConfig();
+        cfg.setTaskId(5L);
+        cfg.setLocalDir(root.toString());
+        cfg.setDsHome(state.toString());
+
+        CountDownLatch startupLatch = new CountDownLatch(1);
+        CountDownLatch renameLatch = new CountDownLatch(2);
+        List<String> events = Collections.synchronizedList(new ArrayList<>());
+
+        try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, (type, fileId, rel, abs, dir, acker) -> {
+            events.add(type.name() + ":" + rel);
+            if ("old.txt".equals(rel) && type == FileSyncEventType.CREATE) {
+                startupLatch.countDown();
+            }
+            if (!dir && ((type == FileSyncEventType.DELETE && "old.txt".equals(rel))
+                || (type == FileSyncEventType.CREATE && "new.txt".equals(rel)))) {
+                renameLatch.countDown();
+            }
+            acker.ack();
+        })) {
+            svc.start();
+            Assert.assertTrue(startupLatch.await(5, TimeUnit.SECONDS));
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            events.clear();
+            Files.move(oldFile, newFile);
+
+            Assert.assertTrue(events.toString(), renameLatch.await(5, TimeUnit.SECONDS));
+        }
+
+        Assert.assertTrue(events.toString(), events.contains("DELETE:old.txt"));
+        Assert.assertTrue(events.toString(), events.contains("CREATE:new.txt"));
+    }
+
+    private static void writeUtf8(Path path, String value) throws Exception {
+        Files.write(path, value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void waitUntil(CheckedBooleanSupplier condition, long timeout, TimeUnit unit) throws Exception {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) {
+                return;
+            }
+            Thread.sleep(50L);
+        }
+        Assert.fail("condition not met within timeout");
+    }
+
+    @FunctionalInterface
+    private interface CheckedBooleanSupplier {
+        boolean getAsBoolean() throws Exception;
     }
 }

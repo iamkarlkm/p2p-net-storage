@@ -69,6 +69,11 @@ final class P2PSyncQueueEngine {
         int processed = 0;
         while (it.hasNext() && processed < maxBatchSize && running.get()) {
             long fileId = it.next();
+            // Keep same-path events serialized across queue types so CREATE/DELETE
+            // can finish before a follow-up MODIFY for the same file is dispatched.
+            if (isInflight(store, fileId)) {
+                continue;
+            }
             inflight.add(fileId);
             it.remove();
             String relativePath = store.getRelativePath(fileId);
@@ -77,6 +82,20 @@ final class P2PSyncQueueEngine {
             processed++;
         }
         return processed;
+    }
+
+    private static boolean isInflight(P2PSyncStateStore store, long fileId) {
+        for (QueueDef def : ORDER) {
+            if (store.queueRef(def.key, QueueStage.INFLIGHT).iterator().hasNext()) {
+                Iterator<Long> inflightIt = store.queueRef(def.key, QueueStage.INFLIGHT).iterator();
+                while (inflightIt.hasNext()) {
+                    if (inflightIt.next().longValue() == fileId) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     private static final class QueueDef {

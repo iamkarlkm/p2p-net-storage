@@ -136,7 +136,7 @@ public final class DsPersistentQueue<T> implements PersistentQueue<T>, AutoClose
     @Override
     public Iterator<Entry<T>> iterator() {
         Iterator<Long> it = entryIds.iterator();
-        return new Iterator<>() {
+        return new Iterator<Entry<T>>() {
             @Override
             public boolean hasNext() {
                 return it.hasNext();

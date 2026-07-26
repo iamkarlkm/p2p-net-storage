@@ -1,6 +1,8 @@
 package javax.net.p2p.filesync.sync.rpc.server;
 
 import com.q3lives.ds.collections.DsHashMap;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 public final class SyncReceiverStateStore implements AutoCloseable {
@@ -10,6 +12,11 @@ public final class SyncReceiverStateStore implements AutoCloseable {
     private final DsHashMap pendingOwnerEventUidByPathKey;
 
     public SyncReceiverStateStore(Path storeDir) {
+        try {
+            Files.createDirectories(storeDir);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
         this.completed = new DsHashMap(storeDir.resolve("completed.map").toFile());
         this.completed.setSyncModeStrong100ms();
         this.pendingUploadPathHash = new DsHashMap(storeDir.resolve("pending_upload.map").toFile());
