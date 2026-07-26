@@ -60,6 +60,11 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"ok\":true"));
                 Assert.assertTrue(json.contains("\"failed_file_create\""));
                 Assert.assertTrue(json.contains("\"failed_file_delete\""));
+                Assert.assertTrue(json.contains("\"queueMatrix\""));
+                Assert.assertTrue(json.contains("\"label\":\"文件新增\""));
+                Assert.assertTrue(json.contains("\"label\":\"文件修改\""));
+                Assert.assertTrue(json.contains("\"activeCount\":1"));
+                Assert.assertTrue(json.contains("\"failedCount\":2"));
                 Assert.assertTrue(json.contains("\"fileId\":\""));
                 Assert.assertTrue(json.contains("\"path\":\"failed.txt\""));
                 Assert.assertTrue(json.contains("\"retryCount\":2"));

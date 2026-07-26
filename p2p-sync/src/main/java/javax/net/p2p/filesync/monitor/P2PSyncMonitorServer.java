@@ -133,6 +133,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("ok", Boolean.TRUE);
         root.put("queues", queuesToMap(store, limit));
+        root.put("queueMatrix", queueMatrixToMap(store));
         root.put("healthSummary", healthSummaryToMap(store, limit));
         root.put("failureSummary", failureSummaryToMap(store));
         root.put("hotFailedItems", hotFailedItemsToMap(store, limit));
@@ -175,6 +176,38 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         out.put("totalFailedItems", Integer.valueOf(total));
         out.put("items", items);
         return out;
+    }
+
+    private Map<String, Object> queueMatrixToMap(P2PSyncStateStore store) {
+        List<Map<String, Object>> items = new ArrayList<Map<String, Object>>();
+        items.add(queueMatrixRow("file_create", "文件新增",
+            store.queueRef(QueueKey.FILE_CREATE, QueueStage.ACTIVE).size(),
+            store.queueRef(QueueKey.FILE_CREATE, QueueStage.FAILED).size()));
+        items.add(queueMatrixRow("file_modify", "文件修改",
+            store.queueRef(QueueKey.FILE_MODIFY, QueueStage.ACTIVE).size(),
+            store.queueRef(QueueKey.FILE_MODIFY, QueueStage.FAILED).size()));
+        items.add(queueMatrixRow("file_delete", "文件删除",
+            store.queueRef(QueueKey.FILE_DELETE, QueueStage.ACTIVE).size(),
+            store.queueRef(QueueKey.FILE_DELETE, QueueStage.FAILED).size()));
+        items.add(queueMatrixRow("dir_create", "目录新增",
+            store.queueRef(QueueKey.DIR_CREATE, QueueStage.ACTIVE).size(),
+            store.queueRef(QueueKey.DIR_CREATE, QueueStage.FAILED).size()));
+        items.add(queueMatrixRow("dir_delete", "目录删除",
+            store.queueRef(QueueKey.DIR_DELETE, QueueStage.ACTIVE).size(),
+            store.queueRef(QueueKey.DIR_DELETE, QueueStage.FAILED).size()));
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("size", Integer.valueOf(items.size()));
+        out.put("items", items);
+        return out;
+    }
+
+    private Map<String, Object> queueMatrixRow(String key, String label, int activeCount, int failedCount) {
+        Map<String, Object> row = new LinkedHashMap<String, Object>();
+        row.put("key", key);
+        row.put("label", label);
+        row.put("activeCount", Integer.valueOf(activeCount));
+        row.put("failedCount", Integer.valueOf(failedCount));
+        return row;
     }
 
     private Map<String, Object> hotFailedItemsToMap(P2PSyncStateStore store, int limit) {
@@ -398,7 +431,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      const res = await fetch('/sync/api/queues?limit=200');\n"
             + "      const data = await res.json();\n"
             + "      if(!data.ok){document.getElementById('content').innerText = data.message || 'error';return;}\n"
-            + "      render(data.queues, data.healthSummary, data.failureSummary, data.hotFailedItems, data.uploads, data.uploadPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
+            + "      render(data.queues, data.queueMatrix, data.healthSummary, data.failureSummary, data.hotFailedItems, data.uploads, data.uploadPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
             + "    }\n"
             + "    function esc(s){return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}\n"
             + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
@@ -433,6 +466,15 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      for(const it of u.items){\n"
             + "        const progress = it.totalSegments > 0 ? (it.uploadedSegments + '/' + it.totalSegments) : '-';\n"
             + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.phase)+'</td><td>'+it.fileSize+'</td><td>'+progress+'</td><td>'+esc(it.message)+'</td></tr>';\n"
+            + "      }\n"
+            + "      html += '</table></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
+            + "    function renderQueueMatrix(m){\n"
+            + "      let html = '<div class=\"card\"><h3>队列类型矩阵 (size='+m.size+')</h3>';\n"
+            + "      html += '<table><tr><th>label</th><th>activeCount</th><th>failedCount</th></tr>';\n"
+            + "      for(const it of m.items){\n"
+            + "        html += '<tr><td>'+esc(it.label)+'</td><td>'+it.activeCount+'</td><td>'+it.failedCount+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
@@ -477,7 +519,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      await fetch('/sync/api/failed/discard?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type), {method:'POST'});\n"
             + "      await reload();\n"
             + "    }\n"
-            + "    function render(queues, healthSummary, failureSummary, hotFailedItems, uploads, uploadPolicy, recentCompletedUploads, recentFailedUploads){\n"
+            + "    function render(queues, queueMatrix, healthSummary, failureSummary, hotFailedItems, uploads, uploadPolicy, recentCompletedUploads, recentFailedUploads){\n"
             + "      const keys = [\n"
             + "        ['新增(文件)', 'file_create'],\n"
             + "        ['修改(文件)', 'file_modify'],\n"
@@ -491,6 +533,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "        ['失败-删除(目录)', 'failed_dir_delete'],\n"
             + "      ];\n"
             + "      let html = '<div class=\"row\">';\n"
+            + "      html += renderQueueMatrix(queueMatrix || {size:0, items:[]});\n"
             + "      html += renderHealthSummary(healthSummary || {activeCount:0, failedCount:0, uploadingCount:0, oldestFailedAtMillis:0, maxRetryCount:0});\n"
             + "      html += renderUploadPolicy(uploadPolicy || {mode:'AUTO_SEGMENT_RESUMABLE', uploadBlockSizeBytes:0, resumeSupported:true, historyRetention:'memory_recent'});\n"
             + "      html += renderFailureSummary(failureSummary || {size:0, totalFailedItems:0, items:[]});\n"
