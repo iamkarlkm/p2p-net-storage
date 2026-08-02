@@ -74,3 +74,5 @@ This file is a deterministic snapshot of the repository state at the last refres
 - Brain repo onboarding docs were enriched: `AGENTS.md`, `.brain/context/workflows.md`, and `docs/project-workflows.md` now distinguish project docs, require `brain context audit` for docs/config surface changes, and describe post-adoption repo scanning more explicitly.
 - Architecture docs now record that `lib/bin/` contains checked-in native runtime assets, including the Windows UDT JNI DLL set.
 - Follow-up: `git diff --check` still fails on `.vscode/settings.json` due trailing whitespace in a user-restricted file; clearing that diff requires a direct user edit before `brain session finish` can go clean.
+- Updated: 2026-08-03 00:00:00 +08:00
+- `up.idx` 临时断点文件现在支持 task 维度隔离：`FileUtil` 生成的文件名会纳入 `p2p.up.namespace` 的哈希前缀；`P2PDirectorySyncService` 在 start/close 生命周期内设置/恢复 `p2p.up.namespace=task-<taskId>`，避免同机多任务共享同一路径时续传进度串台。
