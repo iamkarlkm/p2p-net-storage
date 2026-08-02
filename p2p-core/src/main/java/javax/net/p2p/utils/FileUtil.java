@@ -351,9 +351,15 @@ public class FileUtil {
     }
 
     private static String upInfoTmpName(int storeId, String path) {
+        String namespace = System.getProperty("p2p.up.namespace");
+        String prefix = "";
+        if (namespace != null && !namespace.trim().isEmpty()) {
+            long namespaceHash = XXHashUtil.hash64(namespace.trim().getBytes(StandardCharsets.UTF_8));
+            prefix = "n" + Long.toHexString(namespaceHash) + "_";
+        }
         String safePath = path == null ? "" : path;
         long hash = XXHashUtil.hash64(safePath.getBytes(StandardCharsets.UTF_8));
-        return "p2p_up_" + storeId + "_" + Long.toHexString(hash) + ".up.idx";
+        return "p2p_up_" + prefix + storeId + "_" + Long.toHexString(hash) + ".up.idx";
     }
 
     /**

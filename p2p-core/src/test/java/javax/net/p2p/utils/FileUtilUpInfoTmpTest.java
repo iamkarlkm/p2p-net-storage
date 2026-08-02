@@ -33,5 +33,26 @@ public class FileUtilUpInfoTmpTest {
             store2.getMiddle().delete();
         }
     }
-}
 
+    @Test
+    public void shouldUseDifferentTmpIdxFilePerNamespace() throws Exception {
+        String key = "p2p.up.namespace";
+        String previous = System.getProperty(key);
+        String path = "namespace.bin";
+        try {
+            System.setProperty(key, "task-a");
+            File idx1 = FileUtil.getUpInfoTmp(1, path).getMiddle();
+            System.setProperty(key, "task-b");
+            File idx2 = FileUtil.getUpInfoTmp(1, path).getMiddle();
+            Assert.assertNotEquals(idx1.getAbsolutePath(), idx2.getAbsolutePath());
+            idx1.delete();
+            idx2.delete();
+        } finally {
+            if (previous == null) {
+                System.clearProperty(key);
+            } else {
+                System.setProperty(key, previous);
+            }
+        }
+    }
+}

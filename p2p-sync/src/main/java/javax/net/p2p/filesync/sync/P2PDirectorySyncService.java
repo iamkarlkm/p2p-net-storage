@@ -35,6 +35,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
 
     private final P2PSyncConfig config;
     private final FileSyncEventHandler eventHandler;
+    private String previousUpNamespace;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean watchReady = new AtomicBoolean(false);
@@ -94,6 +95,9 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         if (!running.compareAndSet(false, true)) {
             return;
         }
+        String upKey = "p2p.up.namespace";
+        previousUpNamespace = System.getProperty(upKey);
+        System.setProperty(upKey, "task-" + config.getTaskId());
         this.rootDir = Paths.get(config.getLocalDir()).toAbsolutePath().normalize();
         try {
             Files.createDirectories(rootDir);
@@ -533,6 +537,13 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         if (localStore != null) {
             localStore.close();
         }
+        String upKey = "p2p.up.namespace";
+        if (previousUpNamespace == null) {
+            System.clearProperty(upKey);
+        } else {
+            System.setProperty(upKey, previousUpNamespace);
+        }
+        previousUpNamespace = null;
     }
 
     private static void shutdownExecutor(ExecutorService executor) {
