@@ -1,8 +1,10 @@
 package javax.net.p2p.filesync.sync;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.RandomAccessFile;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -12,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 import java.util.Arrays;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -24,10 +27,15 @@ import javax.net.p2p.filesync.monitor.P2PSyncMonitorServer;
 import javax.net.p2p.filesync.sync.rpc.MultiEndpointRpcSyncEventHandler;
 import javax.net.p2p.filesync.sync.rpc.RpcSyncEventHandler;
 import javax.net.p2p.filesync.sync.rpc.server.SyncApplyEventRpcRegistration;
+import javax.net.p2p.interfaces.P2PFileService;
+import javax.net.p2p.model.FileSegmentsDataModel;
 import javax.net.p2p.rpc.client.P2PRpcClient;
 import javax.net.p2p.server.P2PServerTcp;
+import javax.net.p2p.utils.FileUtil;
 import javax.net.p2p.utils.P2PUtils;
+import javax.net.p2p.utils.SecurityUtils;
 
+import org.apache.commons.lang3.tuple.Triple;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -167,6 +175,45 @@ public class P2PDirectorySyncE2ETest {
                 "\"recentCompletedUploads\"",
                 "\"path\":\"large/big.bin\"",
                 "\"segmented\":true");
+        } finally {
+            P2PConfig.DATA_PUT_BLOCK_SIZE = originalBlockSize;
+        }
+    }
+
+    @Test
+    public void shouldResumeSegmentedUploadAfterInterruptedFirstAttemptOverTcp() throws Exception {
+        long taskId = 110L;
+        int originalBlockSize = P2PConfig.DATA_PUT_BLOCK_SIZE;
+        P2PConfig.DATA_PUT_BLOCK_SIZE = 8 * 1024;
+        Path senderRoot = Files.createTempDirectory("p2p_sync_sender_root_resume_e2e_");
+        Path senderState = Files.createTempDirectory("p2p_sync_sender_state_resume_e2e_");
+        try (ReceiverNode receiver = ReceiverNode.start(taskId, 711);
+             ManagedTcpHandler handler = ManagedTcpHandler.connectInterruptedOnce(taskId, receiver.port, 2);
+             P2PDirectorySyncService svc = new P2PDirectorySyncService(senderConfig(taskId, senderRoot, senderState, 3, 0L), handler);
+             P2PSyncMonitorServer monitor = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
+            svc.start();
+            monitor.start();
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            Path senderFile = senderRoot.resolve("resume").resolve("interrupted.bin");
+            Files.createDirectories(senderFile.getParent());
+            int size = P2PConfig.DATA_PUT_BLOCK_SIZE * 6 + 321;
+            byte[] payload = new byte[size];
+            for (int i = 0; i < payload.length; i++) {
+                payload[i] = (byte) (i % 239);
+            }
+            Files.write(senderFile, payload);
+            long ts = Files.getLastModifiedTime(senderFile).toMillis();
+
+            waitUntil(() -> handler.getInterruptedUploadAttempts() >= 2, 10, TimeUnit.SECONDS);
+            assertFileBytesSynced(receiver.root.resolve("resume").resolve("interrupted.bin"), payload, ts);
+            waitForQueuesJsonContains(monitor.getPort(),
+                "\"recentCompletedUploads\"",
+                "\"recentFailedUploads\"",
+                "\"path\":\"resume/interrupted.bin\"",
+                "\"resumedUpload\":true",
+                "\"resumedSegments\":2",
+                "\"uploadedSegments\":2");
         } finally {
             P2PConfig.DATA_PUT_BLOCK_SIZE = originalBlockSize;
         }
@@ -898,18 +945,29 @@ public class P2PDirectorySyncE2ETest {
     private static final class ManagedTcpHandler implements FileSyncEventHandler, SyncUploadStatusProvider, AutoCloseable {
         private final P2PClientTcp client;
         private final RpcSyncEventHandler delegate;
+        private final P2PFileService fileService;
         private volatile boolean closed;
 
-        private ManagedTcpHandler(P2PClientTcp client, RpcSyncEventHandler delegate) {
+        private ManagedTcpHandler(P2PClientTcp client, RpcSyncEventHandler delegate, P2PFileService fileService) {
             this.client = client;
             this.delegate = delegate;
+            this.fileService = fileService;
         }
 
         private static ManagedTcpHandler connect(long taskId, int port) {
             P2PClientTcp client = new P2PClientTcp(new InetSocketAddress("127.0.0.1", port));
             client.newSendMesageExecutorToQueue();
-            RpcSyncEventHandler delegate = new RpcSyncEventHandler(new P2PRpcClient(client), new P2PUtils(client), taskId);
-            return new ManagedTcpHandler(client, delegate);
+            P2PUtils fileService = new P2PUtils(client);
+            RpcSyncEventHandler delegate = new RpcSyncEventHandler(new P2PRpcClient(client), fileService, taskId);
+            return new ManagedTcpHandler(client, delegate, fileService);
+        }
+
+        private static ManagedTcpHandler connectInterruptedOnce(long taskId, int port, int partialSegments) {
+            P2PClientTcp client = new P2PClientTcp(new InetSocketAddress("127.0.0.1", port));
+            client.newSendMesageExecutorToQueue();
+            InterruptedOnceP2PUtils fileService = new InterruptedOnceP2PUtils(client, partialSegments);
+            RpcSyncEventHandler delegate = new RpcSyncEventHandler(new P2PRpcClient(client), fileService, taskId);
+            return new ManagedTcpHandler(client, delegate, fileService);
         }
 
         @Override
@@ -932,6 +990,13 @@ public class P2PDirectorySyncE2ETest {
             return delegate.snapshotRecentFailedUploads(limit);
         }
 
+        private int getInterruptedUploadAttempts() {
+            if (fileService instanceof InterruptedOnceP2PUtils) {
+                return ((InterruptedOnceP2PUtils) fileService).getUploadAttempts();
+            }
+            return 0;
+        }
+
         @Override
         public void close() throws Exception {
             if (closed) {
@@ -940,6 +1005,47 @@ public class P2PDirectorySyncE2ETest {
             closed = true;
             delegate.close();
             client.shutdown();
+        }
+    }
+
+    private static final class InterruptedOnceP2PUtils extends P2PUtils {
+        private final int partialSegments;
+        private final AtomicInteger uploadAttempts = new AtomicInteger();
+
+        private InterruptedOnceP2PUtils(P2PClientTcp client, int partialSegments) {
+            super(client);
+            this.partialSegments = partialSegments;
+        }
+
+        @Override
+        public void putFileData(int storeId, String path, File localfile) throws Exception {
+            int attempt = uploadAttempts.incrementAndGet();
+            if (attempt == 1 && localfile.length() > P2PConfig.DATA_PUT_BLOCK_SIZE) {
+                byte[] allBytes = Files.readAllBytes(localfile.toPath());
+                String md5 = SecurityUtils.getFileMD5String(localfile);
+                long length = localfile.length();
+                int blockSize = P2PConfig.DATA_PUT_BLOCK_SIZE;
+                int count = (int) (length % blockSize == 0 ? length / blockSize : length / blockSize + 1);
+                int interruptedSegments = Math.max(1, Math.min(partialSegments, count - 1));
+                Triple<File, File, Set<Integer>> upInfo = FileUtil.getUpInfoTmp(storeId, path);
+                try (RandomAccessFile indexFile = FileUtil.getLockedFile(upInfo.getMiddle())) {
+                    int uploaded = 0;
+                    for (int i = 0; i < count && uploaded < interruptedSegments; i++) {
+                        if (upInfo.getRight().contains(Integer.valueOf(i))) {
+                            continue;
+                        }
+                        putFileSegment(new FileSegmentsDataModel(storeId, path, blockSize, i, allBytes));
+                        FileUtil.concurentAppend(indexFile, (i + "\n").getBytes(StandardCharsets.UTF_8));
+                        uploaded++;
+                    }
+                }
+                throw new RuntimeException("simulated_interrupted_upload");
+            }
+            super.putFileData(storeId, path, localfile);
+        }
+
+        private int getUploadAttempts() {
+            return uploadAttempts.get();
         }
     }
 

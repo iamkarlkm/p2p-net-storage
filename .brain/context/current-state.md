@@ -76,3 +76,5 @@ This file is a deterministic snapshot of the repository state at the last refres
 - Follow-up: `git diff --check` still fails on `.vscode/settings.json` due trailing whitespace in a user-restricted file; clearing that diff requires a direct user edit before `brain session finish` can go clean.
 - Updated: 2026-08-03 00:00:00 +08:00
 - `up.idx` 临时断点文件现在支持 task 维度隔离：`FileUtil` 生成的文件名会纳入 `p2p.up.namespace` 的哈希前缀；`P2PDirectorySyncService` 在 start/close 生命周期内设置/恢复 `p2p.up.namespace=task-<taskId>`，避免同机多任务共享同一路径时续传进度串台。
+- Updated: 2026-08-03 01:10:00 +08:00
+- `P2PDirectorySyncE2ETest` 已新增真实“首轮分片上传中断、自动重试后续传成功”的 TCP E2E：测试侧通过 `InterruptedOnceP2PUtils` 首次仅上传部分分片并抛错，随后验证 receiver 最终内容一致，且 monitor `recentCompletedUploads/recentFailedUploads/recentTimeline` 均能看到 `resumedUpload=true` 与 `resumedSegments=2` 的历史证据。
