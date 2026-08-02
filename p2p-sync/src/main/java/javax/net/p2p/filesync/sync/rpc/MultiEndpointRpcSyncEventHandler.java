@@ -3,6 +3,7 @@ package javax.net.p2p.filesync.sync.rpc;
 import java.net.InetSocketAddress;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -15,6 +16,8 @@ import javax.net.p2p.filesync.sync.FileSyncAcker;
 import javax.net.p2p.filesync.sync.FileSyncEventHandler;
 import javax.net.p2p.filesync.sync.FileSyncEventType;
 import javax.net.p2p.filesync.sync.P2PSyncStateStore;
+import javax.net.p2p.filesync.sync.SyncUploadStatus;
+import javax.net.p2p.filesync.sync.SyncUploadStatusProvider;
 import javax.net.p2p.filesync.sync.transport.P2PFallbackConnector;
 import javax.net.p2p.filesync.sync.transport.P2PTransport;
 import javax.net.p2p.filesync.sync.transport.P2PTransportClient;
@@ -24,7 +27,7 @@ import javax.net.p2p.rpc.client.P2PRpcClient;
 import javax.net.p2p.utils.P2PUDPUtils;
 import javax.net.p2p.utils.P2PUtils;
 
-public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHandler, AutoCloseable {
+public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHandler, SyncUploadStatusProvider, AutoCloseable {
 
     private static final String WRITE_CONFLICT = "write_conflict";
     private final long taskId;
@@ -170,11 +173,70 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
         }
     }
 
+    @Override
+    public List<SyncUploadStatus> snapshotActiveUploads(int limit) {
+        return aggregateUploadStatuses(limit, UploadStatusSource.ACTIVE);
+    }
+
+    @Override
+    public List<SyncUploadStatus> snapshotRecentCompletedUploads(int limit) {
+        return aggregateUploadStatuses(limit, UploadStatusSource.COMPLETED);
+    }
+
+    @Override
+    public List<SyncUploadStatus> snapshotRecentFailedUploads(int limit) {
+        return aggregateUploadStatuses(limit, UploadStatusSource.FAILED);
+    }
+
     private static AggregateResult choose(AggregateResult prev, AggregateAction nextAction, String nextReason) {
         if (prev.action.priority >= nextAction.priority) {
             return prev;
         }
         return new AggregateResult(nextAction, nextReason == null ? "" : nextReason);
+    }
+
+    private List<SyncUploadStatus> aggregateUploadStatuses(int limit, UploadStatusSource source) {
+        if (limit <= 0) {
+            return new ArrayList<SyncUploadStatus>();
+        }
+        List<SyncUploadStatus> merged = new ArrayList<SyncUploadStatus>();
+        for (EndpointClient client : clients) {
+            if (!(client.handler instanceof SyncUploadStatusProvider)) {
+                continue;
+            }
+            SyncUploadStatusProvider provider = (SyncUploadStatusProvider) client.handler;
+            List<SyncUploadStatus> statuses = source.snapshot(provider, limit);
+            for (SyncUploadStatus status : statuses) {
+                merged.add(withReplicaLabel(status, client.label));
+            }
+        }
+        merged.sort(Comparator.comparingLong(SyncUploadStatus::getUpdatedAtMillis).reversed());
+        if (merged.size() <= limit) {
+            return merged;
+        }
+        return new ArrayList<SyncUploadStatus>(merged.subList(0, limit));
+    }
+
+    private static SyncUploadStatus withReplicaLabel(SyncUploadStatus status, String label) {
+        if (status == null) {
+            return null;
+        }
+        String safeLabel = label == null ? "" : label.trim();
+        return new SyncUploadStatus(
+            status.getEventUid(),
+            status.getFileId(),
+            status.getPath(),
+            status.getPhase(),
+            status.getFileSize(),
+            status.isSegmented(),
+            status.getTotalSegments(),
+            status.getUploadedSegments(),
+            status.getStartedAtMillis(),
+            status.getUpdatedAtMillis(),
+            status.getLastProgressAtMillis(),
+            status.getResumedSegments(),
+            safeLabel,
+            status.getMessage());
     }
 
     private static List<EndpointClient> buildClients(long taskId, List<InetSocketAddress> endpoints) {
@@ -271,6 +333,29 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
         AggregateAction(int priority) {
             this.priority = priority;
         }
+    }
+
+    private enum UploadStatusSource {
+        ACTIVE {
+            @Override
+            List<SyncUploadStatus> snapshot(SyncUploadStatusProvider provider, int limit) {
+                return provider.snapshotActiveUploads(limit);
+            }
+        },
+        COMPLETED {
+            @Override
+            List<SyncUploadStatus> snapshot(SyncUploadStatusProvider provider, int limit) {
+                return provider.snapshotRecentCompletedUploads(limit);
+            }
+        },
+        FAILED {
+            @Override
+            List<SyncUploadStatus> snapshot(SyncUploadStatusProvider provider, int limit) {
+                return provider.snapshotRecentFailedUploads(limit);
+            }
+        };
+
+        abstract List<SyncUploadStatus> snapshot(SyncUploadStatusProvider provider, int limit);
     }
 
     private static final class AggregateResult {

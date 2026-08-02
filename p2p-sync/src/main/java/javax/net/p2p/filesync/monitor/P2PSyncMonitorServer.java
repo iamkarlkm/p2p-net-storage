@@ -37,6 +37,7 @@ import com.sun.net.httpserver.HttpServer;
 public final class P2PSyncMonitorServer implements AutoCloseable {
 
     private static final int MAX_RECENT_OPERATOR_ACTIONS = 50;
+    private static final long SEGMENT_UPLOAD_STALL_THRESHOLD_MILLIS = 5000L;
 
     private final HttpServer server;
     private final P2PDirectorySyncService syncService;
@@ -247,6 +248,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
 
     private String buildQueuesJson(P2PSyncStateStore store, int limit) {
         Map<String, Object> root = new LinkedHashMap<>();
+        Map<String, Object> recentTimeline = recentTimelineToMap(store, limit);
         root.put("ok", Boolean.TRUE);
         root.put("queues", queuesToMap(store, limit));
         root.put("queueMatrix", queueMatrixToMap(store));
@@ -260,7 +262,13 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         root.put("replicaFailureCategorySummary", replicaFailureCategorySummaryToMap(store));
         root.put("hotFailedItems", hotFailedItemsToMap(store, limit));
         root.put("recentOperatorActions", recentOperatorActionsToMap(limit));
-        root.put("recentTimeline", recentTimelineToMap(store, limit));
+        root.put("recentTimeline", recentTimeline);
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> recentTimelineItems = (List<Map<String, Object>>) recentTimeline.get("items");
+        root.put("timelineRiskSummary", timelineRiskSummaryToMap(recentTimelineItems));
+        root.put("resumedReplicaHotspots", resumedReplicaHotspotsToMap(limit));
+        root.put("stalledUploads", stalledUploadsToMap(limit));
+        root.put("stalledReplicaHotspots", stalledReplicaHotspotsToMap(limit));
         root.put("uploads", uploadsToMap(limit));
         root.put("uploadPolicy", uploadPolicyToMap());
         root.put("retryPolicy", retryPolicyToMap());
@@ -458,18 +466,29 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
 
     private Map<String, Object> recentTimelineToMap(P2PSyncStateStore store, int limit) {
         List<Map<String, Object>> timeline = new ArrayList<Map<String, Object>>();
+        for (SyncUploadStatus upload : syncService.snapshotActiveUploads(limit)) {
+            Map<String, Object> item = uploadToMap(upload);
+            enrichTimelineRisk(item);
+            timeline.add(item);
+        }
         for (SyncUploadStatus upload : syncService.snapshotRecentCompletedUploads(limit)) {
-            timeline.add(uploadToMap(upload));
+            Map<String, Object> item = uploadToMap(upload);
+            enrichTimelineRisk(item);
+            timeline.add(item);
         }
         for (SyncUploadStatus upload : syncService.snapshotRecentFailedUploads(limit)) {
-            timeline.add(uploadToMap(upload));
+            Map<String, Object> item = uploadToMap(upload);
+            enrichTimelineRisk(item);
+            timeline.add(item);
         }
         int operatorCount = 0;
         for (MonitorActionRecord record : recentOperatorActions) {
             if (operatorCount >= limit) {
                 break;
             }
-            timeline.add(operatorActionTimelineItem(store, record));
+            Map<String, Object> item = operatorActionTimelineItem(store, record);
+            enrichTimelineRisk(item);
+            timeline.add(item);
             operatorCount++;
         }
         Collections.sort(timeline, new Comparator<Map<String, Object>>() {
@@ -487,6 +506,163 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         out.put("size", Integer.valueOf(timeline.size()));
         out.put("items", timeline);
         return out;
+    }
+
+    private Map<String, Object> timelineRiskSummaryToMap(List<Map<String, Object>> timeline) {
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        int criticalCount = 0;
+        int highCount = 0;
+        int mediumCount = 0;
+        int lowCount = 0;
+        Map<String, Object> top = null;
+        if (timeline != null) {
+            for (Map<String, Object> item : timeline) {
+                String riskLevel = stringValue(item.get("riskLevel"));
+                if ("CRITICAL".equals(riskLevel)) {
+                    criticalCount++;
+                } else if ("HIGH".equals(riskLevel)) {
+                    highCount++;
+                } else if ("MEDIUM".equals(riskLevel)) {
+                    mediumCount++;
+                } else {
+                    lowCount++;
+                }
+                if (top == null || compareTimelineRisk(item, top) < 0) {
+                    top = item;
+                }
+            }
+        }
+        out.put("totalCount", Integer.valueOf(timeline == null ? 0 : timeline.size()));
+        out.put("criticalCount", Integer.valueOf(criticalCount));
+        out.put("highCount", Integer.valueOf(highCount));
+        out.put("mediumCount", Integer.valueOf(mediumCount));
+        out.put("lowCount", Integer.valueOf(lowCount));
+        out.put("topRiskLevel", top == null ? "" : stringValue(top.get("riskLevel")));
+        out.put("topRiskScore", Integer.valueOf(top == null ? 0 : intValue(top.get("riskScore"))));
+        out.put("topFocusReason", top == null ? "" : stringValue(top.get("focusReason")));
+        out.put("topPhase", top == null ? "" : stringValue(top.get("phase")));
+        out.put("topPath", top == null ? "" : stringValue(top.get("path")));
+        out.put("topMessage", top == null ? "" : stringValue(top.get("message")));
+        return out;
+    }
+
+    private void enrichTimelineRisk(Map<String, Object> item) {
+        String phase = stringValue(item.get("phase"));
+        String riskLevel = "LOW";
+        int riskScore = 100;
+        String focusReason = "TIMELINE_EVENT";
+        if ("operator_action".equals(phase)) {
+            boolean success = boolValue(item.get("success"));
+            int remainingFailedItemCount = intValue(item.get("remainingFailedItemCount"));
+            int remainingOutstandingReplicaCount = intValue(item.get("remainingOutstandingReplicaCount"));
+            int clearedFailedItemCount = intValue(item.get("clearedFailedItemCount"));
+            int clearedOutstandingReplicaCount = intValue(item.get("clearedOutstandingReplicaCount"));
+            if (!success) {
+                riskLevel = "CRITICAL";
+                riskScore = 450;
+                focusReason = "OPERATOR_ACTION_FAILED";
+            } else if (remainingFailedItemCount > 0 || remainingOutstandingReplicaCount > 0) {
+                riskLevel = "HIGH";
+                riskScore = 320 + remainingFailedItemCount * 10 + remainingOutstandingReplicaCount * 15;
+                focusReason = "OPERATOR_ACTION_PENDING_REMAINS";
+            } else if (clearedFailedItemCount > 0 || clearedOutstandingReplicaCount > 0) {
+                riskLevel = "MEDIUM";
+                riskScore = 210 + clearedFailedItemCount * 5 + clearedOutstandingReplicaCount * 8;
+                focusReason = "OPERATOR_ACTION_CLEARED_FAILURES";
+            } else {
+                riskLevel = "LOW";
+                riskScore = 110;
+                focusReason = "OPERATOR_ACTION_COMPLETED";
+            }
+        } else if ("failed".equals(phase)) {
+            String category = replicaReasonCategory(stringValue(item.get("message")));
+            if ("CONFLICT".equals(category) || "RETRY_LIMIT".equals(category)) {
+                riskLevel = "CRITICAL";
+                riskScore = 420;
+            } else {
+                riskLevel = "HIGH";
+                riskScore = 300;
+            }
+            focusReason = "UPLOAD_FAILED_" + category;
+        } else if ("uploading".equals(phase)) {
+            boolean segmented = boolValue(item.get("segmented"));
+            int totalSegments = intValue(item.get("totalSegments"));
+            int uploadedSegments = intValue(item.get("uploadedSegments"));
+            long stalledMillis = longValue(item.get("stalledMillis"));
+            if (segmented && totalSegments > 0 && uploadedSegments < totalSegments) {
+                if (stalledMillis >= SEGMENT_UPLOAD_STALL_THRESHOLD_MILLIS) {
+                    riskLevel = "HIGH";
+                    riskScore = 280;
+                    focusReason = "SEGMENT_UPLOAD_STALLED";
+                } else {
+                    riskLevel = "MEDIUM";
+                    riskScore = 180;
+                    focusReason = "SEGMENT_UPLOAD_IN_PROGRESS";
+                }
+            } else {
+                riskLevel = "LOW";
+                riskScore = 120;
+                focusReason = "UPLOAD_IN_PROGRESS";
+            }
+        } else if ("completed".equals(phase)) {
+            riskLevel = "LOW";
+            riskScore = 80;
+            focusReason = "UPLOAD_COMPLETED";
+        }
+        item.put("riskLevel", riskLevel);
+        item.put("riskScore", Integer.valueOf(riskScore));
+        item.put("focusReason", focusReason);
+    }
+
+    private int compareTimelineRisk(Map<String, Object> left, Map<String, Object> right) {
+        int leftScore = intValue(left.get("riskScore"));
+        int rightScore = intValue(right.get("riskScore"));
+        if (leftScore != rightScore) {
+            return rightScore - leftScore;
+        }
+        long leftTime = longValue(left.get("updatedAtMillis"));
+        long rightTime = longValue(right.get("updatedAtMillis"));
+        return leftTime < rightTime ? 1 : (leftTime == rightTime ? 0 : -1);
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private int intValue(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
+        }
+        if (value instanceof String) {
+            String raw = ((String) value).trim();
+            if (!raw.isEmpty()) {
+                return Integer.parseInt(raw);
+            }
+        }
+        return 0;
+    }
+
+    private long longValue(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof String) {
+            String raw = ((String) value).trim();
+            if (!raw.isEmpty()) {
+                return Long.parseLong(raw);
+            }
+        }
+        return 0L;
+    }
+
+    private boolean boolValue(Object value) {
+        if (value instanceof Boolean) {
+            return ((Boolean) value).booleanValue();
+        }
+        if (value instanceof String) {
+            return Boolean.parseBoolean(((String) value).trim());
+        }
+        return false;
     }
 
     private Map<String, Object> recentOperatorActionsToMap(int limit) {
@@ -648,6 +824,11 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         Collections.sort(items, new Comparator<Map<String, Object>>() {
             @Override
             public int compare(Map<String, Object> left, Map<String, Object> right) {
+                int leftPriority = ((Integer) left.get("priorityScore")).intValue();
+                int rightPriority = ((Integer) right.get("priorityScore")).intValue();
+                if (leftPriority != rightPriority) {
+                    return rightPriority - leftPriority;
+                }
                 int leftRetry = ((Integer) left.get("retryCount")).intValue();
                 int rightRetry = ((Integer) right.get("retryCount")).intValue();
                 if (leftRetry != rightRetry) {
@@ -683,6 +864,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         activeCount += store.queueRef(QueueKey.FILE_DELETE, QueueStage.ACTIVE).size();
         activeCount += store.queueRef(QueueKey.DIR_CREATE, QueueStage.ACTIVE).size();
         activeCount += store.queueRef(QueueKey.DIR_DELETE, QueueStage.ACTIVE).size();
+        List<SyncUploadStatus> activeUploads = syncService.snapshotActiveUploads(limit);
 
         HealthStats stats = new HealthStats();
         collectFailedHealth(stats, store, store.queueRef(QueueKey.FILE_CREATE, QueueStage.FAILED), FileSyncEventType.CREATE, false);
@@ -690,14 +872,77 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         collectFailedHealth(stats, store, store.queueRef(QueueKey.FILE_DELETE, QueueStage.FAILED), FileSyncEventType.DELETE, false);
         collectFailedHealth(stats, store, store.queueRef(QueueKey.DIR_CREATE, QueueStage.FAILED), FileSyncEventType.CREATE, true);
         collectFailedHealth(stats, store, store.queueRef(QueueKey.DIR_DELETE, QueueStage.FAILED), FileSyncEventType.DELETE, true);
+        collectActiveUploadHealth(stats, activeUploads);
 
         Map<String, Object> out = new LinkedHashMap<String, Object>();
         out.put("activeCount", Integer.valueOf(activeCount));
         out.put("failedCount", Integer.valueOf(stats.failedCount));
-        out.put("uploadingCount", Integer.valueOf(syncService.snapshotActiveUploads(limit).size()));
+        out.put("uploadingCount", Integer.valueOf(activeUploads.size()));
         out.put("oldestFailedAtMillis", Long.valueOf(stats.oldestFailedAtMillis));
         out.put("maxRetryCount", Integer.valueOf(stats.maxRetryCount));
+        out.put("stalledUploadCount", Integer.valueOf(stats.stalledUploadCount));
+        out.put("maxStalledMillis", Long.valueOf(stats.maxStalledMillis));
+        out.put("topStalledPath", stats.topStalledPath);
+        out.put("topStalledReplicaLabel", stats.topStalledReplicaLabel);
+        out.put("stalledReplicaSummary", stats.stalledReplicaSummary);
+        out.put("stalledRecommendedAction", stats.stalledRecommendedAction);
+        out.put("stalledOperatorHint", stats.stalledOperatorHint);
+        out.put("resumedUploadCount", Integer.valueOf(stats.resumedUploadCount));
+        out.put("resumedSegmentCount", Integer.valueOf(stats.resumedSegmentCount));
+        out.put("topResumedPath", stats.topResumedPath);
+        out.put("topResumedReplicaLabel", stats.topResumedReplicaLabel);
+        out.put("topResumedSegments", Integer.valueOf(stats.topResumedSegments));
+        out.put("resumedReplicaSummary", stats.resumedReplicaSummary);
         return out;
+    }
+
+    private void collectActiveUploadHealth(HealthStats stats, List<SyncUploadStatus> uploads) {
+        if (uploads == null || uploads.isEmpty()) {
+            return;
+        }
+        for (SyncUploadStatus upload : uploads) {
+            if (upload == null) {
+                continue;
+            }
+            if (!"uploading".equals(upload.getPhase())) {
+                continue;
+            }
+            if (upload.isResumedUpload()) {
+                stats.resumedUploadCount++;
+                stats.resumedSegmentCount += upload.getResumedSegments();
+                stats.recordResumedReplica(upload.getReplicaLabel(), upload.getResumedSegments());
+                if (upload.getResumedSegments() > stats.topResumedSegments) {
+                    stats.topResumedSegments = upload.getResumedSegments();
+                    stats.topResumedPath = upload.getPath() == null ? "" : upload.getPath();
+                    stats.topResumedReplicaLabel = normalizedReplicaLabel(upload.getReplicaLabel());
+                }
+            }
+            if (!upload.isSegmented() || upload.getTotalSegments() <= 0 || upload.getUploadedSegments() >= upload.getTotalSegments()) {
+                continue;
+            }
+            long lastProgressAtMillis = upload.getLastProgressAtMillis();
+            long stalledMillis = lastProgressAtMillis <= 0L ? 0L : Math.max(0L, System.currentTimeMillis() - lastProgressAtMillis);
+            if (stalledMillis < SEGMENT_UPLOAD_STALL_THRESHOLD_MILLIS) {
+                continue;
+            }
+            stats.stalledUploadCount++;
+            stats.recordStalledReplica(upload.getReplicaLabel());
+            if (stalledMillis > stats.maxStalledMillis) {
+                stats.maxStalledMillis = stalledMillis;
+                stats.topStalledPath = upload.getPath() == null ? "" : upload.getPath();
+                stats.topStalledReplicaLabel = normalizedReplicaLabel(upload.getReplicaLabel());
+            }
+        }
+        stats.finishReplicaSummary();
+        stats.finishResumedSummary();
+        stats.finishStalledAdvice();
+    }
+
+    private static String normalizedReplicaLabel(String replicaLabel) {
+        if (replicaLabel == null || replicaLabel.trim().isEmpty()) {
+            return "default";
+        }
+        return replicaLabel.trim();
     }
 
     private Map<String, Object> failureTrendToMap(P2PSyncStateStore store, int limit) {
@@ -889,14 +1134,225 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             Map<String, Integer> replicaCategoryCounts = replicaReasonCategoryCounts(replicaReasonCounts);
             item.put("replicaCategorySummary", reasonSummary(replicaCategoryCounts));
             item.put("replicaCategoryItems", reasonItems(replicaCategoryCounts));
+            String focusCategory = hotFailedFocusCategory(reason, replicaCategoryCounts);
+            String priorityLevel = hotFailedPriorityLevel(retryCount, focusCategory, replicaStats);
+            int priorityScore = hotFailedPriorityScore(retryCount, focusCategory, replicaStats);
+            item.put("priorityLevel", priorityLevel);
+            item.put("priorityScore", Integer.valueOf(priorityScore));
+            item.put("focusReason", hotFailedFocusReason(retryCount, focusCategory, replicaStats));
             item.put("recommendedAction", recommendedActionForHotFailedItem(reason, replicaCategoryCounts, replicaStats));
             item.put("operatorHint", operatorHintForHotFailedItem(reason, replicaCategoryCounts, replicaStats));
             items.add(item);
         }
     }
 
+    private String hotFailedFocusCategory(String reason, Map<String, Integer> replicaCategoryCounts) {
+        String category = firstReplicaCategory(replicaCategoryCounts);
+        if (category != null && !category.isBlank()) {
+            return category;
+        }
+        return replicaReasonCategory(reason);
+    }
+
+    private String hotFailedPriorityLevel(int retryCount, String focusCategory, ReplicaRecoveryStats replicaStats) {
+        int manualReplicaCount = replicaStats == null ? 0 : replicaStats.manualReplicaCount;
+        int outstandingReplicaCount = replicaStats == null ? 0 : replicaStats.outstandingReplicaCount;
+        if (manualReplicaCount > 0) {
+            return "CRITICAL";
+        }
+        if (!isRetryable(retryCount) || outstandingReplicaCount > 0) {
+            return "HIGH";
+        }
+        if (retryCount > 0 || "NETWORK".equals(focusCategory) || "STATE_MISMATCH".equals(focusCategory)) {
+            return "MEDIUM";
+        }
+        return "LOW";
+    }
+
+    private int hotFailedPriorityScore(int retryCount, String focusCategory, ReplicaRecoveryStats replicaStats) {
+        int score;
+        String level = hotFailedPriorityLevel(retryCount, focusCategory, replicaStats);
+        if ("CRITICAL".equals(level)) {
+            score = 400;
+        } else if ("HIGH".equals(level)) {
+            score = 300;
+        } else if ("MEDIUM".equals(level)) {
+            score = 200;
+        } else {
+            score = 100;
+        }
+        if (replicaStats != null) {
+            score += replicaStats.manualReplicaCount * 25;
+            score += replicaStats.outstandingReplicaCount * 10;
+            score += replicaStats.autoRecoverableReplicaCount * 5;
+        }
+        score += Math.min(10, Math.max(0, retryCount)) * 5;
+        if ("RETRY_LIMIT".equals(focusCategory) || "CONFLICT".equals(focusCategory)) {
+            score += 10;
+        } else if ("NETWORK".equals(focusCategory) || "STATE_MISMATCH".equals(focusCategory)) {
+            score += 5;
+        }
+        return score;
+    }
+
+    private String hotFailedFocusReason(int retryCount, String focusCategory, ReplicaRecoveryStats replicaStats) {
+        int manualReplicaCount = replicaStats == null ? 0 : replicaStats.manualReplicaCount;
+        int outstandingReplicaCount = replicaStats == null ? 0 : replicaStats.outstandingReplicaCount;
+        if (manualReplicaCount > 0 && "CONFLICT".equals(focusCategory)) {
+            return "CONFLICT_REQUIRES_MANUAL_INTERVENTION";
+        }
+        if (manualReplicaCount > 0 && "RETRY_LIMIT".equals(focusCategory)) {
+            return "RETRY_LIMIT_REQUIRES_MANUAL_INTERVENTION";
+        }
+        if (manualReplicaCount > 0) {
+            return "MANUAL_REPLICA_INTERVENTION_REQUIRED";
+        }
+        if (!isRetryable(retryCount)) {
+            return "AUTO_RETRY_CAPPED";
+        }
+        if ("STATE_MISMATCH".equals(focusCategory)) {
+            return "STATE_CHECK_REQUIRED";
+        }
+        if ("NETWORK".equals(focusCategory)) {
+            return outstandingReplicaCount > 0 ? "NETWORK_REPLICA_RECOVERY_PENDING" : "NETWORK_RECOVERY_PENDING";
+        }
+        if (outstandingReplicaCount > 0) {
+            return "OUTSTANDING_REPLICAS_PENDING";
+        }
+        if (retryCount > 0) {
+            return "RETRY_BACKLOG";
+        }
+        return "FAILED_ITEM_PENDING";
+    }
+
     private Map<String, Object> uploadsToMap(int limit) {
         return uploadHistoryToMap(syncService.snapshotActiveUploads(limit));
+    }
+
+    private Map<String, Object> stalledUploadsToMap(int limit) {
+        List<SyncUploadStatus> uploads = syncService.snapshotActiveUploads(limit);
+        List<Map<String, Object>> items = new ArrayList<Map<String, Object>>();
+        for (SyncUploadStatus upload : uploads) {
+            if (upload == null) {
+                continue;
+            }
+            Map<String, Object> item = uploadToMap(upload);
+            if (longValue(item.get("stalledMillis")) < SEGMENT_UPLOAD_STALL_THRESHOLD_MILLIS) {
+                continue;
+            }
+            items.add(item);
+        }
+        Collections.sort(items, new Comparator<Map<String, Object>>() {
+            @Override
+            public int compare(Map<String, Object> left, Map<String, Object> right) {
+                long leftStalled = longValue(left.get("stalledMillis"));
+                long rightStalled = longValue(right.get("stalledMillis"));
+                if (leftStalled == rightStalled) {
+                    return stringValue(left.get("path")).compareTo(stringValue(right.get("path")));
+                }
+                return leftStalled < rightStalled ? 1 : -1;
+            }
+        });
+        if (limit > 0 && items.size() > limit) {
+            items = new ArrayList<Map<String, Object>>(items.subList(0, limit));
+        }
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("size", Integer.valueOf(items.size()));
+        out.put("items", items);
+        return out;
+    }
+
+    private Map<String, Object> stalledReplicaHotspotsToMap(int limit) {
+        List<SyncUploadStatus> uploads = syncService.snapshotActiveUploads(limit);
+        Map<String, StalledReplicaHotspot> hotspots = new LinkedHashMap<String, StalledReplicaHotspot>();
+        for (SyncUploadStatus upload : uploads) {
+            if (upload == null) {
+                continue;
+            }
+            Map<String, Object> item = uploadToMap(upload);
+            long stalledMillis = longValue(item.get("stalledMillis"));
+            if (stalledMillis < SEGMENT_UPLOAD_STALL_THRESHOLD_MILLIS) {
+                continue;
+            }
+            String replicaLabel = normalizedReplicaLabel(stringValue(item.get("replicaLabel")));
+            StalledReplicaHotspot hotspot = hotspots.get(replicaLabel);
+            if (hotspot == null) {
+                hotspot = new StalledReplicaHotspot(replicaLabel);
+                hotspots.put(replicaLabel, hotspot);
+            }
+            hotspot.record(stringValue(item.get("path")), stalledMillis);
+        }
+        List<Map<String, Object>> items = new ArrayList<Map<String, Object>>();
+        for (StalledReplicaHotspot hotspot : hotspots.values()) {
+            items.add(hotspot.toMap());
+        }
+        Collections.sort(items, new Comparator<Map<String, Object>>() {
+            @Override
+            public int compare(Map<String, Object> left, Map<String, Object> right) {
+                int leftCount = intValue(left.get("count"));
+                int rightCount = intValue(right.get("count"));
+                if (leftCount != rightCount) {
+                    return leftCount < rightCount ? 1 : -1;
+                }
+                long leftStalled = longValue(left.get("maxStalledMillis"));
+                long rightStalled = longValue(right.get("maxStalledMillis"));
+                if (leftStalled != rightStalled) {
+                    return leftStalled < rightStalled ? 1 : -1;
+                }
+                return stringValue(left.get("replicaLabel")).compareTo(stringValue(right.get("replicaLabel")));
+            }
+        });
+        if (limit > 0 && items.size() > limit) {
+            items = new ArrayList<Map<String, Object>>(items.subList(0, limit));
+        }
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("size", Integer.valueOf(items.size()));
+        out.put("items", items);
+        return out;
+    }
+
+    private Map<String, Object> resumedReplicaHotspotsToMap(int limit) {
+        List<SyncUploadStatus> uploads = syncService.snapshotActiveUploads(limit);
+        Map<String, ResumedReplicaHotspot> hotspots = new LinkedHashMap<String, ResumedReplicaHotspot>();
+        for (SyncUploadStatus upload : uploads) {
+            if (upload == null || !upload.isResumedUpload()) {
+                continue;
+            }
+            String replicaLabel = normalizedReplicaLabel(upload.getReplicaLabel());
+            ResumedReplicaHotspot hotspot = hotspots.get(replicaLabel);
+            if (hotspot == null) {
+                hotspot = new ResumedReplicaHotspot(replicaLabel);
+                hotspots.put(replicaLabel, hotspot);
+            }
+            hotspot.record(upload.getPath(), upload.getResumedSegments());
+        }
+        List<Map<String, Object>> items = new ArrayList<Map<String, Object>>();
+        for (ResumedReplicaHotspot hotspot : hotspots.values()) {
+            items.add(hotspot.toMap());
+        }
+        Collections.sort(items, new Comparator<Map<String, Object>>() {
+            @Override
+            public int compare(Map<String, Object> left, Map<String, Object> right) {
+                int leftSegments = intValue(left.get("resumedSegments"));
+                int rightSegments = intValue(right.get("resumedSegments"));
+                if (leftSegments != rightSegments) {
+                    return leftSegments < rightSegments ? 1 : -1;
+                }
+                int leftCount = intValue(left.get("count"));
+                int rightCount = intValue(right.get("count"));
+                if (leftCount != rightCount) {
+                    return leftCount < rightCount ? 1 : -1;
+                }
+                return stringValue(left.get("replicaLabel")).compareTo(stringValue(right.get("replicaLabel")));
+            }
+        });
+        if (limit > 0 && items.size() > limit) {
+            items = new ArrayList<Map<String, Object>>(items.subList(0, limit));
+        }
+        Map<String, Object> out = new LinkedHashMap<String, Object>();
+        out.put("size", Integer.valueOf(items.size()));
+        out.put("items", items);
+        return out;
     }
 
     private Map<String, Object> uploadHistoryToMap(List<SyncUploadStatus> uploads) {
@@ -912,6 +1368,9 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
 
     private Map<String, Object> uploadToMap(SyncUploadStatus upload) {
         Map<String, Object> item = new LinkedHashMap<String, Object>();
+        long lastProgressAtMillis = upload.getLastProgressAtMillis();
+        long stalledMillis = lastProgressAtMillis <= 0L ? 0L : Math.max(0L, System.currentTimeMillis() - lastProgressAtMillis);
+        boolean stalled = stalledMillis >= SEGMENT_UPLOAD_STALL_THRESHOLD_MILLIS;
         item.put("eventUid", Long.toString(upload.getEventUid()));
         item.put("fileId", Long.toString(upload.getFileId()));
         item.put("path", upload.getPath());
@@ -920,10 +1379,51 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         item.put("segmented", Boolean.valueOf(upload.isSegmented()));
         item.put("totalSegments", Integer.valueOf(upload.getTotalSegments()));
         item.put("uploadedSegments", Integer.valueOf(upload.getUploadedSegments()));
+        item.put("resumedSegments", Integer.valueOf(upload.getResumedSegments()));
+        item.put("resumedUpload", Boolean.valueOf(upload.isResumedUpload()));
         item.put("startedAtMillis", Long.valueOf(upload.getStartedAtMillis()));
         item.put("updatedAtMillis", Long.valueOf(upload.getUpdatedAtMillis()));
+        item.put("lastProgressAtMillis", Long.valueOf(lastProgressAtMillis));
+        item.put("stalledMillis", Long.valueOf(stalledMillis));
+        item.put("replicaLabel", upload.getReplicaLabel() == null ? "" : upload.getReplicaLabel());
         item.put("message", upload.getMessage() == null ? "" : upload.getMessage());
+        item.put("recommendedAction", stalled ? recommendedActionForStalledUpload(upload) : "");
+        item.put("operatorHint", stalled ? operatorHintForStalledUpload(upload) : "");
         return item;
+    }
+
+    private static String recommendedActionForStalledUpload(String replicaLabel) {
+        String normalizedReplicaLabel = normalizedReplicaLabel(replicaLabel);
+        if ("default".equals(normalizedReplicaLabel)) {
+            return "CHECK_TRANSFER_PIPELINE";
+        }
+        return "CHECK_STALLED_REPLICA";
+    }
+
+    private static String recommendedActionForStalledUpload(SyncUploadStatus upload) {
+        String replicaLabel = normalizedReplicaLabel(upload == null ? null : upload.getReplicaLabel());
+        if ("default".equals(replicaLabel)) {
+            return "CHECK_TRANSFER_PIPELINE";
+        }
+        return "CHECK_STALLED_REPLICA";
+    }
+
+    private static String operatorHintForStalledUpload(String path, String replicaLabel) {
+        String normalizedReplicaLabel = normalizedReplicaLabel(replicaLabel);
+        String safePath = path == null ? "" : path;
+        if ("default".equals(normalizedReplicaLabel)) {
+            return "优先检查发送端分片进度、目标端写入与临时块文件状态；确认 " + safePath + " 是否仍在持续推进。";
+        }
+        return "优先检查副本 " + normalizedReplicaLabel + " 的网络连通性、接收端写入与临时块状态；必要时再处理 " + safePath + " 的人工重试。";
+    }
+
+    private static String operatorHintForStalledUpload(SyncUploadStatus upload) {
+        String replicaLabel = normalizedReplicaLabel(upload == null ? null : upload.getReplicaLabel());
+        String path = upload == null || upload.getPath() == null ? "" : upload.getPath();
+        if ("default".equals(replicaLabel)) {
+            return "优先检查发送端分片进度、目标端写入与临时块文件状态；确认 " + path + " 是否仍在持续推进。";
+        }
+        return "优先检查副本 " + replicaLabel + " 的网络连通性、接收端写入与临时块状态；必要时再处理 " + path + " 的人工重试。";
     }
 
     private int remainingRetries(int retryCount) {
@@ -1096,7 +1596,8 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         if ("write_conflict".equals(raw) || raw.contains("conflict")) {
             return "CONFLICT";
         }
-        if ("stale".equals(raw) || "replicas_pending".equals(raw) || raw.contains("stale") || raw.contains("pending")) {
+        if ("stale".equals(raw) || "replicas_pending".equals(raw) || raw.contains("stale") || raw.contains("pending")
+            || raw.contains("checksum") || raw.contains("length_mismatch")) {
             return "STATE_MISMATCH";
         }
         if (raw.contains("network") || raw.contains("timeout") || raw.contains("connection")
@@ -1114,7 +1615,8 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         if ("retry_limit_exceeded".equals(raw)) {
             return "MANUAL_RETRY_OR_DISCARD";
         }
-        if ("stale".equals(raw) || "replicas_pending".equals(raw) || raw.contains("pending")) {
+        if ("stale".equals(raw) || "replicas_pending".equals(raw) || raw.contains("pending")
+            || raw.contains("checksum") || raw.contains("length_mismatch")) {
             return "RETRY_AFTER_STATE_CHECK";
         }
         if (raw.contains("network") || raw.contains("timeout") || raw.contains("connection")
@@ -1657,6 +2159,22 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "    .section h3{margin:0; font-size:16px;}\n"
             + "    .row{display:flex; gap:16px; flex-wrap:wrap;}\n"
             + "    .card{flex:1 1 420px; border:1px solid #ddd; padding:12px;}\n"
+            + "    .summary-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px;}\n"
+            + "    .summary-card{border:1px solid #d9dde7; border-radius:8px; padding:12px; background:#fafcff;}\n"
+            + "    .summary-card.warn{background:#fff9f2; border-color:#f3c78a;}\n"
+            + "    .summary-card.ok{background:#f4fbf6; border-color:#9fd4a8;}\n"
+            + "    .summary-title{font-size:12px; color:#445; margin-bottom:6px;}\n"
+            + "    .summary-value{font-size:24px; font-weight:700; color:#112; margin-bottom:4px;}\n"
+            + "    .summary-meta{font-size:12px; color:#556; line-height:1.5; word-break:break-word;}\n"
+            + "    .cockpit-grid{display:grid; grid-template-columns:1.3fr 1fr; gap:16px; align-items:start;}\n"
+            + "    .cockpit-stack{display:flex; flex-direction:column; gap:16px;}\n"
+            + "    .focus-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px;}\n"
+            + "    .focus-card{border:1px solid #d9dde7; border-radius:8px; padding:12px; background:#fff;}\n"
+            + "    .focus-card h4{margin:0 0 8px 0; font-size:14px;}\n"
+            + "    .focus-meta{font-size:12px; color:#556; line-height:1.5; word-break:break-word;}\n"
+            + "    .action-panel{display:flex; flex-direction:column; gap:12px;}\n"
+            + "    .action-row{display:flex; flex-wrap:wrap; gap:8px;}\n"
+            + "    .action-note{font-size:12px; color:#556; line-height:1.5;}\n"
             + "    .btn{padding:4px 8px; border:1px solid #666; background:#fff; cursor:pointer;}\n"
             + "  </style>\n"
             + "</head>\n"
@@ -1675,7 +2193,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      const res = await fetch('/sync/api/queues?limit=200');\n"
             + "      const data = await res.json();\n"
             + "      if(!data.ok){document.getElementById('content').innerText = data.message || 'error';return;}\n"
-            + "      render(data.queues, data.queueMatrix, data.healthSummary, data.failureTrend, data.recoverySuccessSummary, data.failureSummary, data.failureRecoverySummary, data.replicaRecoverySummary, data.replicaFailureSummary, data.replicaFailureCategorySummary, data.hotFailedItems, data.recentOperatorActions, data.recentTimeline, data.uploads, data.uploadPolicy, data.retryPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
+            + "      render(data.queues, data.queueMatrix, data.healthSummary, data.failureTrend, data.recoverySuccessSummary, data.failureSummary, data.failureRecoverySummary, data.replicaRecoverySummary, data.replicaFailureSummary, data.replicaFailureCategorySummary, data.hotFailedItems, data.recentOperatorActions, data.recentTimeline, data.timelineRiskSummary, data.stalledUploads, data.stalledReplicaHotspots, data.uploads, data.uploadPolicy, data.retryPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
             + "    }\n"
             + "    function esc(s){return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}\n"
             + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
@@ -1707,20 +2225,48 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "    }\n"
             + "    function renderUploads(u){\n"
             + "      let html = '<div class=\"card\"><h3>上传中 (size='+u.size+')</h3>';\n"
-            + "      html += '<table><tr><th>path</th><th>phase</th><th>size</th><th>segmented</th><th>progress</th></tr>';\n"
+            + "      html += '<table><tr><th>path</th><th>replica</th><th>phase</th><th>size</th><th>segmented</th><th>resumedUpload</th><th>resumedSegments</th><th>progress</th><th>lastProgressAtMillis</th><th>stalledMillis</th></tr>';\n"
             + "      for(const it of u.items){\n"
             + "        const progress = it.totalSegments > 0 ? (it.uploadedSegments + '/' + it.totalSegments) : '-';\n"
-            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.phase)+'</td><td>'+it.fileSize+'</td><td>'+it.segmented+'</td><td>'+progress+'</td></tr>';\n"
+            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.replicaLabel || '')+'</td><td>'+esc(it.phase)+'</td><td>'+it.fileSize+'</td><td>'+it.segmented+'</td><td>'+it.resumedUpload+'</td><td>'+it.resumedSegments+'</td><td>'+progress+'</td><td>'+it.lastProgressAtMillis+'</td><td>'+it.stalledMillis+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
             + "    }\n"
             + "    function renderUploadHistory(title, u){\n"
             + "      let html = '<div class=\"card\"><h3>'+esc(title)+' (size='+u.size+')</h3>';\n"
-            + "      html += '<table><tr><th>path</th><th>phase</th><th>size</th><th>progress</th><th>message</th></tr>';\n"
+            + "      html += '<table><tr><th>path</th><th>replica</th><th>phase</th><th>size</th><th>resumedUpload</th><th>resumedSegments</th><th>progress</th><th>lastProgressAtMillis</th><th>stalledMillis</th><th>recommendedAction</th><th>operatorHint</th><th>message</th></tr>';\n"
             + "      for(const it of u.items){\n"
             + "        const progress = it.totalSegments > 0 ? (it.uploadedSegments + '/' + it.totalSegments) : '-';\n"
-            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.phase)+'</td><td>'+it.fileSize+'</td><td>'+progress+'</td><td>'+esc(it.message)+'</td></tr>';\n"
+            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.replicaLabel || '')+'</td><td>'+esc(it.phase)+'</td><td>'+it.fileSize+'</td><td>'+it.resumedUpload+'</td><td>'+it.resumedSegments+'</td><td>'+progress+'</td><td>'+it.lastProgressAtMillis+'</td><td>'+it.stalledMillis+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td><td>'+esc(it.message)+'</td></tr>';\n"
+            + "      }\n"
+            + "      html += '</table></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
+            + "    function renderStalledUploads(u){\n"
+            + "      let html = '<div id=\"stalled-uploads\" class=\"card\"><h3>卡住上传 (size='+u.size+')</h3>';\n"
+            + "      html += '<table><tr><th>path</th><th>replica</th><th>phase</th><th>size</th><th>resumedUpload</th><th>resumedSegments</th><th>progress</th><th>lastProgressAtMillis</th><th>stalledMillis</th><th>message</th></tr>';\n"
+            + "      for(const it of u.items){\n"
+            + "        const progress = it.totalSegments > 0 ? (it.uploadedSegments + '/' + it.totalSegments) : '-';\n"
+            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.replicaLabel || '')+'</td><td>'+esc(it.phase)+'</td><td>'+it.fileSize+'</td><td>'+it.resumedUpload+'</td><td>'+it.resumedSegments+'</td><td>'+progress+'</td><td>'+it.lastProgressAtMillis+'</td><td>'+it.stalledMillis+'</td><td>'+esc(it.message)+'</td></tr>';\n"
+            + "      }\n"
+            + "      html += '</table></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
+            + "    function renderResumedReplicaHotspots(u){\n"
+            + "      let html = '<div id=\"resumed-replica-hotspots\" class=\"card\"><h3>恢复副本热点 (size='+u.size+')</h3>';\n"
+            + "      html += '<table><tr><th>replica</th><th>count</th><th>resumedSegments</th><th>topPath</th></tr>';\n"
+            + "      for(const it of u.items){\n"
+            + "        html += '<tr><td>'+esc(it.replicaLabel || '')+'</td><td>'+it.count+'</td><td>'+it.resumedSegments+'</td><td>'+esc(it.topPath || '')+'</td></tr>';\n"
+            + "      }\n"
+            + "      html += '</table></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
+            + "    function renderStalledReplicaHotspots(u){\n"
+            + "      let html = '<div class=\"card\"><h3>卡住副本热点 (size='+u.size+')</h3>';\n"
+            + "      html += '<table><tr><th>replica</th><th>count</th><th>maxStalledMillis</th><th>topPath</th><th>recommendedAction</th><th>operatorHint</th></tr>';\n"
+            + "      for(const it of u.items){\n"
+            + "        html += '<tr><td>'+esc(it.replicaLabel || '')+'</td><td>'+it.count+'</td><td>'+it.maxStalledMillis+'</td><td>'+esc(it.topPath || '')+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
@@ -1751,9 +2297,9 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "    }\n"
             + "    function renderTimeline(t){\n"
             + "      let html = '<div class=\"card\"><h3>最近操作时间线 (size='+t.size+')</h3>';\n"
-            + "      html += '<table><tr><th>path</th><th>phase</th><th>cleared</th><th>remaining</th><th>updatedAtMillis</th><th>message</th></tr>';\n"
+            + "      html += '<table><tr><th>path</th><th>phase</th><th>riskLevel</th><th>riskScore</th><th>focusReason</th><th>cleared</th><th>remaining</th><th>updatedAtMillis</th><th>message</th></tr>';\n"
             + "      for(const it of t.items){\n"
-            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.phase)+'</td><td>'+esc(formatDeltaSummary(it))+'</td><td>'+esc(formatRemainingSummary(it))+'</td><td>'+it.updatedAtMillis+'</td><td>'+esc(it.message)+'</td></tr>';\n"
+            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.phase)+'</td><td>'+esc(it.riskLevel || '')+'</td><td>'+esc(it.riskScore || 0)+'</td><td>'+esc(it.focusReason || '')+'</td><td>'+esc(formatDeltaSummary(it))+'</td><td>'+esc(formatRemainingSummary(it))+'</td><td>'+it.updatedAtMillis+'</td><td>'+esc(it.message)+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
@@ -1770,6 +2316,272 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "    }\n"
             + "    function renderSection(title, body){\n"
             + "      return '<section class=\"section\"><h3>'+esc(title)+'</h3><div class=\"row\">'+body+'</div></section>';\n"
+            + "    }\n"
+            + "    function summaryCount(items, key, expected){\n"
+            + "      if(!Array.isArray(items)){return 0;}\n"
+            + "      for(const it of items){\n"
+            + "        if(it && it[key] === expected){\n"
+            + "          return it.count || 0;\n"
+            + "        }\n"
+            + "      }\n"
+            + "      return 0;\n"
+            + "    }\n"
+            + "    function renderSummaryCard(title, value, meta, tone){\n"
+            + "      let cls = 'summary-card';\n"
+            + "      if(tone){ cls += ' ' + tone; }\n"
+            + "      return '<div class=\"'+cls+'\"><div class=\"summary-title\">'+esc(title)+'</div><div class=\"summary-value\">'+esc(String(value))+'</div><div class=\"summary-meta\">'+esc(meta || '')+'</div></div>';\n"
+            + "    }\n"
+            + "    function renderFocusCard(title, value, meta, actionHtml, tone){\n"
+            + "      let cls = 'focus-card';\n"
+            + "      if(tone){ cls += ' ' + tone; }\n"
+            + "      let html = '<div class=\"'+cls+'\"><h4>'+esc(title)+'</h4><div class=\"summary-value\">'+esc(String(value || '-'))+'</div><div class=\"focus-meta\">'+esc(meta || '')+'</div>';\n"
+            + "      if(actionHtml){ html += '<div class=\"action-row\">'+actionHtml+'</div>'; }\n"
+            + "      html += '</div>';\n"
+            + "      return html;\n"
+            + "    }\n"
+            + "    function normalizeTimelineCategory(topFocusReason){\n"
+            + "      const text = String(topFocusReason || '');\n"
+            + "      if(text.indexOf('CONFLICT') >= 0){ return 'CONFLICT'; }\n"
+            + "      if(text.indexOf('RETRY_LIMIT') >= 0){ return 'RETRY_LIMIT'; }\n"
+            + "      if(text.indexOf('NETWORK') >= 0){ return 'NETWORK'; }\n"
+            + "      if(text.indexOf('STATE_CHECK') >= 0 || text.indexOf('STATE_MISMATCH') >= 0){ return 'STATE_MISMATCH'; }\n"
+            + "      return '';\n"
+            + "    }\n"
+            + "    function hotItemMatchesTimeline(it, timelineRiskSummary){\n"
+            + "      if(!it || !timelineRiskSummary){ return false; }\n"
+            + "      const topPath = timelineRiskSummary.topPath || '';\n"
+            + "      const topCategory = normalizeTimelineCategory(timelineRiskSummary.topFocusReason || '');\n"
+            + "      if(topPath && it.path === topPath){ return true; }\n"
+            + "      if(topCategory){\n"
+            + "        const categorySummary = String(it.replicaCategorySummary || '');\n"
+            + "        const reason = String(it.reason || '');\n"
+            + "        const focusReason = String(it.focusReason || '');\n"
+            + "        if(categorySummary.indexOf(topCategory) >= 0 || reason.indexOf(topCategory.toLowerCase()) >= 0 || focusReason.indexOf(topCategory) >= 0){\n"
+            + "          return true;\n"
+            + "        }\n"
+            + "      }\n"
+            + "      return false;\n"
+            + "    }\n"
+            + "    function pickLinkedHotItem(hotFailedItems, timelineRiskSummary){\n"
+            + "      const hotItems = Array.isArray(hotFailedItems && hotFailedItems.items) ? hotFailedItems.items : [];\n"
+            + "      for(const it of hotItems){\n"
+            + "        if(hotItemMatchesTimeline(it, timelineRiskSummary)){\n"
+            + "          return it;\n"
+            + "        }\n"
+            + "      }\n"
+            + "      return hotItems.length > 0 ? hotItems[0] : null;\n"
+            + "    }\n"
+            + "    function renderTimelineHotspotLink(hotFailedItems, timelineRiskSummary){\n"
+            + "      const linked = pickLinkedHotItem(hotFailedItems, timelineRiskSummary);\n"
+            + "      if(!linked){\n"
+            + "        return '<div class=\"card\"><h3>关联处置</h3><div class=\"action-note\">暂无可关联的热点失败项。</div></div>';\n"
+            + "      }\n"
+            + "      const timelineMeta = timelineRiskSummary && timelineRiskSummary.topRiskLevel\n"
+            + "        ? ('timeline=' + (timelineRiskSummary.topRiskLevel || '-') + '/' + (timelineRiskSummary.topFocusReason || '') + ', path=' + (timelineRiskSummary.topPath || ''))\n"
+            + "        : 'timeline=无高风险事件';\n"
+            + "      const hotMeta = 'hot=' + (linked.priorityLevel || '') + '/' + (linked.priorityScore || 0)\n"
+            + "        + ', action=' + (linked.recommendedAction || '')\n"
+            + "        + ', hint=' + (linked.operatorHint || '');\n"
+            + "      return renderFocusCard('关联处置', linked.path || '-', timelineMeta + ', ' + hotMeta, renderHotFailedItemActionButtons(linked), 'warn');\n"
+            + "    }\n"
+            + "    function remainingCategoryNextStep(summary){\n"
+            + "      const text = String(summary || '');\n"
+            + "      if(text.indexOf('NETWORK') >= 0){ return '优先执行 NETWORK 重试'; }\n"
+            + "      if(text.indexOf('CONFLICT') >= 0 || text.indexOf('RETRY_LIMIT') >= 0){ return '优先人工重试或放弃 CONFLICT/RETRY_LIMIT'; }\n"
+            + "      if(text.indexOf('STATE_MISMATCH') >= 0){ return '先校验状态再重试 STATE_MISMATCH'; }\n"
+            + "      return '回到失败类别入口继续批量处置';\n"
+            + "    }\n"
+            + "    function renderRemainingCategoryActionButtons(summary){\n"
+            + "      const text = String(summary || '');\n"
+            + "      const buttons = [];\n"
+            + "      if(text.indexOf('NETWORK') >= 0){\n"
+            + "        buttons.push('<button class=\"btn\" data-category-action=\"retry\" data-category=\"NETWORK\">继续重试 NETWORK</button>');\n"
+            + "      }\n"
+            + "      if(text.indexOf('CONFLICT') >= 0){\n"
+            + "        buttons.push('<button class=\"btn\" data-category-action=\"retry\" data-category=\"CONFLICT\">人工重试 CONFLICT</button>');\n"
+            + "        buttons.push('<button class=\"btn\" data-category-action=\"discard\" data-category=\"CONFLICT\">放弃 CONFLICT</button>');\n"
+            + "      }\n"
+            + "      if(text.indexOf('RETRY_LIMIT') >= 0){\n"
+            + "        buttons.push('<button class=\"btn\" data-category-action=\"retry\" data-category=\"RETRY_LIMIT\">人工重试 RETRY_LIMIT</button>');\n"
+            + "        buttons.push('<button class=\"btn\" data-category-action=\"discard\" data-category=\"RETRY_LIMIT\">放弃 RETRY_LIMIT</button>');\n"
+            + "      }\n"
+            + "      if(text.indexOf('STATE_MISMATCH') >= 0){\n"
+            + "        buttons.push('<button class=\"btn\" data-category-action=\"retry\" data-category=\"STATE_MISMATCH\">校验后重试 STATE_MISMATCH</button>');\n"
+            + "      }\n"
+            + "      return buttons.length > 0 ? '<div class=\"action-row\">' + buttons.join(' ') + '</div>' : '';\n"
+            + "    }\n"
+            + "    function renderRemainingFailureSample(lastBatchResult, linkedHot, firstAction){\n"
+            + "      const previewItems = Array.isArray(lastBatchResult && lastBatchResult.remainingFailedItemsPreview) ? lastBatchResult.remainingFailedItemsPreview : [];\n"
+            + "      const sample = previewItems.length > 0 ? previewItems[0] : linkedHot;\n"
+            + "      const remainingSummary = firstAction ? (firstAction.remainingReplicaCategorySummary || '') : (lastBatchResult && lastBatchResult.remainingReplicaCategorySummary) || '';\n"
+            + "      if(!sample && !remainingSummary){\n"
+            + "        return renderFocusCard('5. 剩余失败样本', '无剩余样本', '当前没有 remainingFailedItemsPreview 或剩余类别。', '', 'ok');\n"
+            + "      }\n"
+            + "      const value = sample ? (sample.path || '-') : '无明确样本';\n"
+            + "      let meta = 'remainingCategories=' + (remainingSummary || '');\n"
+            + "      if(sample){\n"
+            + "        meta += ', focus=' + (sample.focusReason || '') + ', action=' + (sample.recommendedAction || '') + ', hint=' + (sample.operatorHint || '');\n"
+            + "      }\n"
+            + "      meta += ', next=' + remainingCategoryNextStep(remainingSummary);\n"
+            + "      const sampleActions = sample ? renderHotFailedItemActionButtons(sample) : '';\n"
+            + "      const categoryActions = renderRemainingCategoryActionButtons(remainingSummary);\n"
+            + "      const actionHtml = sampleActions + (sampleActions && categoryActions ? ' ' : '') + categoryActions;\n"
+            + "      return renderFocusCard('5. 剩余失败样本', value, meta, actionHtml, remainingSummary ? 'warn' : 'ok');\n"
+            + "    }\n"
+            + "    function operatorActionDigest(firstAction, lastBatchResult, linkedHot){\n"
+            + "      const previewItems = Array.isArray(lastBatchResult && lastBatchResult.remainingFailedItemsPreview) ? lastBatchResult.remainingFailedItemsPreview : [];\n"
+            + "      const sample = previewItems.length > 0 ? previewItems[0] : linkedHot;\n"
+            + "      const previewPaths = (lastBatchResult && lastBatchResult.remainingFailedPathsSummary) || (sample && sample.path) || '';\n"
+            + "      const remainingSummary = firstAction ? (firstAction.remainingReplicaCategorySummary || '') : (lastBatchResult && lastBatchResult.remainingReplicaCategorySummary) || '';\n"
+            + "      const result = {value:'继续观察', summary:'暂无运维动作', tone:'ok', actionHtml:'', remainingSummary:remainingSummary, previewPaths:previewPaths};\n"
+            + "      const sampleActions = sample ? renderHotFailedItemActionButtons(sample) : '';\n"
+            + "      const categoryActions = renderRemainingCategoryActionButtons(remainingSummary);\n"
+            + "      if(firstAction){\n"
+            + "        const remainingFailedItems = firstAction.remainingFailedItemCount || 0;\n"
+            + "        const remainingOutstandingReplicas = firstAction.remainingOutstandingReplicaCount || 0;\n"
+            + "        result.summary = 'action=' + (firstAction.action || '-') + ', cleared=' + formatDeltaSummary(firstAction) + ', remaining=' + formatRemainingSummary(firstAction);\n"
+            + "        if(previewPaths){ result.summary += ', preview=' + previewPaths; }\n"
+            + "        if(remainingFailedItems > 0 || remainingOutstandingReplicas > 0){\n"
+            + "          result.value = '继续收口';\n"
+            + "          result.tone = 'warn';\n"
+            + "          result.summary += ', next=' + remainingCategoryNextStep(remainingSummary);\n"
+            + "          result.actionHtml = sampleActions + (sampleActions && categoryActions ? ' ' : '') + categoryActions;\n"
+            + "        } else if(firstAction.success){\n"
+            + "          result.value = '已收口';\n"
+            + "          result.tone = 'ok';\n"
+            + "          result.summary += ', next=当前批次已完成收口';\n"
+            + "        } else {\n"
+            + "          result.value = '动作失败';\n"
+            + "          result.tone = 'warn';\n"
+            + "          result.summary += ', next=回到失败类别入口继续批量处置';\n"
+            + "          result.actionHtml = sampleActions || categoryActions;\n"
+            + "        }\n"
+            + "      } else if(sample || remainingSummary){\n"
+            + "        result.summary = 'remainingCategories=' + (remainingSummary || '');\n"
+            + "        if(previewPaths){ result.summary += ', preview=' + previewPaths; }\n"
+            + "        result.summary += ', next=' + remainingCategoryNextStep(remainingSummary);\n"
+            + "        result.tone = remainingSummary ? 'warn' : 'ok';\n"
+            + "        result.actionHtml = sampleActions + (sampleActions && categoryActions ? ' ' : '') + categoryActions;\n"
+            + "      }\n"
+            + "      return result;\n"
+            + "    }\n"
+            + "    function renderOperatorActionDigestCard(firstAction, lastBatchResult, linkedHot){\n"
+            + "      const digest = operatorActionDigest(firstAction, lastBatchResult, linkedHot);\n"
+            + "      return renderFocusCard('最近运维动作摘要', digest.value, digest.summary, digest.actionHtml, digest.tone);\n"
+            + "    }\n"
+            + "    function renderClosureOutcomeCard(lastBatchResult, linkedHot, firstAction){\n"
+            + "      const digest = operatorActionDigest(firstAction, lastBatchResult, linkedHot);\n"
+            + "      return renderFocusCard('3. 收口与后续动作', digest.value, digest.summary, digest.actionHtml, digest.tone);\n"
+            + "    }\n"
+            + "    function renderFailureActionFlow(replicaFailureCategorySummary, hotFailedItems, recentOperatorActions, timelineRiskSummary, lastBatchResult){\n"
+            + "      const categoryItems = Array.isArray(replicaFailureCategorySummary && replicaFailureCategorySummary.items) ? replicaFailureCategorySummary.items : [];\n"
+            + "      const operatorItems = Array.isArray(recentOperatorActions && recentOperatorActions.items) ? recentOperatorActions.items : [];\n"
+            + "      const firstCategory = categoryItems.length > 0 ? categoryItems[0] : null;\n"
+            + "      const linkedHot = pickLinkedHotItem(hotFailedItems, timelineRiskSummary);\n"
+            + "      const firstAction = operatorItems.length > 0 ? operatorItems[0] : null;\n"
+            + "      let html = '<div class=\"card\"><h3>处置链路</h3><div class=\"focus-grid\">';\n"
+            + "      html += renderFocusCard('1. 失败类别入口', firstCategory ? (firstCategory.reason || '-') : '-', firstCategory ? ('count=' + (firstCategory.count || 0) + ', action=' + (firstCategory.recommendedAction || '') + ', hint=' + (firstCategory.operatorHint || '')) : '暂无副本失败类别', firstCategory ? renderReplicaCategoryActionButtons(firstCategory) : '', firstCategory ? 'warn' : 'ok');\n"
+            + "      html += renderFocusCard('2. 热点失败落点', linkedHot ? (linkedHot.path || '-') : '-', linkedHot ? ('priority=' + (linkedHot.priorityLevel || '') + '/' + (linkedHot.priorityScore || 0) + ', focus=' + (linkedHot.focusReason || '') + ', action=' + (linkedHot.recommendedAction || '')) : '暂无热点失败项', linkedHot ? renderHotFailedItemActionButtons(linkedHot) : '', linkedHot ? 'warn' : 'ok');\n"
+            + "      html += renderClosureOutcomeCard(lastBatchResult, linkedHot, firstAction);\n"
+            + "      html += '</div><div class=\"action-note\">先按类别选择批量动作，再查看关联热点失败项，最后用最近运维动作的 cleared/remaining 判断是否真正收口。</div></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
+            + "    function renderActionOutcomeGuidance(linkedHot, firstAction){\n"
+            + "      let title = '4. 下一步建议';\n"
+            + "      let value = '继续观察';\n"
+            + "      let meta = '暂无最新运维动作，先从失败类别入口或关联热点失败项发起处置。';\n"
+            + "      let tone = 'ok';\n"
+            + "      let actionHtml = linkedHot ? renderHotFailedItemActionButtons(linkedHot) : '';\n"
+            + "      if(firstAction){\n"
+            + "        const remainingFailedItems = firstAction.remainingFailedItemCount || 0;\n"
+            + "        const remainingOutstandingReplicas = firstAction.remainingOutstandingReplicaCount || 0;\n"
+            + "        if(remainingFailedItems > 0 || remainingOutstandingReplicas > 0){\n"
+            + "          value = '继续收口';\n"
+            + "          tone = 'warn';\n"
+            + "          meta = 'remaining=' + formatRemainingSummary(firstAction);\n"
+            + "          actionHtml += renderRemainingCategoryActionButtons(firstAction.remainingReplicaCategorySummary || '');\n"
+            + "          if(linkedHot){\n"
+            + "            meta += ', next=' + (linkedHot.recommendedAction || '') + ', hint=' + (linkedHot.operatorHint || '');\n"
+            + "          } else {\n"
+            + "            meta += ', next=回到失败类别入口继续批量处置';\n"
+            + "          }\n"
+            + "        } else if(firstAction.success){\n"
+            + "          value = '已收口';\n"
+            + "          tone = 'ok';\n"
+            + "          meta = 'cleared=' + formatDeltaSummary(firstAction) + ', remaining=' + formatRemainingSummary(firstAction) + ', 当前批次已完成收口。';\n"
+            + "          actionHtml = '';\n"
+            + "        } else {\n"
+            + "          value = '动作失败';\n"
+            + "          tone = 'warn';\n"
+            + "          meta = '最近运维动作未成功，建议回到关联热点失败项重新选择动作。';\n"
+            + "        }\n"
+            + "      }\n"
+            + "      return renderFocusCard(title, value, meta, actionHtml, tone);\n"
+            + "    }\n"
+            + "    function renderQuickActions(replicaRecoverySummary, timelineRiskSummary, hotFailedItems){\n"
+            + "      const firstHot = pickLinkedHotItem(hotFailedItems, timelineRiskSummary);\n"
+            + "      let html = '<div class=\"card\"><h3>快速动作</h3><div class=\"action-panel\">';\n"
+            + "      html += '<div class=\"action-note\">先处理高风险副本和热点失败；人工重试/放弃不受自动重试上限约束。</div>';\n"
+            + "      html += '<div class=\"action-row\">';\n"
+            + "      html += '<button class=\"btn\" data-batch-action=\"retry-auto-recoverable-replicas\">批量重试可自动恢复副本</button>';\n"
+            + "      html += '<button class=\"btn\" data-batch-action=\"retry-network-replicas\">批量重试 NETWORK 副本</button>';\n"
+            + "      html += '<button class=\"btn\" data-batch-action=\"discard-manual-replicas\">批量放弃人工介入副本</button>';\n"
+            + "      html += '<button class=\"btn\" data-batch-action=\"discard-conflict-retry-limit-replicas\">批量放弃 CONFLICT/RETRY_LIMIT 副本</button>';\n"
+            + "      html += '</div>';\n"
+            + "      if(firstHot){\n"
+            + "        html += '<div class=\"action-note\">关联热点建议：'+esc(firstHot.path || '-')+' | '+esc(firstHot.recommendedAction || '')+' | '+esc(firstHot.operatorHint || '')+'</div>';\n"
+            + "        html += '<div class=\"action-row\">'+renderHotFailedItemActionButtons(firstHot)+'</div>';\n"
+            + "      }\n"
+            + "      if(timelineRiskSummary && timelineRiskSummary.topRiskLevel){\n"
+            + "        html += '<div class=\"action-note\">时间线风险焦点：'+esc(timelineRiskSummary.topRiskLevel || '-')+' / '+esc(timelineRiskSummary.topFocusReason || '')+' / '+esc(timelineRiskSummary.topPath || '')+'</div>';\n"
+            + "      }\n"
+            + "      html += '<div class=\"action-note\">副本待处置：'+((replicaRecoverySummary && replicaRecoverySummary.totalOutstandingReplicas) || 0)+'，优先收口 manual 与 NETWORK 场景。</div>';\n"
+            + "      html += '</div></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
+            + "    function renderCockpitFocus(healthSummary, hotFailedItems, recentOperatorActions, timelineRiskSummary){\n"
+            + "      const hotItems = Array.isArray(hotFailedItems && hotFailedItems.items) ? hotFailedItems.items : [];\n"
+            + "      const operatorItems = Array.isArray(recentOperatorActions && recentOperatorActions.items) ? recentOperatorActions.items : [];\n"
+            + "      const firstHot = pickLinkedHotItem(hotFailedItems, timelineRiskSummary);\n"
+            + "      const firstAction = operatorItems.length > 0 ? operatorItems[0] : null;\n"
+            + "      const lastBatchResult = window.lastBatchResult || null;\n"
+            + "      const stalledCount = healthSummary && healthSummary.stalledUploadCount ? healthSummary.stalledUploadCount : 0;\n"
+            + "      const resumedCount = healthSummary && healthSummary.resumedUploadCount ? healthSummary.resumedUploadCount : 0;\n"
+            + "      const stalledMeta = stalledCount > 0 ? ('maxStalledMillis=' + (healthSummary.maxStalledMillis || 0) + ', path=' + (healthSummary.topStalledPath || '') + ', replica=' + (healthSummary.topStalledReplicaLabel || '') + ', replicas=' + (healthSummary.stalledReplicaSummary || '') + ', action=' + (healthSummary.stalledRecommendedAction || '') + ', hint=' + (healthSummary.stalledOperatorHint || '')) : '暂无卡住上传';\n"
+            + "      const resumedMeta = resumedCount > 0 ? ('resumedSegments=' + (healthSummary.resumedSegmentCount || 0) + ', path=' + (healthSummary.topResumedPath || '') + ', replica=' + (healthSummary.topResumedReplicaLabel || '') + ', topResumedSegments=' + (healthSummary.topResumedSegments || 0) + ', replicas=' + (healthSummary.resumedReplicaSummary || '')) : '暂无恢复上传';\n"
+            + "      const stalledAction = stalledCount > 0 ? '<button class=\"btn\" data-scroll=\"stalled-uploads\">查看卡住上传</button>' : '';\n"
+            + "      const resumedAction = resumedCount > 0 ? '<button class=\"btn\" data-scroll=\"resumed-replica-hotspots\">查看恢复热点</button>' : '';\n"
+            + "      let html = '<div class=\"card\"><h3>焦点事件</h3><div class=\"focus-grid\">';\n"
+            + "      html += renderFocusCard('热点失败项', firstHot ? (firstHot.path || '-') : '-', firstHot ? ('priority=' + (firstHot.priorityLevel || '') + '/' + (firstHot.priorityScore || 0) + ', focus=' + (firstHot.focusReason || '') + ', action=' + (firstHot.recommendedAction || '')) : '暂无热点失败项', firstHot ? renderHotFailedItemActionButtons(firstHot) : '', firstHot ? 'warn' : 'ok');\n"
+            + "      html += renderFocusCard('时间线高风险事件', timelineRiskSummary && timelineRiskSummary.topRiskLevel ? (timelineRiskSummary.topRiskLevel || '-') : '-', timelineRiskSummary && timelineRiskSummary.topRiskLevel ? ('score=' + (timelineRiskSummary.topRiskScore || 0) + ', phase=' + (timelineRiskSummary.topPhase || '') + ', path=' + (timelineRiskSummary.topPath || '') + ', focus=' + (timelineRiskSummary.topFocusReason || '')) : '暂无时间线高风险事件', '', timelineRiskSummary && ((timelineRiskSummary.criticalCount || 0) > 0 || (timelineRiskSummary.highCount || 0) > 0) ? 'warn' : 'ok');\n"
+            + "      html += renderFocusCard('卡住上传焦点', stalledCount, stalledMeta, stalledAction, stalledCount > 0 ? 'warn' : 'ok');\n"
+            + "      html += renderFocusCard('恢复上传焦点', resumedCount, resumedMeta, resumedAction, resumedCount > 0 ? 'warn' : 'ok');\n"
+            + "      html += renderTimelineHotspotLink(hotFailedItems, timelineRiskSummary);\n"
+            + "      html += renderOperatorActionDigestCard(firstAction, lastBatchResult, firstHot);\n"
+            + "      html += '</div></div>';\n"
+            + "      return html;\n"
+            + "    }\n"
+            + "    function renderOpsCockpit(healthSummary, failureTrend, recoverySuccessSummary, replicaRecoverySummary, hotFailedItems, recentOperatorActions, recentTimeline, timelineRiskSummary){\n"
+            + "      const replicaRecoveryItems = Array.isArray(replicaRecoverySummary && replicaRecoverySummary.items) ? replicaRecoverySummary.items : [];\n"
+            + "      const hotItems = Array.isArray(hotFailedItems && hotFailedItems.items) ? hotFailedItems.items : [];\n"
+            + "      const operatorItems = Array.isArray(recentOperatorActions && recentOperatorActions.items) ? recentOperatorActions.items : [];\n"
+            + "      const firstHot = hotItems.length > 0 ? hotItems[0] : null;\n"
+            + "      const firstAction = operatorItems.length > 0 ? operatorItems[0] : null;\n"
+            + "      const digest = operatorActionDigest(firstAction, window.lastBatchResult || null, firstHot);\n"
+            + "      const autoRecoverable = summaryCount(replicaRecoveryItems, 'recoveryClass', 'AUTO_RECOVERABLE');\n"
+            + "      const manualIntervention = summaryCount(replicaRecoveryItems, 'recoveryClass', 'MANUAL_INTERVENTION');\n"
+            + "      let html = '<div class=\"card\"><h3>风险总览</h3><div class=\"summary-grid\">';\n"
+            + "      html += renderSummaryCard('失败总量', healthSummary.failedCount || 0, 'active=' + (healthSummary.activeCount || 0) + ', uploading=' + (healthSummary.uploadingCount || 0), (healthSummary.failedCount || 0) > 0 ? 'warn' : 'ok');\n"
+            + "      html += renderSummaryCard('副本待处置', replicaRecoverySummary.totalOutstandingReplicas || 0, 'auto=' + autoRecoverable + ', manual=' + manualIntervention, (replicaRecoverySummary.totalOutstandingReplicas || 0) > 0 ? 'warn' : 'ok');\n"
+            + "      html += renderSummaryCard('卡住上传', healthSummary.stalledUploadCount || 0, (healthSummary.stalledUploadCount || 0) > 0 ? ('maxStalledMillis=' + (healthSummary.maxStalledMillis || 0) + ', path=' + (healthSummary.topStalledPath || '') + ', replica=' + (healthSummary.topStalledReplicaLabel || '') + ', replicas=' + (healthSummary.stalledReplicaSummary || '') + ', action=' + (healthSummary.stalledRecommendedAction || '') + ', hint=' + (healthSummary.stalledOperatorHint || '')) : '暂无卡住上传', (healthSummary.stalledUploadCount || 0) > 0 ? 'warn' : 'ok');\n"
+            + "      html += renderSummaryCard('恢复上传', healthSummary.resumedUploadCount || 0, (healthSummary.resumedUploadCount || 0) > 0 ? ('resumedSegments=' + (healthSummary.resumedSegmentCount || 0) + ', path=' + (healthSummary.topResumedPath || '') + ', replica=' + (healthSummary.topResumedReplicaLabel || '') + ', topResumedSegments=' + (healthSummary.topResumedSegments || 0) + ', replicas=' + (healthSummary.resumedReplicaSummary || '')) : '暂无恢复上传', (healthSummary.resumedUploadCount || 0) > 0 ? 'warn' : 'ok');\n"
+            + "      html += renderSummaryCard('近 5 分钟失败', failureTrend.failedLast5MinutesCount || 0, '60m=' + (failureTrend.failedLast60MinutesCount || 0) + ', outstanding=' + (failureTrend.outstandingFailedCount || 0), (failureTrend.failedLast5MinutesCount || 0) > 0 ? 'warn' : 'ok');\n"
+            + "      html += renderSummaryCard('恢复成功率', (recoverySuccessSummary.successRatePercent || 0) + '%', 'completed=' + (recoverySuccessSummary.completedCount || 0) + ', failed=' + (recoverySuccessSummary.failedCount || 0), (recoverySuccessSummary.successRatePercent || 0) >= 80 ? 'ok' : 'warn');\n"
+            + "      html += renderSummaryCard('热点失败焦点', firstHot ? (firstHot.path || '-') : '-', firstHot ? ('priority=' + (firstHot.priorityLevel || '') + '/' + (firstHot.priorityScore || 0) + ', focus=' + (firstHot.focusReason || '') + ', action=' + (firstHot.recommendedAction || '')) : '暂无热点失败', firstHot ? 'warn' : 'ok');\n"
+            + "      html += renderSummaryCard('最近运维动作摘要', digest.value, digest.summary, digest.tone);\n"
+            + "      html += renderSummaryCard('时间线风险焦点', (timelineRiskSummary && timelineRiskSummary.topRiskLevel) ? timelineRiskSummary.topRiskLevel : '-', (timelineRiskSummary && timelineRiskSummary.topRiskLevel) ? ('score=' + (timelineRiskSummary.topRiskScore || 0) + ', phase=' + (timelineRiskSummary.topPhase || '') + ', path=' + (timelineRiskSummary.topPath || '') + ', focus=' + (timelineRiskSummary.topFocusReason || '')) : '暂无时间线风险事件', (timelineRiskSummary && ((timelineRiskSummary.criticalCount || 0) > 0 || (timelineRiskSummary.highCount || 0) > 0)) ? 'warn' : 'ok');\n"
+            + "      html += '</div></div>';\n"
+            + "      return html;\n"
             + "    }\n"
             + "    function renderQueueMatrix(m){\n"
             + "      let html = '<div class=\"card\"><h3>队列类型矩阵 (size='+m.size+')</h3>';\n"
@@ -1818,10 +2630,10 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "    }\n"
             + "    function renderHotFailedItems(h){\n"
             + "      let html = '<div class=\"card\"><h3>热点失败项 (size='+h.size+')</h3>';\n"
-            + "      html += '<table><tr><th>path</th><th>type</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>replicaRecoveryClass</th><th>replicas</th><th>replicaCategories</th><th>replicaReasons</th><th>outstandingReplicas</th><th>failedAtMillis</th><th>reason</th><th>recommendedAction</th><th>operatorHint</th><th>action</th></tr>';\n"
+            + "      html += '<table><tr><th>path</th><th>type</th><th>priorityLevel</th><th>priorityScore</th><th>focusReason</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>replicaRecoveryClass</th><th>replicas</th><th>replicaCategories</th><th>replicaReasons</th><th>outstandingReplicas</th><th>failedAtMillis</th><th>reason</th><th>recommendedAction</th><th>operatorHint</th><th>action</th></tr>';\n"
             + "      for(const it of h.items){\n"
             + "        const outstandingReplicas = (it.outstandingReplicaCount || 0) + ' (auto=' + (it.autoRecoverableReplicaCount || 0) + ', manual=' + (it.manualReplicaCount || 0) + ')';\n"
-            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.type)+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+(it.retryable ? 'yes' : 'capped')+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaRecoveryClass || '')+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+esc(it.replicaCategorySummary || '')+'</td><td>'+esc(it.replicaReasonSummary || '')+'</td><td>'+esc(outstandingReplicas)+'</td><td>'+it.failedAtMillis+'</td><td>'+esc(it.reason)+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td><td>'+renderHotFailedItemActionButtons(it)+'</td></tr>';\n"
+            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.priorityLevel || '')+'</td><td>'+esc(it.priorityScore || 0)+'</td><td>'+esc(it.focusReason || '')+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+(it.retryable ? 'yes' : 'capped')+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaRecoveryClass || '')+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+esc(it.replicaCategorySummary || '')+'</td><td>'+esc(it.replicaReasonSummary || '')+'</td><td>'+esc(outstandingReplicas)+'</td><td>'+it.failedAtMillis+'</td><td>'+esc(it.reason)+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td><td>'+renderHotFailedItemActionButtons(it)+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
@@ -1836,18 +2648,18 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      if(Array.isArray(b.clearedFailedItemsPreview) && b.clearedFailedItemsPreview.length > 0){\n"
             + "        html += '<p>clearedPreviewPaths=' + esc((b.clearedFailedItemsPreview || []).map(it => it.path || '').filter(Boolean).join(',')) + '</p>';\n"
             + "      }\n"
-            + "      html += '<table><tr><th>path</th><th>type</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>replicaRecoveryClass</th><th>replicas</th><th>replicaCategories</th><th>replicaReasons</th><th>outstandingReplicas</th><th>failedAtMillis</th><th>reason</th><th>recommendedAction</th><th>operatorHint</th><th>action</th></tr>';\n"
+            + "      html += '<table><tr><th>path</th><th>type</th><th>priorityLevel</th><th>priorityScore</th><th>focusReason</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>replicaRecoveryClass</th><th>replicas</th><th>replicaCategories</th><th>replicaReasons</th><th>outstandingReplicas</th><th>failedAtMillis</th><th>reason</th><th>recommendedAction</th><th>operatorHint</th><th>action</th></tr>';\n"
             + "      for(const it of b.remainingFailedItemsPreview){\n"
             + "        const outstandingReplicas = (it.outstandingReplicaCount || 0) + ' (auto=' + (it.autoRecoverableReplicaCount || 0) + ', manual=' + (it.manualReplicaCount || 0) + ')';\n"
-            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.type)+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+(it.retryable ? 'yes' : 'capped')+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaRecoveryClass || '')+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+esc(it.replicaCategorySummary || '')+'</td><td>'+esc(it.replicaReasonSummary || '')+'</td><td>'+esc(outstandingReplicas)+'</td><td>'+it.failedAtMillis+'</td><td>'+esc(it.reason)+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td><td>'+renderHotFailedItemActionButtons(it)+'</td></tr>';\n"
+            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.priorityLevel || '')+'</td><td>'+esc(it.priorityScore || 0)+'</td><td>'+esc(it.focusReason || '')+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+(it.retryable ? 'yes' : 'capped')+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaRecoveryClass || '')+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+esc(it.replicaCategorySummary || '')+'</td><td>'+esc(it.replicaReasonSummary || '')+'</td><td>'+esc(outstandingReplicas)+'</td><td>'+it.failedAtMillis+'</td><td>'+esc(it.reason)+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td><td>'+renderHotFailedItemActionButtons(it)+'</td></tr>';\n"
             + "      }\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
             + "    }\n"
             + "    function renderHealthSummary(h){\n"
             + "      let html = '<div class=\"card\"><h3>队列健康概览</h3>';\n"
-            + "      html += '<table><tr><th>activeCount</th><th>failedCount</th><th>uploadingCount</th><th>oldestFailedAtMillis</th><th>maxRetryCount</th></tr>';\n"
-            + "      html += '<tr><td>'+h.activeCount+'</td><td>'+h.failedCount+'</td><td>'+h.uploadingCount+'</td><td>'+h.oldestFailedAtMillis+'</td><td>'+h.maxRetryCount+'</td></tr>';\n"
+            + "      html += '<table><tr><th>activeCount</th><th>failedCount</th><th>uploadingCount</th><th>stalledUploadCount</th><th>maxStalledMillis</th><th>topStalledPath</th><th>topStalledReplicaLabel</th><th>stalledReplicaSummary</th><th>stalledRecommendedAction</th><th>stalledOperatorHint</th><th>resumedUploadCount</th><th>resumedSegmentCount</th><th>topResumedPath</th><th>topResumedReplicaLabel</th><th>topResumedSegments</th><th>resumedReplicaSummary</th><th>oldestFailedAtMillis</th><th>maxRetryCount</th></tr>';\n"
+            + "      html += '<tr><td>'+h.activeCount+'</td><td>'+h.failedCount+'</td><td>'+h.uploadingCount+'</td><td>'+h.stalledUploadCount+'</td><td>'+h.maxStalledMillis+'</td><td>'+esc(h.topStalledPath || '')+'</td><td>'+esc(h.topStalledReplicaLabel || '')+'</td><td>'+esc(h.stalledReplicaSummary || '')+'</td><td>'+esc(h.stalledRecommendedAction || '')+'</td><td>'+esc(h.stalledOperatorHint || '')+'</td><td>'+h.resumedUploadCount+'</td><td>'+h.resumedSegmentCount+'</td><td>'+esc(h.topResumedPath || '')+'</td><td>'+esc(h.topResumedReplicaLabel || '')+'</td><td>'+h.topResumedSegments+'</td><td>'+esc(h.resumedReplicaSummary || '')+'</td><td>'+h.oldestFailedAtMillis+'</td><td>'+h.maxRetryCount+'</td></tr>';\n"
             + "      html += '</table></div>';\n"
             + "      return html;\n"
             + "    }\n"
@@ -1929,7 +2741,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      window.lastBatchResult = await fetch('/sync/api/failed/discard-replicas-by-category?category='+encodeURIComponent(category), {method:'POST'}).then(r => r.json());\n"
             + "      await reload();\n"
             + "    }\n"
-            + "    function render(queues, queueMatrix, healthSummary, failureTrend, recoverySuccessSummary, failureSummary, failureRecoverySummary, replicaRecoverySummary, replicaFailureSummary, replicaFailureCategorySummary, hotFailedItems, recentOperatorActions, recentTimeline, uploads, uploadPolicy, retryPolicy, recentCompletedUploads, recentFailedUploads){\n"
+            + "    function render(queues, queueMatrix, healthSummary, failureTrend, recoverySuccessSummary, failureSummary, failureRecoverySummary, replicaRecoverySummary, replicaFailureSummary, replicaFailureCategorySummary, hotFailedItems, recentOperatorActions, recentTimeline, timelineRiskSummary, stalledUploads, stalledReplicaHotspots, uploads, uploadPolicy, retryPolicy, recentCompletedUploads, recentFailedUploads){\n"
             + "      const keys = [\n"
             + "        ['新增(文件)', 'file_create'],\n"
             + "        ['修改(文件)', 'file_modify'],\n"
@@ -1943,13 +2755,31 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "        ['失败-删除(目录)', 'failed_dir_delete'],\n"
             + "      ];\n"
             + "      let overview = '';\n"
+            + "      const safeHealthSummary = healthSummary || {activeCount:0, failedCount:0, uploadingCount:0, stalledUploadCount:0, maxStalledMillis:0, topStalledPath:'', topStalledReplicaLabel:'', stalledReplicaSummary:'', stalledRecommendedAction:'', stalledOperatorHint:'', resumedUploadCount:0, resumedSegmentCount:0, topResumedPath:'', topResumedReplicaLabel:'', topResumedSegments:0, resumedReplicaSummary:'', oldestFailedAtMillis:0, maxRetryCount:0};\n"
+            + "      const safeFailureTrend = failureTrend || {recentFailedCount:0, failedLast5MinutesCount:0, failedLast60MinutesCount:0, outstandingFailedCount:0, latestFailedAtMillis:0};\n"
+            + "      const safeRecoverySuccessSummary = recoverySuccessSummary || {completedCount:0, failedCount:0, totalCount:0, successRatePercent:0, avgCompletedDurationMillis:0, avgFailedDurationMillis:0, lastCompletedAtMillis:0, lastFailedAtMillis:0};\n"
+            + "      const safeReplicaRecoverySummary = replicaRecoverySummary || {size:0, totalOutstandingReplicas:0, items:[]};\n"
+            + "      const safeHotFailedItems = hotFailedItems || {size:0, items:[]};\n"
+            + "      const safeRecentOperatorActions = recentOperatorActions || {size:0, items:[]};\n"
+            + "      const safeRecentTimeline = recentTimeline || {size:0, items:[]};\n"
+            + "      const safeTimelineRiskSummary = timelineRiskSummary || {criticalCount:0, highCount:0, mediumCount:0, lowCount:0, topRiskLevel:'', topRiskScore:0, topFocusReason:'', topPhase:'', topPath:'', topMessage:''};\n"
+            + "      overview += '<div class=\"cockpit-grid\">';\n"
+            + "      overview += '<div class=\"cockpit-stack\">';\n"
+            + "      overview += renderOpsCockpit(safeHealthSummary, safeFailureTrend, safeRecoverySuccessSummary, safeReplicaRecoverySummary, safeHotFailedItems, safeRecentOperatorActions, safeRecentTimeline, safeTimelineRiskSummary);\n"
+            + "      overview += renderCockpitFocus(safeHealthSummary, safeHotFailedItems, safeRecentOperatorActions, safeTimelineRiskSummary);\n"
+            + "      overview += '</div>';\n"
+            + "      overview += '<div class=\"cockpit-stack\">';\n"
+            + "      overview += renderQuickActions(safeReplicaRecoverySummary, safeTimelineRiskSummary, safeHotFailedItems);\n"
             + "      overview += renderQueueMatrix(queueMatrix || {size:0, items:[]});\n"
-            + "      overview += renderHealthSummary(healthSummary || {activeCount:0, failedCount:0, uploadingCount:0, oldestFailedAtMillis:0, maxRetryCount:0});\n"
-            + "      overview += renderFailureTrend(failureTrend || {recentFailedCount:0, failedLast5MinutesCount:0, failedLast60MinutesCount:0, outstandingFailedCount:0, latestFailedAtMillis:0});\n"
-            + "      overview += renderRecoverySuccessSummary(recoverySuccessSummary || {completedCount:0, failedCount:0, totalCount:0, successRatePercent:0, avgCompletedDurationMillis:0, avgFailedDurationMillis:0, lastCompletedAtMillis:0, lastFailedAtMillis:0});\n"
+            + "      overview += '</div>';\n"
+            + "      overview += '</div>';\n"
+            + "      overview += renderHealthSummary(safeHealthSummary);\n"
+            + "      overview += renderFailureTrend(safeFailureTrend);\n"
+            + "      overview += renderRecoverySuccessSummary(safeRecoverySuccessSummary);\n"
             + "      overview += renderUploadPolicy(uploadPolicy || {mode:'AUTO_SEGMENT_RESUMABLE', uploadBlockSizeBytes:0, resumeSupported:true, historyRetention:'memory_recent'});\n"
             + "      overview += renderRetryPolicy(retryPolicy || {autoRetryMode:'LIMITED_WITH_BACKOFF', maxRetryCount:0, retryBackoffMillis:0, manualRetryUnrestricted:true});\n"
             + "      let failed = '';\n"
+            + "      failed += renderFailureActionFlow(replicaFailureCategorySummary || {size:0, totalOutstandingReplicas:0, items:[]}, hotFailedItems || {size:0, items:[]}, recentOperatorActions || {size:0, items:[]}, safeTimelineRiskSummary, window.lastBatchResult || null);\n"
             + "      failed += renderFailureSummary(failureSummary || {size:0, totalFailedItems:0, items:[]});\n"
             + "      failed += renderFailureRecoverySummary(failureRecoverySummary || {size:0, totalFailedItems:0, items:[]});\n"
             + "      failed += renderReplicaRecoverySummary(replicaRecoverySummary || {size:0, totalOutstandingReplicas:0, items:[]});\n"
@@ -1960,6 +2790,9 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      failed += renderRecentOperatorActions(recentOperatorActions || {size:0, items:[]});\n"
             + "      failed += renderUploadHistory('最近失败上传', recentFailedUploads || {size:0, items:[]});\n"
             + "      let upload = '';\n"
+            + "      upload += renderResumedReplicaHotspots(resumedReplicaHotspots || {size:0, items:[]});\n"
+            + "      upload += renderStalledReplicaHotspots(stalledReplicaHotspots || {size:0, items:[]});\n"
+            + "      upload += renderStalledUploads(stalledUploads || {size:0, items:[]});\n"
             + "      upload += renderUploads(uploads || {size:0, items:[]});\n"
             + "      upload += renderUploadHistory('最近完成上传', recentCompletedUploads || {size:0, items:[]});\n"
             + "      upload += renderTimeline(recentTimeline || {size:0, items:[]});\n"
@@ -1976,6 +2809,13 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             + "      document.getElementById('content').innerHTML = html;\n"
             + "    }\n"
             + "    document.addEventListener('click', async function(e){\n"
+            + "      const scrollBtn = e.target.closest('button[data-scroll]');\n"
+            + "      if(scrollBtn){\n"
+            + "        const id = scrollBtn.getAttribute('data-scroll');\n"
+            + "        const el = document.getElementById(id);\n"
+            + "        if(el && el.scrollIntoView){ el.scrollIntoView({behavior:'smooth', block:'start'}); }\n"
+            + "        return;\n"
+            + "      }\n"
             + "      const batchBtn = e.target.closest('button[data-batch-action]');\n"
             + "      if(batchBtn){\n"
             + "        if(batchBtn.getAttribute('data-batch-action') === 'retry-auto-recoverable-replicas'){\n"
@@ -2128,6 +2968,134 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         private int failedCount;
         private int maxRetryCount;
         private long oldestFailedAtMillis;
+        private int stalledUploadCount;
+        private long maxStalledMillis;
+        private String topStalledPath = "";
+        private String topStalledReplicaLabel = "";
+        private final Map<String, Integer> stalledReplicaCounts = new LinkedHashMap<String, Integer>();
+        private String stalledReplicaSummary = "";
+        private String stalledRecommendedAction = "";
+        private String stalledOperatorHint = "";
+        private int resumedUploadCount;
+        private int resumedSegmentCount;
+        private String topResumedPath = "";
+        private String topResumedReplicaLabel = "";
+        private int topResumedSegments;
+        private final Map<String, Integer> resumedReplicaSegments = new LinkedHashMap<String, Integer>();
+        private String resumedReplicaSummary = "";
+
+        private void recordStalledReplica(String replicaLabel) {
+            String normalized = normalizedReplicaLabel(replicaLabel);
+            Integer count = stalledReplicaCounts.get(normalized);
+            stalledReplicaCounts.put(normalized, Integer.valueOf(count == null ? 1 : count.intValue() + 1));
+        }
+
+        private void finishReplicaSummary() {
+            if (stalledReplicaCounts.isEmpty()) {
+                stalledReplicaSummary = "";
+                return;
+            }
+            StringBuilder sb = new StringBuilder();
+            for (Map.Entry<String, Integer> entry : stalledReplicaCounts.entrySet()) {
+                if (sb.length() > 0) {
+                    sb.append(", ");
+                }
+                sb.append(entry.getKey()).append('=').append(entry.getValue());
+            }
+            stalledReplicaSummary = sb.toString();
+        }
+
+        private void finishStalledAdvice() {
+            if (stalledUploadCount <= 0) {
+                stalledRecommendedAction = "";
+                stalledOperatorHint = "";
+                return;
+            }
+            stalledRecommendedAction = recommendedActionForStalledUpload(topStalledReplicaLabel);
+            stalledOperatorHint = operatorHintForStalledUpload(topStalledPath, topStalledReplicaLabel);
+        }
+
+        private void recordResumedReplica(String replicaLabel, int resumedSegments) {
+            String normalized = normalizedReplicaLabel(replicaLabel);
+            Integer count = resumedReplicaSegments.get(normalized);
+            resumedReplicaSegments.put(normalized, Integer.valueOf((count == null ? 0 : count.intValue()) + Math.max(0, resumedSegments)));
+        }
+
+        private void finishResumedSummary() {
+            if (resumedReplicaSegments.isEmpty()) {
+                resumedReplicaSummary = "";
+                return;
+            }
+            StringBuilder sb = new StringBuilder();
+            for (Map.Entry<String, Integer> entry : resumedReplicaSegments.entrySet()) {
+                if (sb.length() > 0) {
+                    sb.append(", ");
+                }
+                sb.append(entry.getKey()).append('=').append(entry.getValue());
+            }
+            resumedReplicaSummary = sb.toString();
+        }
+    }
+
+    private static final class StalledReplicaHotspot {
+        private final String replicaLabel;
+        private int count;
+        private long maxStalledMillis;
+        private String topPath = "";
+
+        private StalledReplicaHotspot(String replicaLabel) {
+            this.replicaLabel = replicaLabel;
+        }
+
+        private void record(String path, long stalledMillis) {
+            count++;
+            if (stalledMillis > maxStalledMillis) {
+                maxStalledMillis = stalledMillis;
+                topPath = path == null ? "" : path;
+            }
+        }
+
+        private Map<String, Object> toMap() {
+            Map<String, Object> out = new LinkedHashMap<String, Object>();
+            out.put("replicaLabel", replicaLabel);
+            out.put("count", Integer.valueOf(count));
+            out.put("maxStalledMillis", Long.valueOf(maxStalledMillis));
+            out.put("topPath", topPath);
+            out.put("recommendedAction", recommendedActionForStalledUpload(replicaLabel));
+            out.put("operatorHint", operatorHintForStalledUpload(topPath, replicaLabel));
+            return out;
+        }
+    }
+
+    private static final class ResumedReplicaHotspot {
+        private final String replicaLabel;
+        private int count;
+        private int resumedSegments;
+        private int topResumedSegments;
+        private String topPath = "";
+
+        private ResumedReplicaHotspot(String replicaLabel) {
+            this.replicaLabel = replicaLabel;
+        }
+
+        private void record(String path, int uploadResumedSegments) {
+            count++;
+            resumedSegments += Math.max(0, uploadResumedSegments);
+            if (uploadResumedSegments > topResumedSegments) {
+                topResumedSegments = uploadResumedSegments;
+                topPath = path == null ? "" : path;
+            }
+        }
+
+        private Map<String, Object> toMap() {
+            Map<String, Object> out = new LinkedHashMap<String, Object>();
+            out.put("replicaLabel", replicaLabel);
+            out.put("count", Integer.valueOf(count));
+            out.put("resumedSegments", Integer.valueOf(resumedSegments));
+            out.put("topResumedSegments", Integer.valueOf(topResumedSegments));
+            out.put("topPath", topPath);
+            return out;
+        }
     }
 
     private static final class BatchReplicaActionResult {

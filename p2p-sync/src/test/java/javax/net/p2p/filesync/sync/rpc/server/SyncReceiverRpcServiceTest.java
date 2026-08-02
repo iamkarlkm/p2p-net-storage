@@ -8,6 +8,7 @@ import java.nio.file.attribute.FileTime;
 import javax.net.p2p.rpc.sync.proto.SyncEventType;
 import javax.net.p2p.rpc.sync.proto.SyncFinalizeRequest;
 import javax.net.p2p.rpc.sync.proto.SyncEventRequest;
+import javax.net.p2p.utils.SecurityUtils;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -48,6 +49,8 @@ public class SyncReceiverRpcServiceTest {
                 .setDirectory(false)
                 .setType(SyncEventType.CREATE)
                 .setLastModifiedMillis(ts)
+                .setContentLength(Files.size(f))
+                .setContentMd5(fileMd5(f))
                 .build());
             Assert.assertTrue(finAck.getOk());
 
@@ -110,6 +113,8 @@ public class SyncReceiverRpcServiceTest {
                 .setDirectory(false)
                 .setType(SyncEventType.MODIFY)
                 .setLastModifiedMillis(ts)
+                .setContentLength(Files.size(f))
+                .setContentMd5(fileMd5(f))
                 .build());
             Assert.assertTrue(fin1.getOk());
 
@@ -184,6 +189,8 @@ public class SyncReceiverRpcServiceTest {
                 .setDirectory(false)
                 .setType(SyncEventType.MODIFY)
                 .setLastModifiedMillis(ts2)
+                .setContentLength(Files.size(f))
+                .setContentMd5(fileMd5(f))
                 .build());
             Assert.assertTrue(finNew.getOk());
         }
@@ -238,7 +245,55 @@ public class SyncReceiverRpcServiceTest {
         }
     }
 
+    @Test
+    public void shouldRejectFinalizeWhenContentChecksumDoesNotMatch() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_receiver_root_checksum_");
+        Path state = Files.createTempDirectory("p2p_sync_receiver_state_checksum_");
+
+        try (SyncReceiverStateStore store = new SyncReceiverStateStore(state)) {
+            SyncEventApplier applier = new SyncEventApplier(root);
+            SyncReceiverRpcService svc = new SyncReceiverRpcService(123, root, store, applier);
+
+            long eventUid = 4001L;
+            long ts = System.currentTimeMillis() - 3_000L;
+            SyncEventAck applyAck = svc.applyEvent(SyncEventRequest.newBuilder()
+                .setTaskId(1L)
+                .setEventUid(eventUid)
+                .setFileId(4L)
+                .setPath("checksum.txt")
+                .setDirectory(false)
+                .setType(SyncEventType.MODIFY)
+                .setLastModifiedMillis(ts)
+                .build());
+            Assert.assertTrue(applyAck.getOk());
+            Assert.assertTrue(applyAck.getNeedsUpload());
+
+            Path f = root.resolve("checksum.txt");
+            writeUtf8(f, "actual-content");
+            Files.setLastModifiedTime(f, FileTime.fromMillis(ts));
+
+            SyncEventAck finAck = svc.finalizeEvent(SyncFinalizeRequest.newBuilder()
+                .setTaskId(1L)
+                .setEventUid(eventUid)
+                .setPath("checksum.txt")
+                .setDirectory(false)
+                .setType(SyncEventType.MODIFY)
+                .setLastModifiedMillis(ts)
+                .setContentLength(Files.size(f))
+                .setContentMd5("deadbeef")
+                .build());
+            Assert.assertFalse(finAck.getOk());
+            Assert.assertEquals("content_checksum_mismatch", finAck.getMessage());
+            Assert.assertFalse(store.isCompleted(eventUid));
+            Assert.assertNotNull(store.getPendingPathHash(eventUid));
+        }
+    }
+
     private static void writeUtf8(Path path, String value) throws Exception {
         Files.write(path, value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String fileMd5(Path path) throws Exception {
+        return SecurityUtils.getFileMD5String(path.toFile());
     }
 }

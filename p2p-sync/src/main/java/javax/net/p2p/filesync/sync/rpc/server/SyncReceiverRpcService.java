@@ -7,6 +7,7 @@ import javax.net.p2p.rpc.sync.proto.SyncEventAck;
 import javax.net.p2p.rpc.sync.proto.SyncEventRequest;
 import javax.net.p2p.rpc.sync.proto.SyncEventType;
 import javax.net.p2p.rpc.sync.proto.SyncFinalizeRequest;
+import javax.net.p2p.utils.SecurityUtils;
 import javax.net.p2p.utils.XXHashUtil;
 
 public final class SyncReceiverRpcService {
@@ -210,6 +211,49 @@ public final class SyncReceiverRpcService {
                     .setMessage("file not found")
                     .build();
             }
+            if (req.getContentLength() < 0L) {
+                return SyncEventAck.newBuilder()
+                    .setEventUid(eventUid)
+                    .setOk(false)
+                    .setStoreId(storeId)
+                    .setMessage("invalid content length")
+                    .build();
+            }
+            if (req.getContentMd5() == null || req.getContentMd5().trim().isEmpty()) {
+                return SyncEventAck.newBuilder()
+                    .setEventUid(eventUid)
+                    .setOk(false)
+                    .setStoreId(storeId)
+                    .setMessage("missing content md5")
+                    .build();
+            }
+            FileContentMetadata metadata;
+            try {
+                metadata = loadFileContentMetadata(target);
+            } catch (Exception e) {
+                return SyncEventAck.newBuilder()
+                    .setEventUid(eventUid)
+                    .setOk(false)
+                    .setStoreId(storeId)
+                    .setMessage("failed to verify content")
+                    .build();
+            }
+            if (metadata.length != req.getContentLength()) {
+                return SyncEventAck.newBuilder()
+                    .setEventUid(eventUid)
+                    .setOk(false)
+                    .setStoreId(storeId)
+                    .setMessage("content_length_mismatch")
+                    .build();
+            }
+            if (!metadata.md5.equalsIgnoreCase(req.getContentMd5())) {
+                return SyncEventAck.newBuilder()
+                    .setEventUid(eventUid)
+                    .setOk(false)
+                    .setStoreId(storeId)
+                    .setMessage("content_checksum_mismatch")
+                    .build();
+            }
         }
 
         SyncEventAck ack = applier.apply(SyncEventRequest.newBuilder()
@@ -246,6 +290,15 @@ public final class SyncReceiverRpcService {
         return XXHashUtil.hash64(b);
     }
 
+    private static FileContentMetadata loadFileContentMetadata(Path path) throws Exception {
+        long length = Files.size(path);
+        String md5 = SecurityUtils.getFileMD5String(path.toFile());
+        if (md5 == null || md5.trim().isEmpty()) {
+            throw new IllegalStateException("failed to compute file md5");
+        }
+        return new FileContentMetadata(length, md5);
+    }
+
     private static long hashPathKey(long taskId, String path) {
         String p = path == null ? "" : path.replace('\\', '/');
         byte[] b = (taskId + "\n" + p).getBytes(StandardCharsets.UTF_8);
@@ -268,5 +321,15 @@ public final class SyncReceiverRpcService {
             stateStore.removePending(displacedOwner.longValue());
         }
         return true;
+    }
+
+    private static final class FileContentMetadata {
+        private final long length;
+        private final String md5;
+
+        private FileContentMetadata(long length, String md5) {
+            this.length = length;
+            this.md5 = md5;
+        }
     }
 }

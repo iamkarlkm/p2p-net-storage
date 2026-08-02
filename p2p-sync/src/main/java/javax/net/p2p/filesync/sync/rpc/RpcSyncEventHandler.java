@@ -178,7 +178,8 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
         // 两阶段：ApplyEvent 通过 -> 上传文件内容 -> FinalizeEvent 才算最终 ACK
         final UploadStatusEntry statusEntry;
         try {
-            statusEntry = new UploadStatusEntry(eventUid, fileId, relativePath, Files.size(absolutePath));
+            int resumedSegments = segmentedUploadedSegments(storeId, relativePath);
+            statusEntry = new UploadStatusEntry(storeId, eventUid, fileId, relativePath, Files.size(absolutePath), resumedSegments);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -215,6 +216,8 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
                 .setDirectory(false)
                 .setType(toProtoType(type))
                 .setLastModifiedMillis(finalizeLastModifiedMillis)
+                .setContentLength(metadata.getLength())
+                .setContentMd5(metadata.getMd5())
                 .build();
             RpcCallOptions options = RpcCallOptions.withDeadline(System.currentTimeMillis() + 10_000).withIdempotent(true);
             return rpcClient.unaryAsync(SyncRpcServices.SYNC_SERVICE, SyncRpcServices.FINALIZE_EVENT, fin, SyncEventAck.class, options);
@@ -299,9 +302,20 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
             return;
         }
         try {
-            int uploadedSegments = FileUtil.getUpInfoTmp(entry.path).getRight().size();
+            int uploadedSegments = FileUtil.getUpInfoTmp(entry.storeId, entry.path).getRight().size();
             entry.setUploadedSegments(uploadedSegments);
         } catch (Exception ignored) {
+        }
+    }
+
+    private static int segmentedUploadedSegments(int storeId, String path) {
+        if (path == null || path.trim().isEmpty()) {
+            return 0;
+        }
+        try {
+            return FileUtil.getUpInfoTmp(storeId, path).getRight().size();
+        } catch (Exception ignored) {
+            return 0;
         }
     }
 
@@ -382,30 +396,41 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
     }
 
     private static final class UploadStatusEntry {
+        private final int storeId;
         private final long eventUid;
         private final long fileId;
         private final String path;
         private final long fileSize;
         private final boolean segmented;
         private final int totalSegments;
+        private final int resumedSegments;
         private final long startedAtMillis;
         private volatile String phase;
         private final AtomicInteger uploadedSegments = new AtomicInteger();
         private volatile long updatedAtMillis;
+        private volatile long lastProgressAtMillis;
 
-        private UploadStatusEntry(long eventUid, long fileId, String path, long fileSize) {
+        private UploadStatusEntry(int storeId, long eventUid, long fileId, String path, long fileSize, int resumedSegments) {
+            this.storeId = storeId;
             this.eventUid = eventUid;
             this.fileId = fileId;
             this.path = path == null ? "" : path;
             this.fileSize = fileSize;
             this.segmented = fileSize > P2PConfig.DATA_PUT_BLOCK_SIZE;
             this.totalSegments = segmentCount(fileSize);
+            int normalizedResumedSegments = resumedSegments;
+            if (normalizedResumedSegments < 0) {
+                normalizedResumedSegments = 0;
+            }
+            if (this.totalSegments > 0 && normalizedResumedSegments > this.totalSegments) {
+                normalizedResumedSegments = this.totalSegments;
+            }
+            this.resumedSegments = this.segmented ? normalizedResumedSegments : 0;
             this.startedAtMillis = System.currentTimeMillis();
             this.updatedAtMillis = this.startedAtMillis;
+            this.lastProgressAtMillis = this.startedAtMillis;
             this.phase = "queued";
-            if (!segmented && fileSize > 0L) {
-                this.uploadedSegments.set(0);
-            }
+            this.uploadedSegments.set(this.resumedSegments);
         }
 
         private void setPhase(String phase) {
@@ -421,15 +446,22 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
             if (totalSegments > 0 && capped > totalSegments) {
                 capped = totalSegments;
             }
+            int previous = this.uploadedSegments.get();
             this.uploadedSegments.set(capped);
-            this.updatedAtMillis = System.currentTimeMillis();
+            long now = System.currentTimeMillis();
+            if (capped > previous) {
+                this.lastProgressAtMillis = now;
+            }
+            this.updatedAtMillis = now;
         }
 
         private void markUploaded() {
+            long now = System.currentTimeMillis();
             if (totalSegments > 0) {
                 this.uploadedSegments.set(totalSegments);
             }
-            this.updatedAtMillis = System.currentTimeMillis();
+            this.lastProgressAtMillis = now;
+            this.updatedAtMillis = now;
         }
 
         private SyncUploadStatus snapshot() {
@@ -438,7 +470,7 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
 
         private SyncUploadStatus snapshot(String message) {
             return new SyncUploadStatus(eventUid, fileId, path, phase, fileSize, segmented,
-                totalSegments, uploadedSegments.get(), startedAtMillis, updatedAtMillis, message);
+                totalSegments, uploadedSegments.get(), startedAtMillis, updatedAtMillis, lastProgressAtMillis, resumedSegments, null, message);
         }
 
         private static int segmentCount(long fileSize) {

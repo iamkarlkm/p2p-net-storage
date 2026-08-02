@@ -314,6 +314,83 @@ public class P2PDirectorySyncServiceTest {
         Assert.assertFalse(events.toString(), events.contains("CREATE:ignored.log"));
     }
 
+    @Test
+    public void shouldExcludeWinOverIncludeWhenBothMatch() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_root_include_exclude_priority_");
+        Path state = Files.createTempDirectory("p2p_sync_state_include_exclude_priority_");
+
+        P2PSyncConfig cfg = new P2PSyncConfig();
+        cfg.setTaskId(8L);
+        cfg.setLocalDir(root.toString());
+        cfg.setDsHome(state.toString());
+        cfg.setIncludeGlobs(Collections.singletonList("**/*.txt"));
+        cfg.setExcludeGlobs(Collections.singletonList("**/blocked.txt"));
+
+        CountDownLatch latch = new CountDownLatch(1);
+        List<String> events = Collections.synchronizedList(new ArrayList<>());
+
+        try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, (type, fileId, rel, abs, dir, acker) -> {
+            if (!dir) {
+                events.add(type.name() + ":" + rel);
+                if ("CREATE:allowed.txt".equals(type.name() + ":" + rel)) {
+                    latch.countDown();
+                }
+            }
+            acker.ack();
+        })) {
+            svc.start();
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            writeUtf8(root.resolve("allowed.txt"), "v1");
+            writeUtf8(root.resolve("blocked.txt"), "v1");
+
+            Assert.assertTrue(events.toString(), latch.await(5, TimeUnit.SECONDS));
+            Thread.sleep(300L);
+        }
+
+        Assert.assertTrue(events.toString(), events.contains("CREATE:allowed.txt"));
+        Assert.assertFalse(events.toString(), events.contains("CREATE:blocked.txt"));
+    }
+
+    @Test
+    public void shouldSkipWatchEventsUnderExcludedDirectoryTree() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_root_exclude_dir_watch_");
+        Path state = Files.createTempDirectory("p2p_sync_state_exclude_dir_watch_");
+
+        P2PSyncConfig cfg = new P2PSyncConfig();
+        cfg.setTaskId(9L);
+        cfg.setLocalDir(root.toString());
+        cfg.setDsHome(state.toString());
+        cfg.setIncludeGlobs(Collections.singletonList("**/*.txt"));
+        cfg.setExcludeGlobs(Collections.singletonList("blocked/**"));
+
+        CountDownLatch latch = new CountDownLatch(1);
+        List<String> events = Collections.synchronizedList(new ArrayList<>());
+
+        try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, (type, fileId, rel, abs, dir, acker) -> {
+            if (!dir) {
+                events.add(type.name() + ":" + rel);
+                if ("CREATE:allowed.txt".equals(type.name() + ":" + rel)) {
+                    latch.countDown();
+                }
+            }
+            acker.ack();
+        })) {
+            svc.start();
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            Files.createDirectories(root.resolve("blocked"));
+            writeUtf8(root.resolve("blocked").resolve("a.txt"), "v1");
+            writeUtf8(root.resolve("allowed.txt"), "v1");
+
+            Assert.assertTrue(events.toString(), latch.await(5, TimeUnit.SECONDS));
+            Thread.sleep(300L);
+        }
+
+        Assert.assertTrue(events.toString(), events.contains("CREATE:allowed.txt"));
+        Assert.assertFalse(events.toString(), events.contains("CREATE:blocked/a.txt"));
+    }
+
     private static void writeUtf8(Path path, String value) throws Exception {
         Files.write(path, value.getBytes(StandardCharsets.UTF_8));
     }

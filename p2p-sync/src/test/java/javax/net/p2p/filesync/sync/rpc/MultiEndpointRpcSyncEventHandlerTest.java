@@ -3,12 +3,18 @@ package javax.net.p2p.filesync.sync.rpc;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+
 import javax.net.p2p.filesync.sync.FileSyncAcker;
 import javax.net.p2p.filesync.sync.FileSyncEventHandler;
 import javax.net.p2p.filesync.sync.FileSyncEventType;
+import javax.net.p2p.filesync.sync.SyncUploadStatus;
+import javax.net.p2p.filesync.sync.SyncUploadStatusProvider;
+
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -176,6 +182,45 @@ public class MultiEndpointRpcSyncEventHandlerTest {
         Assert.assertEquals(0, failCount.get());
     }
 
+    @Test
+    public void shouldAggregateUploadStatusesFromReplicaHandlers() {
+        long now = System.currentTimeMillis();
+        MultiEndpointRpcSyncEventHandler handler = MultiEndpointRpcSyncEventHandler.forHandlers(101L, Arrays.asList(
+            new UploadStatusHandler(
+                Collections.singletonList(new SyncUploadStatus(10L, 11L, "a.bin", "uploading", 32L, true, 4, 2, now - 2000L, now - 500L, now - 500L, 1, null, null)),
+                Collections.singletonList(new SyncUploadStatus(20L, 21L, "done.bin", "completed", 16L, false, 1, 1, now - 4000L, now - 1000L, "")),
+                Collections.singletonList(new SyncUploadStatus(30L, 31L, "fail.bin", "failed", 8L, false, 1, 0, now - 5000L, now - 1200L, "write_conflict"))
+            ),
+            new UploadStatusHandler(
+                Collections.singletonList(new SyncUploadStatus(40L, 41L, "b.bin", "uploading", 64L, true, 8, 7, now - 1000L, now - 100L, now - 100L, 3, null, null)),
+                Collections.singletonList(new SyncUploadStatus(50L, 51L, "done-2.bin", "completed", 20L, false, 1, 1, now - 6000L, now - 900L, "")),
+                Collections.singletonList(new SyncUploadStatus(60L, 61L, "fail-2.bin", "failed", 12L, false, 1, 0, now - 7000L, now - 800L, "network_unreachable"))
+            )
+        ));
+
+        List<SyncUploadStatus> active = handler.snapshotActiveUploads(10);
+        Assert.assertEquals(2, active.size());
+        Assert.assertEquals("b.bin", active.get(0).getPath());
+        Assert.assertEquals("handler-2", active.get(0).getReplicaLabel());
+        Assert.assertTrue(active.get(0).isResumedUpload());
+        Assert.assertEquals(3, active.get(0).getResumedSegments());
+        Assert.assertEquals("a.bin", active.get(1).getPath());
+        Assert.assertEquals("handler-1", active.get(1).getReplicaLabel());
+        Assert.assertTrue(active.get(1).isResumedUpload());
+        Assert.assertEquals(1, active.get(1).getResumedSegments());
+
+        List<SyncUploadStatus> completed = handler.snapshotRecentCompletedUploads(10);
+        Assert.assertEquals(2, completed.size());
+        Assert.assertEquals("done-2.bin", completed.get(0).getPath());
+        Assert.assertEquals("handler-2", completed.get(0).getReplicaLabel());
+
+        List<SyncUploadStatus> failed = handler.snapshotRecentFailedUploads(10);
+        Assert.assertEquals(2, failed.size());
+        Assert.assertEquals("fail-2.bin", failed.get(0).getPath());
+        Assert.assertTrue(failed.get(0).getMessage().contains("network_unreachable"));
+        Assert.assertEquals("handler-2", failed.get(0).getReplicaLabel());
+    }
+
     private static FileSyncEventHandler ackingHandler(AtomicInteger calls) {
         return (type, fileId, relativePath, absolutePath, directory, acker) -> {
             calls.incrementAndGet();
@@ -195,6 +240,38 @@ public class MultiEndpointRpcSyncEventHandlerTest {
             calls.incrementAndGet();
             acker.fail(reason);
         };
+    }
+
+    private static final class UploadStatusHandler implements FileSyncEventHandler, SyncUploadStatusProvider {
+        private final List<SyncUploadStatus> active;
+        private final List<SyncUploadStatus> completed;
+        private final List<SyncUploadStatus> failed;
+
+        private UploadStatusHandler(List<SyncUploadStatus> active, List<SyncUploadStatus> completed, List<SyncUploadStatus> failed) {
+            this.active = active;
+            this.completed = completed;
+            this.failed = failed;
+        }
+
+        @Override
+        public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
+            acker.ack();
+        }
+
+        @Override
+        public List<SyncUploadStatus> snapshotActiveUploads(int limit) {
+            return active;
+        }
+
+        @Override
+        public List<SyncUploadStatus> snapshotRecentCompletedUploads(int limit) {
+            return completed;
+        }
+
+        @Override
+        public List<SyncUploadStatus> snapshotRecentFailedUploads(int limit) {
+            return failed;
+        }
     }
 
     private static Path samplePath() {

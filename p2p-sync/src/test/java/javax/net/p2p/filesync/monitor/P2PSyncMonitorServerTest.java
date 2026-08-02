@@ -20,6 +20,7 @@ import javax.net.p2p.filesync.sync.P2PDirectorySyncService;
 import javax.net.p2p.filesync.sync.P2PSyncStateStore;
 import javax.net.p2p.filesync.sync.SyncUploadStatus;
 import javax.net.p2p.filesync.sync.SyncUploadStatusProvider;
+import javax.net.p2p.filesync.sync.rpc.MultiEndpointRpcSyncEventHandler;
 
 import org.junit.Assert;
 import org.junit.Test;
@@ -43,8 +44,10 @@ public class P2PSyncMonitorServerTest {
             P2PSyncStateStore store = svc.getStore();
             long fileId = store.getOrCreateFileId("failed.txt");
             long staleId = store.getOrCreateFileId("stale.txt");
+            long checksumId = store.getOrCreateFileId("checksum.txt");
             store.markFailed(FileSyncEventType.CREATE, false, fileId, "write_conflict");
             store.markFailed(FileSyncEventType.DELETE, false, staleId, "stale");
+            store.markFailed(FileSyncEventType.MODIFY, false, checksumId, "content_checksum_mismatch");
             store.markReplicaState(FileSyncEventType.CREATE, false, fileId, "node-a", "ACKED");
             store.markReplicaState(FileSyncEventType.CREATE, false, fileId, "node-b", "FAILED");
             store.markReplicaState(FileSyncEventType.DELETE, false, staleId, "node-c", "FAILED");
@@ -69,9 +72,52 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("document.addEventListener('click'"));
                 Assert.assertTrue(index.contains("class=\"page\""));
                 Assert.assertTrue(index.contains("class=\"section\""));
+                Assert.assertTrue(index.contains("summary-grid"));
+                Assert.assertTrue(index.contains("summary-card"));
+                Assert.assertTrue(index.contains("cockpit-grid"));
+                Assert.assertTrue(index.contains("cockpit-stack"));
+                Assert.assertTrue(index.contains("focus-grid"));
+                Assert.assertTrue(index.contains("focus-card"));
+                Assert.assertTrue(index.contains("action-panel"));
                 Assert.assertTrue(index.contains("总览区"));
+                Assert.assertTrue(index.contains("风险总览"));
+                Assert.assertTrue(index.contains("卡住上传"));
+                Assert.assertTrue(index.contains("恢复上传"));
+                Assert.assertTrue(index.contains("快速动作"));
+                Assert.assertTrue(index.contains("焦点事件"));
+                Assert.assertTrue(index.contains("卡住上传焦点"));
+                Assert.assertTrue(index.contains("恢复上传焦点"));
+                Assert.assertTrue(index.contains("卡住副本热点"));
+                Assert.assertTrue(index.contains("恢复副本热点"));
+                Assert.assertTrue(index.contains(">resumedUpload</th>"));
+                Assert.assertTrue(index.contains(">resumedSegments</th>"));
+                Assert.assertTrue(index.contains("data-scroll=\"stalled-uploads\""));
+                Assert.assertTrue(index.contains("data-scroll=\"resumed-replica-hotspots\""));
+                Assert.assertTrue(index.contains("关联处置"));
+                Assert.assertTrue(index.contains("失败总量"));
+                Assert.assertTrue(index.contains("副本待处置"));
+                Assert.assertTrue(index.contains("热点失败焦点"));
+                Assert.assertTrue(index.contains("最近运维动作摘要"));
+                Assert.assertTrue(index.contains("时间线风险焦点"));
+                Assert.assertTrue(index.contains("时间线高风险事件"));
+                Assert.assertTrue(index.contains("热点失败项"));
+                Assert.assertTrue(index.contains("关联热点建议"));
+                Assert.assertTrue(index.contains("处置链路"));
+                Assert.assertTrue(index.contains("1. 失败类别入口"));
+                Assert.assertTrue(index.contains("2. 热点失败落点"));
+                Assert.assertTrue(index.contains("3. 收口与后续动作"));
+                Assert.assertTrue(index.contains("继续收口"));
+                Assert.assertTrue(index.contains("已收口"));
+                Assert.assertTrue(index.contains("remainingCategories="));
+                Assert.assertTrue(index.contains("preview="));
+                Assert.assertTrue(index.contains("优先执行 NETWORK 重试"));
+                Assert.assertTrue(index.contains("继续重试 NETWORK"));
+                Assert.assertTrue(index.contains("人工重试 CONFLICT"));
+                Assert.assertTrue(index.contains("放弃 RETRY_LIMIT"));
+                Assert.assertTrue(index.contains("priority="));
                 Assert.assertTrue(index.contains("失败区"));
                 Assert.assertTrue(index.contains("上传区"));
+                Assert.assertTrue(index.contains("卡住上传"));
                 Assert.assertTrue(index.contains("队列明细区"));
                 Assert.assertTrue(index.contains(">replicas</th>"));
                 Assert.assertTrue(index.contains("副本恢复分级汇总"));
@@ -82,6 +128,19 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("最近运维动作"));
                 Assert.assertTrue(index.contains(">recommendedAction</th>"));
                 Assert.assertTrue(index.contains(">operatorHint</th>"));
+                Assert.assertTrue(index.contains(">stalledUploadCount</th>"));
+                Assert.assertTrue(index.contains(">maxStalledMillis</th>"));
+                Assert.assertTrue(index.contains(">topStalledPath</th>"));
+                Assert.assertTrue(index.contains(">topStalledReplicaLabel</th>"));
+                Assert.assertTrue(index.contains(">stalledReplicaSummary</th>"));
+                Assert.assertTrue(index.contains(">stalledRecommendedAction</th>"));
+                Assert.assertTrue(index.contains(">stalledOperatorHint</th>"));
+                Assert.assertTrue(index.contains(">resumedUploadCount</th>"));
+                Assert.assertTrue(index.contains(">resumedSegmentCount</th>"));
+                Assert.assertTrue(index.contains(">topResumedPath</th>"));
+                Assert.assertTrue(index.contains(">topResumedReplicaLabel</th>"));
+                Assert.assertTrue(index.contains(">topResumedSegments</th>"));
+                Assert.assertTrue(index.contains(">resumedReplicaSummary</th>"));
                 Assert.assertTrue(index.contains("data-category-action"));
                 Assert.assertTrue(index.contains("建议重试"));
                 Assert.assertTrue(index.contains("建议放弃"));
@@ -93,6 +152,29 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(index.contains("clearedPreviewPaths="));
                 Assert.assertTrue(index.contains("formatDeltaSummary"));
                 Assert.assertTrue(index.contains("formatRemainingSummary"));
+                Assert.assertTrue(index.contains("renderSummaryCard"));
+                Assert.assertTrue(index.contains("renderFocusCard"));
+                Assert.assertTrue(index.contains("operatorActionDigest"));
+                Assert.assertTrue(index.contains("renderOperatorActionDigestCard"));
+                Assert.assertTrue(index.contains("normalizeTimelineCategory"));
+                Assert.assertTrue(index.contains("hotItemMatchesTimeline"));
+                Assert.assertTrue(index.contains("pickLinkedHotItem"));
+                Assert.assertTrue(index.contains("renderTimelineHotspotLink"));
+                Assert.assertTrue(index.contains("renderFailureActionFlow"));
+                Assert.assertTrue(index.contains("renderClosureOutcomeCard"));
+                Assert.assertTrue(index.contains("renderActionOutcomeGuidance"));
+                Assert.assertTrue(index.contains("remainingCategoryNextStep"));
+                Assert.assertTrue(index.contains("renderRemainingCategoryActionButtons"));
+                Assert.assertTrue(index.contains("renderRemainingFailureSample"));
+                Assert.assertTrue(index.contains("next="));
+                Assert.assertTrue(index.contains("renderQuickActions"));
+                Assert.assertTrue(index.contains("renderCockpitFocus"));
+                Assert.assertTrue(index.contains("renderOpsCockpit"));
+                Assert.assertTrue(index.contains(">priorityLevel</th>"));
+                Assert.assertTrue(index.contains(">priorityScore</th>"));
+                Assert.assertTrue(index.contains(">focusReason</th>"));
+                Assert.assertTrue(index.contains(">riskLevel</th>"));
+                Assert.assertTrue(index.contains(">riskScore</th>"));
                 Assert.assertTrue(index.contains(">cleared</th>"));
                 Assert.assertTrue(index.contains(">remaining</th>"));
                 Assert.assertTrue(index.contains(">replicaRecoveryClass</th>"));
@@ -106,10 +188,10 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"queueMatrix\""));
                 Assert.assertTrue(json.contains("\"label\":\"文件新增\""));
                 Assert.assertTrue(json.contains("\"label\":\"文件修改\""));
-                Assert.assertTrue(json.contains("\"activeCount\":1"));
-                Assert.assertTrue(json.contains("\"failedCount\":2"));
+                Assert.assertTrue(json.contains("\"failedCount\":1"));
                 Assert.assertTrue(json.contains("\"fileId\":\""));
                 Assert.assertTrue(json.contains("\"path\":\"failed.txt\""));
+                Assert.assertTrue(json.contains("\"path\":\"checksum.txt\""));
                 Assert.assertTrue(json.contains("\"retryCount\":2"));
                 Assert.assertTrue(json.contains("\"remainingRetries\":1"));
                 Assert.assertTrue(json.contains("\"retryable\":true"));
@@ -123,6 +205,9 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"replicaCategorySummary\":\"CONFLICT=1\""));
                 Assert.assertTrue(json.contains("\"replicaReasonSummary\":\"write_conflict=1\""));
                 Assert.assertTrue(json.contains("\"replicaRecoveryClass\":\"MANUAL_INTERVENTION\""));
+                Assert.assertTrue(json.contains("\"priorityLevel\":\"CRITICAL\""));
+                Assert.assertTrue(json.contains("\"focusReason\":\"CONFLICT_REQUIRES_MANUAL_INTERVENTION\""));
+                Assert.assertTrue(json.contains("\"priorityScore\":"));
                 Assert.assertTrue(json.contains("\"outstandingReplicaCount\":1"));
                 Assert.assertTrue(json.contains("\"autoRecoverableReplicaCount\":0"));
                 Assert.assertTrue(json.contains("\"manualReplicaCount\":1"));
@@ -134,21 +219,39 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"failureTrend\""));
                 Assert.assertTrue(json.contains("\"recoverySuccessSummary\""));
                 Assert.assertTrue(json.contains("\"activeCount\":1"));
-                Assert.assertTrue(json.contains("\"failedCount\":2"));
+                Assert.assertTrue(json.contains("\"failedCount\":3"));
                 Assert.assertTrue(json.contains("\"uploadingCount\":1"));
+                Assert.assertTrue(json.contains("\"stalledUploadCount\":0"));
+                Assert.assertTrue(json.contains("\"maxStalledMillis\":0"));
+                Assert.assertTrue(json.contains("\"topStalledPath\":\"\""));
+                Assert.assertTrue(json.contains("\"topStalledReplicaLabel\":\"\""));
+                Assert.assertTrue(json.contains("\"stalledReplicaSummary\":\"\""));
+                Assert.assertTrue(json.contains("\"stalledRecommendedAction\":\"\""));
+                Assert.assertTrue(json.contains("\"stalledOperatorHint\":\"\""));
+                Assert.assertTrue(json.contains("\"resumedUploadCount\":1"));
+                Assert.assertTrue(json.contains("\"resumedSegmentCount\":1"));
+                Assert.assertTrue(json.contains("\"topResumedPath\":\"big.bin\""));
+                Assert.assertTrue(json.contains("\"topResumedReplicaLabel\":\"default\""));
+                Assert.assertTrue(json.contains("\"topResumedSegments\":1"));
+                Assert.assertTrue(json.contains("\"resumedReplicaSummary\":\"default=1\""));
+                Assert.assertTrue(json.contains("\"stalledReplicaHotspots\":{\"size\":0"));
+                Assert.assertTrue(json.contains("\"resumedReplicaHotspots\":{\"size\":1"));
+                Assert.assertTrue(json.contains("\"resumedUpload\":true"));
+                Assert.assertTrue(json.contains("\"resumedSegments\":1"));
+                Assert.assertTrue(json.contains("\"replicaLabel\":\"default\""));
                 Assert.assertTrue(json.contains("\"oldestFailedAtMillis\":"));
                 Assert.assertTrue(json.contains("\"maxRetryCount\":3"));
                 Assert.assertTrue(json.contains("\"recentFailedCount\":1"));
                 Assert.assertTrue(json.contains("\"failedLast5MinutesCount\":1"));
                 Assert.assertTrue(json.contains("\"failedLast60MinutesCount\":1"));
-                Assert.assertTrue(json.contains("\"outstandingFailedCount\":2"));
+                Assert.assertTrue(json.contains("\"outstandingFailedCount\":3"));
                 Assert.assertTrue(json.contains("\"completedCount\":1"));
-                Assert.assertTrue(json.contains("\"totalCount\":2"));
+                Assert.assertTrue(json.contains("\"totalCount\":3"));
                 Assert.assertTrue(json.contains("\"successRatePercent\":50"));
                 Assert.assertTrue(json.contains("\"avgCompletedDurationMillis\":200"));
                 Assert.assertTrue(json.contains("\"avgFailedDurationMillis\":300"));
                 Assert.assertTrue(json.contains("\"failureSummary\""));
-                Assert.assertTrue(json.contains("\"totalFailedItems\":2"));
+                Assert.assertTrue(json.contains("\"totalFailedItems\":3"));
                 Assert.assertTrue(json.contains("\"failureRecoverySummary\""));
                 Assert.assertTrue(json.contains("\"recoveryClass\":\"MANUAL_INTERVENTION\""));
                 Assert.assertTrue(json.contains("\"recoveryClass\":\"AUTO_RECOVERABLE\""));
@@ -164,18 +267,23 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("先核对副本状态或 pending 情况，再按需重试"));
                 Assert.assertTrue(json.contains("\"reason\":\"write_conflict\""));
                 Assert.assertTrue(json.contains("\"reason\":\"stale\""));
+                Assert.assertTrue(json.contains("\"reason\":\"content_checksum_mismatch\""));
                 Assert.assertTrue(json.contains("\"hotFailedItems\""));
-                Assert.assertTrue(json.contains("\"size\":2"));
+                Assert.assertTrue(json.contains("\"size\":3"));
                 Assert.assertTrue(json.contains("\"reason\":\"stale\""));
+                Assert.assertTrue(json.contains("\"recommendedAction\":\"RETRY_AFTER_STATE_CHECK\""));
                 Assert.assertTrue(json.contains("\"retryCount\":2"));
                 Assert.assertTrue(json.contains("\"remainingRetries\":1"));
                 Assert.assertTrue(json.contains("\"retryable\":true"));
+                Assert.assertTrue(json.contains("\"priorityLevel\":\"HIGH\""));
+                Assert.assertTrue(json.contains("\"focusReason\":\"STATE_CHECK_REQUIRED\""));
                 Assert.assertTrue(json.contains("\"recoveryClass\":\"AUTO_RECOVERABLE\""));
                 Assert.assertTrue(json.contains("\"recoveryClass\":\"MANUAL_INTERVENTION\""));
                 Assert.assertTrue(json.contains("\"recommendedAction\":\"VERIFY_STATE_THEN_RETRY\""));
                 Assert.assertTrue(json.contains("\"recommendedAction\":\"MANUAL_RETRY_OR_DISCARD_REPLICAS\""));
                 Assert.assertTrue(json.contains("\"count\":1"));
                 Assert.assertTrue(json.contains("\"uploads\""));
+                Assert.assertTrue(json.contains("\"stalledUploads\""));
                 Assert.assertTrue(json.contains("\"uploadPolicy\""));
                 Assert.assertTrue(json.contains("\"mode\":\"AUTO_SEGMENT_RESUMABLE\""));
                 Assert.assertTrue(json.contains("\"uploadBlockSizeBytes\":"));
@@ -185,16 +293,143 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(json.contains("\"retryBackoffMillis\":2500"));
                 Assert.assertTrue(json.contains("\"manualRetryUnrestricted\":true"));
                 Assert.assertTrue(json.contains("\"recentTimeline\""));
+                Assert.assertTrue(json.contains("\"timelineRiskSummary\""));
                 Assert.assertTrue(json.contains("\"recentOperatorActions\""));
                 Assert.assertTrue(json.contains("\"phase\":\"completed\""));
                 Assert.assertTrue(json.contains("\"phase\":\"failed\""));
+                Assert.assertTrue(json.contains("\"riskLevel\":\"CRITICAL\""));
+                Assert.assertTrue(json.contains("\"riskLevel\":\"MEDIUM\""));
+                Assert.assertTrue(json.contains("\"riskLevel\":\"LOW\""));
+                Assert.assertTrue(json.contains("\"focusReason\":\"UPLOAD_FAILED_CONFLICT\""));
+                Assert.assertTrue(json.contains("\"focusReason\":\"SEGMENT_UPLOAD_IN_PROGRESS\""));
+                Assert.assertTrue(json.contains("\"topRiskLevel\":\"CRITICAL\""));
+                Assert.assertTrue(json.contains("\"topFocusReason\":\"UPLOAD_FAILED_CONFLICT\""));
                 Assert.assertTrue(json.contains("\"size\":1"));
                 Assert.assertTrue(json.contains("\"phase\":\"uploading\""));
                 Assert.assertTrue(json.contains("\"segmented\":true"));
+                Assert.assertTrue(json.contains("\"lastProgressAtMillis\":"));
+                Assert.assertTrue(json.contains("\"stalledMillis\":"));
+                Assert.assertTrue(json.contains("\"stalledUploads\":{\"size\":0"));
                 Assert.assertTrue(json.contains("\"recentCompletedUploads\""));
                 Assert.assertTrue(json.contains("\"recentFailedUploads\""));
                 Assert.assertTrue(json.contains("\"message\":\"write_conflict\""));
             }
+        }
+    }
+
+    @Test
+    public void shouldMarkSegmentUploadAsStalledWhenNoRecentProgress() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_monitor_stalled_root_");
+        Path state = Files.createTempDirectory("p2p_sync_monitor_stalled_state_");
+        P2PSyncConfig cfg = new P2PSyncConfig();
+        cfg.setTaskId(150L);
+        cfg.setLocalDir(root.toString());
+        cfg.setDsHome(state.toString());
+        cfg.setMaxRetryCount(3);
+        cfg.setRetryBackoffMillis(2500L);
+
+        try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, new StalledUploadStatusHandler());
+             P2PSyncMonitorServer server = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
+            svc.start();
+            server.start();
+
+            String json = send("GET", "http://127.0.0.1:" + server.getPort() + "/sync/api/queues?limit=20", null);
+            Assert.assertTrue(json.contains("\"focusReason\":\"SEGMENT_UPLOAD_STALLED\""));
+            Assert.assertTrue(json.contains("\"riskLevel\":\"HIGH\""));
+            Assert.assertTrue(json.contains("\"stalledMillis\":"));
+            Assert.assertTrue(json.contains("\"path\":\"stalled.bin\""));
+            Assert.assertTrue(json.contains("\"stalledUploadCount\":1"));
+            Assert.assertTrue(json.contains("\"topStalledPath\":\"stalled.bin\""));
+            Assert.assertTrue(json.contains("\"topStalledReplicaLabel\":\"handler-stalled\""));
+            Assert.assertTrue(json.contains("\"stalledReplicaSummary\":\"handler-stalled=1\""));
+            Assert.assertTrue(json.contains("\"stalledRecommendedAction\":\"CHECK_STALLED_REPLICA\""));
+            Assert.assertTrue(json.contains("优先检查副本 handler-stalled 的网络连通性"));
+            Assert.assertTrue(json.contains("\"recommendedAction\":\"CHECK_STALLED_REPLICA\""));
+            Assert.assertTrue(json.contains("\"resumedUploadCount\":1"));
+            Assert.assertTrue(json.contains("\"resumedSegmentCount\":2"));
+            Assert.assertTrue(json.contains("\"topResumedPath\":\"stalled.bin\""));
+            Assert.assertTrue(json.contains("\"topResumedReplicaLabel\":\"handler-stalled\""));
+            Assert.assertTrue(json.contains("\"topResumedSegments\":2"));
+            Assert.assertTrue(json.contains("\"resumedReplicaSummary\":\"handler-stalled=2\""));
+            Assert.assertTrue(json.contains("\"resumedUpload\":true"));
+            Assert.assertTrue(json.contains("\"resumedSegments\":2"));
+            Assert.assertTrue(json.contains("\"stalledUploads\":{\"size\":1"));
+            Assert.assertTrue(json.contains("\"stalledReplicaHotspots\":{\"size\":1"));
+            Assert.assertTrue(json.contains("\"resumedReplicaHotspots\":{\"size\":1"));
+            Assert.assertTrue(json.contains("\"replicaLabel\":\"handler-stalled\""));
+            Assert.assertTrue(json.contains("\"topPath\":\"stalled.bin\""));
+        }
+    }
+
+    @Test
+    public void shouldExposeUploadsViaFanOutHandler() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_monitor_fanout_root_");
+        Path state = Files.createTempDirectory("p2p_sync_monitor_fanout_state_");
+        P2PSyncConfig cfg = new P2PSyncConfig();
+        cfg.setTaskId(200L);
+        cfg.setLocalDir(root.toString());
+        cfg.setDsHome(state.toString());
+        cfg.setMaxRetryCount(3);
+        cfg.setRetryBackoffMillis(2500L);
+
+        try (MultiEndpointRpcSyncEventHandler fanOut = MultiEndpointRpcSyncEventHandler.forHandlers(200L, java.util.Arrays.asList(
+                new StaticUploadStatusHandler(),
+                new StaticUploadStatusHandler()));
+             P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, fanOut);
+             P2PSyncMonitorServer server = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
+            svc.start();
+            server.start();
+
+            String json = send("GET", "http://127.0.0.1:" + server.getPort() + "/sync/api/queues?limit=20", null);
+            Assert.assertTrue(json.contains("\"stalledUploads\""));
+            Assert.assertTrue(json.contains("\"uploads\""));
+            Assert.assertTrue(json.contains("\"recentCompletedUploads\""));
+            Assert.assertTrue(json.contains("\"recentFailedUploads\""));
+            Assert.assertTrue(json.contains("\"path\":\"big.bin\""));
+            Assert.assertTrue(json.contains("\"path\":\"done.bin\""));
+            Assert.assertTrue(json.contains("\"path\":\"fail.bin\""));
+            Assert.assertTrue(json.contains("\"replicaLabel\":\"handler-1\""));
+            Assert.assertTrue(json.contains("\"replicaLabel\":\"handler-2\""));
+        }
+    }
+
+    @Test
+    public void shouldExposeStalledReplicaSummaryViaFanOutHandler() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_monitor_fanout_stalled_root_");
+        Path state = Files.createTempDirectory("p2p_sync_monitor_fanout_stalled_state_");
+        P2PSyncConfig cfg = new P2PSyncConfig();
+        cfg.setTaskId(201L);
+        cfg.setLocalDir(root.toString());
+        cfg.setDsHome(state.toString());
+        cfg.setMaxRetryCount(3);
+        cfg.setRetryBackoffMillis(2500L);
+
+        try (MultiEndpointRpcSyncEventHandler fanOut = MultiEndpointRpcSyncEventHandler.forHandlers(201L, java.util.Arrays.asList(
+                new StalledUploadStatusHandler(),
+                new StaticUploadStatusHandler()));
+             P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, fanOut);
+             P2PSyncMonitorServer server = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
+            svc.start();
+            server.start();
+
+            String json = send("GET", "http://127.0.0.1:" + server.getPort() + "/sync/api/queues?limit=20", null);
+            Assert.assertTrue(json.contains("\"stalledUploadCount\":1"));
+            Assert.assertTrue(json.contains("\"topStalledPath\":\"stalled.bin\""));
+            Assert.assertTrue(json.contains("\"topStalledReplicaLabel\":\"handler-1\""));
+            Assert.assertTrue(json.contains("\"stalledReplicaSummary\":\"handler-1=1\""));
+            Assert.assertTrue(json.contains("\"stalledRecommendedAction\":\"CHECK_STALLED_REPLICA\""));
+            Assert.assertTrue(json.contains("优先检查副本 handler-1 的网络连通性"));
+            Assert.assertTrue(json.contains("\"resumedUploadCount\":2"));
+            Assert.assertTrue(json.contains("\"resumedSegmentCount\":3"));
+            Assert.assertTrue(json.contains("\"topResumedPath\":\"stalled.bin\""));
+            Assert.assertTrue(json.contains("\"topResumedReplicaLabel\":\"handler-1\""));
+            Assert.assertTrue(json.contains("\"topResumedSegments\":2"));
+            Assert.assertTrue(json.contains("\"resumedReplicaSummary\":\"handler-1=2, handler-2=1\""));
+            Assert.assertTrue(json.contains("\"stalledUploads\":{\"size\":1"));
+            Assert.assertTrue(json.contains("\"stalledReplicaHotspots\":{\"size\":1"));
+            Assert.assertTrue(json.contains("\"resumedReplicaHotspots\":{\"size\":2"));
+            Assert.assertTrue(json.contains("\"replicaLabel\":\"handler-1\""));
+            Assert.assertTrue(json.contains("\"replicaLabel\":\"handler-2\""));
         }
     }
 
@@ -551,7 +786,7 @@ public class P2PSyncMonitorServerTest {
         public List<SyncUploadStatus> snapshotActiveUploads(int limit) {
             return Collections.singletonList(new SyncUploadStatus(
                 1001L, 1002L, "big.bin", "uploading", 16L * 1024L * 1024L, true, 2, 1,
-                nowMillis - 500L, nowMillis));
+                nowMillis - 500L, nowMillis, nowMillis - 100L, 1, null, null));
         }
 
         @Override
@@ -566,6 +801,32 @@ public class P2PSyncMonitorServerTest {
             return Collections.singletonList(new SyncUploadStatus(
                 3001L, 3002L, "fail.bin", "failed", 4L * 1024L, false, 1, 0,
                 nowMillis - 1500L, nowMillis - 1200L, "write_conflict"));
+        }
+    }
+
+    private static final class StalledUploadStatusHandler implements FileSyncEventHandler, SyncUploadStatusProvider {
+        private final long nowMillis = System.currentTimeMillis();
+
+        @Override
+        public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
+            acker.ack();
+        }
+
+        @Override
+        public List<SyncUploadStatus> snapshotActiveUploads(int limit) {
+            return Collections.singletonList(new SyncUploadStatus(
+                4001L, 4002L, "stalled.bin", "uploading", 32L * 1024L * 1024L, true, 4, 1,
+                nowMillis - 20_000L, nowMillis, nowMillis - 10_000L, 2, "handler-stalled", null));
+        }
+
+        @Override
+        public List<SyncUploadStatus> snapshotRecentCompletedUploads(int limit) {
+            return Collections.emptyList();
+        }
+
+        @Override
+        public List<SyncUploadStatus> snapshotRecentFailedUploads(int limit) {
+            return Collections.emptyList();
         }
     }
 }

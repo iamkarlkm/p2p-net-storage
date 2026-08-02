@@ -576,7 +576,7 @@ public class P2PUDPUtils implements P2PFileService {
         } else {//分段上传
             int count = data.length % P2PConfig.DATA_BLOCK_SIZE == 0 ? data.length / P2PConfig.DATA_BLOCK_SIZE : data.length / P2PConfig.DATA_BLOCK_SIZE + 1;
 
-            Triple<File, File, Set<Integer>> upInfo = FileUtil.getUpInfoTmp(path);
+            Triple<File, File, Set<Integer>> upInfo = FileUtil.getUpInfoTmp(storeId, path);
             Set<Integer> indexes = upInfo.getRight();
             AtomicBoolean errorTag = new AtomicBoolean(false);
             try (RandomAccessFile indexFile = FileUtil.getLockedFile(upInfo.getMiddle())) {
@@ -589,7 +589,9 @@ public class P2PUDPUtils implements P2PFileService {
 
                 if (execIndexes.isEmpty()) {
                     //clean temp files
-                    upInfo.getLeft().delete();
+                    if (upInfo.getLeft() != null) {
+                        upInfo.getLeft().delete();
+                    }
                     upInfo.getMiddle().delete();
                     String md5 = SecurityUtils.toMD5(data);
                     P2PWrapper p2p = P2PWrapper.build(P2PCommand.PUT_FILE_SEGMENTS_COMPLETE, new FileSegmentsDataModel(storeId, path, data.length, md5));
@@ -650,7 +652,9 @@ public class P2PUDPUtils implements P2PFileService {
             if (errorTag.get()) {
                 throw new RuntimeException("多线程上传文件执行出现异常");
             }
-            upInfo.getLeft().delete();
+            if (upInfo.getLeft() != null) {
+                upInfo.getLeft().delete();
+            }
             upInfo.getMiddle().delete();
             String md5 = SecurityUtils.toMD5(data);
             P2PWrapper p2p = P2PWrapper.build(P2PCommand.PUT_FILE_SEGMENTS_COMPLETE, new FileSegmentsDataModel(storeId, path, data.length, md5));
@@ -691,7 +695,7 @@ public class P2PUDPUtils implements P2PFileService {
             int blockSize = P2PConfig.DATA_PUT_BLOCK_SIZE;
             int count = (int) (length % blockSize == 0 ? length / blockSize : length / blockSize + 1);
 
-            Triple<File, File, Set<Integer>> upInfo = FileUtil.getUpInfoTmp(path);
+            Triple<File, File, Set<Integer>> upInfo = FileUtil.getUpInfoTmp(storeId, path);
             Set<Integer> indexes = upInfo.getRight();
             AtomicBoolean errorTag = new AtomicBoolean(false);
             try (RandomAccessFile indexFile = FileUtil.getLockedFile(upInfo.getMiddle())) {

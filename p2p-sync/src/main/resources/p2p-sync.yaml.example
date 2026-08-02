@@ -11,6 +11,10 @@ remoteEndpoints:
   - "10.0.0.2:9001"
 localDir: "./sync-dir"
 dsHome: "./sync-state"
+includeGlobs:
+  - "**/*.txt"
+excludeGlobs:
+  - "**/*.tmp"
 auth:
   enabled: false
 userInfo:

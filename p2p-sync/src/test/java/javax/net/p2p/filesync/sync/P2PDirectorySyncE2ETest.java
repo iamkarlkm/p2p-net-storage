@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.IntSupplier;
 
 import javax.net.p2p.client.P2PClientTcp;
+import javax.net.p2p.config.P2PConfig;
 import javax.net.p2p.filesync.config.P2PSyncConfig;
 import javax.net.p2p.filesync.monitor.P2PSyncMonitorServer;
 import javax.net.p2p.filesync.sync.rpc.MultiEndpointRpcSyncEventHandler;
@@ -55,6 +56,62 @@ public class P2PDirectorySyncE2ETest {
     }
 
     @Test
+    public void shouldTreatFileRenameAsDeletePlusCreateOverTcp() throws Exception {
+        long taskId = 1011L;
+        Path senderRoot = Files.createTempDirectory("p2p_sync_sender_root_rename_file_");
+        Path senderState = Files.createTempDirectory("p2p_sync_sender_state_rename_file_");
+        try (ReceiverNode receiver = ReceiverNode.start(taskId, 1501);
+             ManagedTcpHandler handler = ManagedTcpHandler.connect(taskId, receiver.port);
+             P2PDirectorySyncService svc = new P2PDirectorySyncService(senderConfig(taskId, senderRoot, senderState), handler)) {
+            svc.start();
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            Path oldFile = senderRoot.resolve("rename").resolve("old.txt");
+            Files.createDirectories(oldFile.getParent());
+            long initialTs = System.currentTimeMillis() - 4_000L;
+            writeUtf8(oldFile, "rename payload");
+            Files.setLastModifiedTime(oldFile, FileTime.fromMillis(initialTs));
+            assertFileSynced(receiver.root.resolve("rename").resolve("old.txt"), "rename payload", initialTs);
+
+            Path newFile = senderRoot.resolve("rename").resolve("new.txt");
+            long renamedTs = System.currentTimeMillis() - 2_000L;
+            Files.move(oldFile, newFile);
+            Files.setLastModifiedTime(newFile, FileTime.fromMillis(renamedTs));
+
+            assertPathAbsent(receiver.root.resolve("rename").resolve("old.txt"));
+            assertFileSynced(receiver.root.resolve("rename").resolve("new.txt"), "rename payload", renamedTs);
+        }
+    }
+
+    @Test
+    public void shouldSyncMovedInDirectoryTreeOverTcp() throws Exception {
+        long taskId = 1012L;
+        Path senderRoot = Files.createTempDirectory("p2p_sync_sender_root_move_dir_");
+        Path senderState = Files.createTempDirectory("p2p_sync_sender_state_move_dir_");
+        try (ReceiverNode receiver = ReceiverNode.start(taskId, 1502);
+             ManagedTcpHandler handler = ManagedTcpHandler.connect(taskId, receiver.port);
+             P2PDirectorySyncService svc = new P2PDirectorySyncService(senderConfig(taskId, senderRoot, senderState), handler)) {
+            svc.start();
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            Path externalRoot = Files.createTempDirectory("p2p_sync_sender_external_tree_");
+            Path sourceDir = externalRoot.resolve("src");
+            Path sourceFile = sourceDir.resolve("nested").resolve("hello.txt");
+            Files.createDirectories(sourceFile.getParent());
+            long initialTs = System.currentTimeMillis() - 4_000L;
+            writeUtf8(sourceFile, "move directory payload");
+            Files.setLastModifiedTime(sourceFile, FileTime.fromMillis(initialTs));
+
+            Path targetDir = senderRoot.resolve("archive").resolve("dst");
+            Files.createDirectories(targetDir.getParent());
+            Files.move(sourceDir, targetDir);
+
+            assertFileSynced(receiver.root.resolve("archive").resolve("dst").resolve("nested").resolve("hello.txt"),
+                "move directory payload", initialTs);
+        }
+    }
+
+    @Test
     public void shouldFanOutFileToMultipleReceiversOverTcp() throws Exception {
         long taskId = 102L;
         Path senderRoot = Files.createTempDirectory("p2p_sync_sender_root_fanout_");
@@ -76,6 +133,42 @@ public class P2PDirectorySyncE2ETest {
 
             assertFileSynced(receiver1.root.resolve("fanout").resolve("hello.txt"), "fanout sync", ts);
             assertFileSynced(receiver2.root.resolve("fanout").resolve("hello.txt"), "fanout sync", ts);
+        }
+    }
+
+    @Test
+    public void shouldSyncLargeFileWithSegmentationOverTcp() throws Exception {
+        long taskId = 108L;
+        int originalBlockSize = P2PConfig.DATA_PUT_BLOCK_SIZE;
+        P2PConfig.DATA_PUT_BLOCK_SIZE = 8 * 1024;
+        Path senderRoot = Files.createTempDirectory("p2p_sync_sender_root_large_");
+        Path senderState = Files.createTempDirectory("p2p_sync_sender_state_large_");
+        try (ReceiverNode receiver = ReceiverNode.start(taskId, 701);
+             ManagedTcpHandler handler = ManagedTcpHandler.connect(taskId, receiver.port);
+             P2PDirectorySyncService svc = new P2PDirectorySyncService(senderConfig(taskId, senderRoot, senderState), handler);
+             P2PSyncMonitorServer monitor = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
+            svc.start();
+            monitor.start();
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            Path senderFile = senderRoot.resolve("large").resolve("big.bin");
+            Files.createDirectories(senderFile.getParent());
+            int size = P2PConfig.DATA_PUT_BLOCK_SIZE * 6 + 123;
+            byte[] payload = new byte[size];
+            for (int i = 0; i < payload.length; i++) {
+                payload[i] = (byte) (i % 251);
+            }
+            Files.write(senderFile, payload);
+            long ts = System.currentTimeMillis() - 4_000L;
+            Files.setLastModifiedTime(senderFile, FileTime.fromMillis(ts));
+
+            assertFileBytesSynced(receiver.root.resolve("large").resolve("big.bin"), payload, ts);
+            waitForQueuesJsonContains(monitor.getPort(),
+                "\"recentCompletedUploads\"",
+                "\"path\":\"large/big.bin\"",
+                "\"segmented\":true");
+        } finally {
+            P2PConfig.DATA_PUT_BLOCK_SIZE = originalBlockSize;
         }
     }
 
@@ -386,13 +479,24 @@ public class P2PDirectorySyncE2ETest {
                 "");
             Assert.assertTrue(retryResp.contains("\"ok\":true"));
             Assert.assertTrue(retryResp.contains("\"categories\":[\"NETWORK\"]"));
-            Assert.assertTrue(retryResp.contains("\"retriedReplicaCount\":"));
-            Assert.assertFalse(retryResp.contains("\"retriedReplicaCount\":0"));
+            assertJsonNumericFieldPositive(retryResp, "retriedReplicaCount");
+            assertJsonFieldPresent(retryResp, "clearedFailedItemCount");
+            assertJsonFieldPresent(retryResp, "clearedOutstandingReplicaCount");
+            assertJsonFieldPresent(retryResp, "clearedReplicaCategorySummary");
+            assertJsonFieldPresent(retryResp, "remainingFailedItemCount");
+            assertJsonFieldPresent(retryResp, "remainingOutstandingReplicaCount");
+            assertJsonFieldPresent(retryResp, "remainingReplicaCategorySummary");
 
             Path receiver3File = receiver3.root.resolve("network").resolve("hello.txt");
             waitUntil(() -> Files.isRegularFile(receiver3File), 10, TimeUnit.SECONDS);
             waitUntil(() -> "network category sync".equals(readUtf8(receiver3File)), 10, TimeUnit.SECONDS);
             waitUntil(() -> !svc.getStore().fileCreatesFailed().contains(Long.valueOf(fileId)), 10, TimeUnit.SECONDS);
+            waitForQueuesJsonContains(monitor.getPort(),
+                "\"action\":\"RETRY_REPLICAS_BY_CATEGORY\"",
+                "\"phase\":\"operator_action\"",
+                "\"clearedReplicaCategorySummary\":\"NETWORK=",
+                "\"remainingOutstandingReplicaCount\":0",
+                "\"remainingReplicaCategorySummary\":\"\"");
 
             Assert.assertEquals(replica1Baseline, replica1Calls.get());
             Assert.assertEquals(replica2Baseline, replica2Calls.get());
@@ -457,9 +561,22 @@ public class P2PDirectorySyncE2ETest {
                 "");
             Assert.assertTrue(discardResp.contains("\"ok\":true"));
             Assert.assertTrue(discardResp.contains("\"categories\":[\"CONFLICT\"]"));
-            Assert.assertTrue(discardResp.contains("\"discardedReplicaCount\":"));
-            Assert.assertFalse(discardResp.contains("\"discardedReplicaCount\":0"));
+            assertJsonNumericFieldPositive(discardResp, "discardedReplicaCount");
+            assertJsonFieldPresent(discardResp, "clearedFailedItemCount");
+            assertJsonFieldPresent(discardResp, "clearedOutstandingReplicaCount");
+            assertJsonFieldPresent(discardResp, "clearedReplicaCategorySummary");
+            assertJsonFieldPresent(discardResp, "remainingFailedItemCount");
+            assertJsonFieldPresent(discardResp, "remainingOutstandingReplicaCount");
+            assertJsonFieldPresent(discardResp, "remainingReplicaCategorySummary");
             waitUntil(() -> !svc.getStore().fileCreatesFailed().contains(Long.valueOf(fileId)), 10, TimeUnit.SECONDS);
+            waitForQueuesJsonContains(monitor.getPort(),
+                "\"action\":\"DISCARD_REPLICAS_BY_CATEGORY\"",
+                "\"phase\":\"operator_action\"",
+                "\"clearedFailedItemCount\":2",
+                "\"clearedOutstandingReplicaCount\":2",
+                "\"clearedReplicaCategorySummary\":\"CONFLICT=2\"",
+                "\"remainingFailedItemCount\":0",
+                "\"remainingOutstandingReplicaCount\":0");
             Assert.assertEquals(replica1Baseline, replica1Calls.get());
             Assert.assertEquals(replica2Baseline, replica2Calls.get());
         }
@@ -512,9 +629,22 @@ public class P2PDirectorySyncE2ETest {
                 "");
             Assert.assertTrue(discardResp.contains("\"ok\":true"));
             Assert.assertTrue(discardResp.contains("\"categories\":[\"RETRY_LIMIT\"]"));
-            Assert.assertTrue(discardResp.contains("\"discardedReplicaCount\":"));
-            Assert.assertFalse(discardResp.contains("\"discardedReplicaCount\":0"));
+            assertJsonNumericFieldPositive(discardResp, "discardedReplicaCount");
+            assertJsonFieldPresent(discardResp, "clearedFailedItemCount");
+            assertJsonFieldPresent(discardResp, "clearedOutstandingReplicaCount");
+            assertJsonFieldPresent(discardResp, "clearedReplicaCategorySummary");
+            assertJsonFieldPresent(discardResp, "remainingFailedItemCount");
+            assertJsonFieldPresent(discardResp, "remainingOutstandingReplicaCount");
+            assertJsonFieldPresent(discardResp, "remainingReplicaCategorySummary");
             waitUntil(() -> !svc.getStore().fileCreatesFailed().contains(Long.valueOf(fileId)), 10, TimeUnit.SECONDS);
+            waitForQueuesJsonContains(monitor.getPort(),
+                "\"action\":\"DISCARD_REPLICAS_BY_CATEGORY\"",
+                "\"phase\":\"operator_action\"",
+                "\"clearedFailedItemCount\":2",
+                "\"clearedOutstandingReplicaCount\":2",
+                "\"clearedReplicaCategorySummary\":\"RETRY_LIMIT=2\"",
+                "\"remainingFailedItemCount\":0",
+                "\"remainingOutstandingReplicaCount\":0");
             Assert.assertEquals(replica1Baseline, replica1Calls.get());
             Assert.assertEquals(replica2Baseline, replica2Calls.get());
             Assert.assertEquals(retryBaseline, retryOnly.getAttempts());
@@ -546,6 +676,29 @@ public class P2PDirectorySyncE2ETest {
         long actualTs = Files.getLastModifiedTime(receiverFile).toMillis();
         Assert.assertTrue("expected ts=" + expectedTs + ", actual ts=" + actualTs + ", delta=" + (actualTs - expectedTs),
             Math.abs(actualTs - expectedTs) <= 2_000L);
+    }
+
+    private static void assertFileBytesSynced(Path receiverFile, byte[] expectedBytes, long expectedTs) throws Exception {
+        waitUntil(() -> Files.isRegularFile(receiverFile), 10, TimeUnit.SECONDS);
+        waitUntil(() -> {
+            try {
+                return Files.size(receiverFile) == expectedBytes.length;
+            } catch (Exception e) {
+                return false;
+            }
+        }, 10, TimeUnit.SECONDS);
+        waitUntil(() -> Math.abs(Files.getLastModifiedTime(receiverFile).toMillis() - expectedTs) <= 2_000L,
+            10, TimeUnit.SECONDS);
+
+        Assert.assertArrayEquals(expectedBytes, Files.readAllBytes(receiverFile));
+        long actualTs = Files.getLastModifiedTime(receiverFile).toMillis();
+        Assert.assertTrue("expected ts=" + expectedTs + ", actual ts=" + actualTs + ", delta=" + (actualTs - expectedTs),
+            Math.abs(actualTs - expectedTs) <= 2_000L);
+    }
+
+    private static void assertPathAbsent(Path path) throws Exception {
+        waitUntil(() -> !Files.exists(path), 10, TimeUnit.SECONDS);
+        Assert.assertFalse(Files.exists(path));
     }
 
     private static void waitUntil(CheckedBooleanSupplier condition, long timeout, TimeUnit unit) throws Exception {
@@ -592,6 +745,40 @@ public class P2PDirectorySyncE2ETest {
         Assert.assertTrue("missing fragment: " + first + ", text=" + text, firstIndex >= 0);
         int secondIndex = text.indexOf(second, firstIndex);
         Assert.assertTrue("missing ordered fragment: " + second + ", text=" + text, secondIndex > firstIndex);
+    }
+
+    private static void assertJsonNumericFieldPositive(String json, String fieldName) {
+        String zeroFragment = "\"" + fieldName + "\":0";
+        String fieldFragment = "\"" + fieldName + "\":";
+        Assert.assertTrue("missing field " + fieldName + ", json=" + json, json.contains(fieldFragment));
+        Assert.assertFalse("expected positive " + fieldName + ", json=" + json, json.contains(zeroFragment));
+    }
+
+    private static void assertJsonFieldPresent(String json, String fieldName) {
+        String fieldFragment = "\"" + fieldName + "\":";
+        Assert.assertTrue("missing field " + fieldName + ", json=" + json, json.contains(fieldFragment));
+    }
+
+    private static void waitForQueuesJsonContains(int monitorPort, String... fragments) throws Exception {
+        AtomicReference<String> lastJson = new AtomicReference<>("");
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            String json = sendHttp("GET", "http://127.0.0.1:" + monitorPort + "/sync/api/queues?limit=20", null);
+            lastJson.set(json);
+            boolean matches = true;
+            for (String fragment : fragments) {
+                if (!json.contains(fragment)) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
+                return;
+            }
+            Thread.sleep(100L);
+        }
+        String json = lastJson.get();
+        Assert.fail("queues json missing expected fragments=" + Arrays.toString(fragments) + ", json=" + json);
     }
 
     private static int randomTcpPort() throws Exception {
@@ -708,7 +895,7 @@ public class P2PDirectorySyncE2ETest {
         }
     }
 
-    private static final class ManagedTcpHandler implements FileSyncEventHandler, AutoCloseable {
+    private static final class ManagedTcpHandler implements FileSyncEventHandler, SyncUploadStatusProvider, AutoCloseable {
         private final P2PClientTcp client;
         private final RpcSyncEventHandler delegate;
         private volatile boolean closed;
@@ -728,6 +915,21 @@ public class P2PDirectorySyncE2ETest {
         @Override
         public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
             delegate.handle(type, fileId, relativePath, absolutePath, directory, acker);
+        }
+
+        @Override
+        public java.util.List<SyncUploadStatus> snapshotActiveUploads(int limit) {
+            return delegate.snapshotActiveUploads(limit);
+        }
+
+        @Override
+        public java.util.List<SyncUploadStatus> snapshotRecentCompletedUploads(int limit) {
+            return delegate.snapshotRecentCompletedUploads(limit);
+        }
+
+        @Override
+        public java.util.List<SyncUploadStatus> snapshotRecentFailedUploads(int limit) {
+            return delegate.snapshotRecentFailedUploads(limit);
         }
 
         @Override

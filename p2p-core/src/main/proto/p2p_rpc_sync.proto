@@ -38,4 +38,6 @@ message SyncFinalizeRequest {
   bool directory = 4;
   SyncEventType type = 5;
   int64 last_modified_millis = 6;
+  int64 content_length = 7;
+  string content_md5 = 8;
 }

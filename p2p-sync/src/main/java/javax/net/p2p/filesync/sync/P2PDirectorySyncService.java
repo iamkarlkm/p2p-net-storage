@@ -268,7 +268,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
             if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
                 if (Files.isDirectory(child)) {
                     registerAllDirsFiltered(child, ws, keyToDir);
-                    onDirCreate(child);
+                    onDirTreeCreate(child);
                     continue;
                 }
                 onFileCreate(child);
@@ -299,6 +299,18 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         localStore.putKind(id, true);
         localStore.putLastModifiedMillis(id, readLastModifiedMillis(absoluteDir));
         localStore.enqueueDirCreate(id);
+    }
+
+    private void onDirTreeCreate(Path absoluteDir) {
+        P2PSyncStateStore localStore = this.store;
+        if (localStore == null) {
+            return;
+        }
+        try {
+            Files.walk(absoluteDir).forEach(path -> scanOnePath(localStore, rootDir, path, 0L));
+        } catch (IOException e) {
+            onDirCreate(absoluteDir);
+        }
     }
 
     private void onFileCreate(Path absoluteFile) {
@@ -483,11 +495,12 @@ public final class P2PDirectorySyncService implements AutoCloseable {
             return false;
         }
         Path rel = Paths.get(relativePath.replace('/', File.separatorChar));
+        Path relChild = directory ? rel.resolve("__child__") : null;
         for (PathMatcher matcher : matchers) {
             if (matcher.matches(rel)) {
                 return true;
             }
-            if (directory && matcher.matches(Paths.get((relativePath + "/**").replace('/', File.separatorChar)))) {
+            if (directory && relChild != null && matcher.matches(relChild)) {
                 return true;
             }
         }

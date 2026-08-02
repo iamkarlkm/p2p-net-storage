@@ -12,6 +12,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.HashSet;
 import java.util.List;
@@ -328,6 +329,31 @@ public class FileUtil {
             }
         }
         return Triple.of(null, idx, indexes);
+    }
+
+    public static Triple<File, File, Set<Integer>> getUpInfoTmp(int storeId, String path) {
+        File idx = new File(System.getProperty("java.io.tmpdir"), upInfoTmpName(storeId, path));
+        Set<Integer> indexes = new HashSet();
+        if (idx.exists()) {
+            try {
+                List<String> lines = Files.readAllLines(idx.toPath());
+                if (!lines.isEmpty()) {
+                    for (String index : lines) {
+                        indexes.add(Integer.valueOf(index));
+                    }
+                    return Triple.of(null, idx, indexes);
+                }
+            } catch (IOException ex) {
+                throw new RuntimeException(ex);
+            }
+        }
+        return Triple.of(null, idx, indexes);
+    }
+
+    private static String upInfoTmpName(int storeId, String path) {
+        String safePath = path == null ? "" : path;
+        long hash = XXHashUtil.hash64(safePath.getBytes(StandardCharsets.UTF_8));
+        return "p2p_up_" + storeId + "_" + Long.toHexString(hash) + ".up.idx";
     }
 
     /**
