@@ -500,6 +500,14 @@ public class ServerSendUdpMesageExecutor extends AbstractSendMesageExecutor {
         return remote;
     }
 
+    public int getNextFrameSeed() {
+        return nextFrameSeed;
+    }
+
+    public void setDelayTimes(long delayTimes) {
+        this.delayTimes = delayTimes;
+    }
+
     /**
      *
      * @param obj

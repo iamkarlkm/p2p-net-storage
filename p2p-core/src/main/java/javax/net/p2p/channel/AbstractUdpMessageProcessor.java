@@ -11,6 +11,7 @@ import io.netty.channel.socket.DatagramPacket;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.stream.ChunkedFile;
 import io.netty.util.Attribute;
+import io.netty.util.concurrent.ScheduledFuture;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -24,6 +25,7 @@ import java.util.Set;
 import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.api.P2PServiceCategory;
 import javax.net.p2p.config.P2PConfig;
@@ -73,6 +75,8 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
     //最近发送消息缓存
     protected final ConcurrentHashMap<InetSocketAddress,ByteBuf> lastMessageMap = new ConcurrentHashMap<>();
     protected final ConcurrentHashMap<InetSocketAddress, Integer> lastMessageSeqMap = new ConcurrentHashMap<>();
+    protected final ConcurrentHashMap<InetSocketAddress, Long> lastRetrieveAtMillisMap = new ConcurrentHashMap<>();
+    protected final ConcurrentHashMap<InetSocketAddress, ScheduledFuture<?>> pendingRetrieveFutureMap = new ConcurrentHashMap<>();
     
     protected final ConcurrentHashMap<InetSocketAddress, ConcurrentHashMap<Integer,AbstractLongTimedRequestAdapter>> lastLongTimedRequestAdapterMap = new ConcurrentHashMap<>();
     
@@ -204,22 +208,60 @@ public abstract class AbstractUdpMessageProcessor extends SimpleChannelInboundHa
      * @param remoteAddess
      */
     protected void retrieveLastResponse(ChannelHandlerContext ctx,InetSocketAddress remoteAddess){
-        
+        Integer seq = lastMessageSeqMap.get(remoteAddess);
         ByteBuf buffer = lastMessageMap.get(remoteAddess);
+        long waitTimes = 0;
+        if (buffer != null && frameLastTransportSpeed > 0) {
+            waitTimes = buffer.readableBytes() / frameLastTransportSpeed;
+        }
+
+        ServerSendUdpMesageExecutor sendUdpMesageExecutor = asyncSendUdpMesageExecutorMap.get(remoteAddess);
+        if (sendUdpMesageExecutor != null && seq != null) {
+            if (waitTimes > 0) {
+                sendUdpMesageExecutor.setDelayTimes(waitTimes);
+            }
+            if (sendUdpMesageExecutor.retrieveLastMessage(seq.intValue(), sendUdpMesageExecutor.getNextFrameSeed())) {
+                return;
+            }
+        }
+
+        if (buffer == null) {
+            return;
+        }
+
+        ScheduledFuture<?> pending = pendingRetrieveFutureMap.get(remoteAddess);
+        if (pending != null && !pending.isDone()) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        long minInterval = waitTimes > 0 ? waitTimes : 5;
+        Long last = lastRetrieveAtMillisMap.get(remoteAddess);
+        if (last != null) {
+            long dt = now - last.longValue();
+            if (dt < minInterval) {
+                long delay = minInterval - dt;
+                ScheduledFuture<?> future = ctx.executor().schedule(() -> {
+                    pendingRetrieveFutureMap.remove(remoteAddess);
+                    lastRetrieveAtMillisMap.put(remoteAddess, System.currentTimeMillis());
+                    ByteBuf latest = lastMessageMap.get(remoteAddess);
+                    if (latest == null) {
+                        return;
+                    }
+                    Integer latestSeq = lastMessageSeqMap.get(remoteAddess);
+                    latest.resetReaderIndex();
+                    latest.retain();
+                    sendResponse(ctx.channel(), remoteAddess, latestSeq == null ? 0 : latestSeq.intValue(), latest);
+                }, delay, TimeUnit.MILLISECONDS);
+                pendingRetrieveFutureMap.put(remoteAddess, future);
+                return;
+            }
+        }
+
+        lastRetrieveAtMillisMap.put(remoteAddess, now);
         buffer.resetReaderIndex();
         buffer.retain();
-        if (log.isDebugEnabled()) {
-                log.debug("retrieveLastResponse:{}", buffer.readableBytes());
-        }
-        //TODO 流控，超时通知重发。
-        long waitTimes = buffer.readableBytes()/frameLastTransportSpeed;
-        ServerSendUdpMesageExecutor sendUdpMesageExecutor = asyncSendUdpMesageExecutorMap.get(remoteAddess);
-        //如果已注册异步消息处理器，需调用。
-        if(sendUdpMesageExecutor!=null){//TODO
-            
-        }
-        Integer seq = lastMessageSeqMap.get(remoteAddess);
-        sendResponse(ctx.channel(), remoteAddess, seq == null ? 0 : seq, buffer);
+        sendResponse(ctx.channel(), remoteAddess, seq == null ? 0 : seq.intValue(), buffer);
         
     }
 
