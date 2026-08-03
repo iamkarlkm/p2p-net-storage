@@ -1,5 +1,5 @@
 ---
-title: Harden resumable upload index: add task namespace to up.idx to avoid cross-task collisions
+title: "Harden resumable upload index: add task namespace to up.idx to avoid cross-task collisions"
 updated: "2026-08-03T00:00:00+08:00"
 ---
 # Harden resumable upload index: add task namespace to up.idx to avoid cross-task collisions
