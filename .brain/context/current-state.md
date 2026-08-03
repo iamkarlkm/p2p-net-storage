@@ -82,3 +82,8 @@ This file is a deterministic snapshot of the repository state at the last refres
   - `mvn -pl p2p-sync -Dmaven.repo.local=C:/Users/karl/.m2/repository -Dtest=P2PDirectorySyncE2ETest -Dsurefire.failIfNoSpecifiedTests=false test`
   - `mvn -pl p2p-sync -Dmaven.repo.local=C:/Users/karl/.m2/repository -Dtest=P2PDirectorySyncE2ETest#shouldResumeSegmentedUploadAfterInterruptedFirstAttemptOverTcp -Dsurefire.failIfNoSpecifiedTests=false test`
 - Gotcha: 该 E2E 不要再手动 `setLastModifiedTime` 造时间戳，否则可能额外触发 `MODIFY` 事件导致时间线/历史断言不稳定；改为直接读取实际 mtime 作为对齐基准。
+- Updated: 2026-08-04 00:30:00 +08:00
+- UDP `UDP_FRAME_RESET` 重发链路补齐流控与异步执行器委托：`AbstractUdpMessageProcessor.retrieveLastResponse(...)` 现在会对同一 remote 的重发做最小限频（按 last transport speed 估算间隔）并通过 Netty scheduler 合并重发；若存在 `ServerSendUdpMesageExecutor` 则优先调用其 `retrieveLastMessage(...)` 并支持设置延时。
+- Verification:
+  - `mvn -pl p2p-core -Dmaven.repo.local=C:/Users/karl/.m2/repository -Dmaven.test.skip=true install`
+  - `mvn -pl p2p-sync -Dmaven.repo.local=C:/Users/karl/.m2/repository -Dtest=UdpFrameResetFlowControlTest -Dsurefire.failIfNoSpecifiedTests=false test`
