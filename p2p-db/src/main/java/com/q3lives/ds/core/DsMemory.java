@@ -1,13 +1,6 @@
 package com.q3lives.ds.core;
 
-import com.q3lives.ds.collections.DsHashSet;
-import com.q3lives.ds.collections.DsList;
-import com.q3lives.ds.fs.Ds128SuperInode;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.CompositeByteBuf;
-import io.netty.buffer.PooledByteBufAllocator;
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
@@ -15,12 +8,22 @@ import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+
+import com.q3lives.ds.collections.DsHashSet;
+import com.q3lives.ds.collections.DsList;
+import com.q3lives.ds.fs.Ds128SuperInode;
+
+import io.netty.buffer.PooledByteBufAllocator;
 
 /**
  * 基于内存映射文件(Memory Mapped Files, MappedByteBuffer)的持久化数据结构基类。
@@ -74,10 +77,67 @@ public class DsMemory {
 
     protected PooledByteBufAllocator alloc = PooledByteBufAllocator.DEFAULT;
 
-    // TODO: 实现缓存淘汰策略 (如 LRU)，防止大文件加载导致内存溢出 (OOM)。
-    // 当前实现中，所有加载的缓冲区都会保留在内存中，直到显式卸载。
+    protected static final int DEFAULT_MAX_CACHED_BLOCKS = Integer.getInteger("ds.memory.maxCachedBlocks", 2048);
+    protected static final long DEFAULT_MAX_CACHED_BYTES = (long) DEFAULT_MAX_CACHED_BLOCKS * (long) BLOCK_SIZE;
+    protected static final int EVICT_CANDIDATE_SLOT = 16;
+
+    protected volatile int maxCachedBlocks = DEFAULT_MAX_CACHED_BLOCKS;
+    protected volatile long maxCachedBytes = DEFAULT_MAX_CACHED_BYTES;
+    protected final AtomicInteger activeCachedBlocks = new AtomicInteger(0);
+    protected final AtomicLong cachedBytes = new AtomicLong(0);
+    protected final ReentrantLock evictionLock = new ReentrantLock();
+    protected volatile int highestBufferIndexEverSeen = -1;
+
+    protected final Map<Integer, Long> bufferLastAccessNanos = new ConcurrentHashMap<>();
+    protected final Set<Integer> dirtyBufferIndices = ConcurrentHashMap.newKeySet();
+    protected final AtomicLong evictionAttempts = new AtomicLong(0);
+    protected final AtomicLong evictionSuccess = new AtomicLong(0);
+    protected final AtomicLong evictionBytes = new AtomicLong(0);
+    protected final AtomicLong evictionDirtyCount = new AtomicLong(0);
+
+    public static final class CacheStats {
+        private final int maxCachedBlocks;
+        private final long maxCachedBytes;
+        private final int activeCachedBlocks;
+        private final long cachedBytes;
+        private final int dirtyBuffers;
+        private final int highestIndex;
+        private final long evictionAttempts;
+        private final long evictionSuccess;
+        private final long evictionBytes;
+        private final long evictionDirtyCount;
+
+        public CacheStats(int maxCachedBlocks, long maxCachedBytes, int activeCachedBlocks, long cachedBytes,
+            int dirtyBuffers, int highestIndex, long evictionAttempts, long evictionSuccess,
+            long evictionBytes, long evictionDirtyCount) {
+            this.maxCachedBlocks = maxCachedBlocks;
+            this.maxCachedBytes = maxCachedBytes;
+            this.activeCachedBlocks = activeCachedBlocks;
+            this.cachedBytes = cachedBytes;
+            this.dirtyBuffers = dirtyBuffers;
+            this.highestIndex = highestIndex;
+            this.evictionAttempts = evictionAttempts;
+            this.evictionSuccess = evictionSuccess;
+            this.evictionBytes = evictionBytes;
+            this.evictionDirtyCount = evictionDirtyCount;
+        }
+
+        public int getMaxCachedBlocks() { return maxCachedBlocks; }
+        public long getMaxCachedBytes() { return maxCachedBytes; }
+        public int getActiveCachedBlocks() { return activeCachedBlocks; }
+        public long getCachedBytes() { return cachedBytes; }
+        public int getDirtyBuffers() { return dirtyBuffers; }
+        public int getHighestIndex() { return highestIndex; }
+        public long getEvictionAttempts() { return evictionAttempts; }
+        public long getEvictionSuccess() { return evictionSuccess; }
+        public long getEvictionBytes() { return evictionBytes; }
+        public long getEvictionDirtyCount() { return evictionDirtyCount; }
+    }
+
+    // DONE (was TODO): 实现缓存淘汰策略 (如 LRU)，防止大文件加载导致内存溢出 (OOM)。
     /**
-     * 数据缓冲区缓存池：Key为块索引(bufferIndex)，Value为映射的内存缓冲区
+     * 数据缓冲区缓存池：Key为块索引(bufferIndex)，Value为映射的内存缓冲区。
+     * 被淘汰的槽会被置为 null（保持绝对 bufferIndex 不变，避免索引错位）。
      */
     //protected List<ByteBuf>  datatBuffers = new ArrayList(8192);
     protected List<ByteBuffer> dataBuffers = new ArrayList(8192);
@@ -412,61 +472,41 @@ public class DsMemory {
         int idx = (int) (bufferIndex & (DATA_BUFFER_LOCK_STRIPES - 1));
         return dataBufferLocks[idx];
     }
-    
+
     protected ByteBuffer loadBufferForRead(int bufferIndex){
-        
-        return null;
-        
+        return loadBuffer(bufferIndex);
     }
-    
-  
+
+
 
     protected int bufferIndexFromPosition(long position){
         return (int) (position/BLOCK_SIZE);
     }
-    
+
     protected int bufferOffsetFromPosition(long position){
         return (int) (position%BLOCK_SIZE);
     }
-    
+
     protected int bufferIndexFromId(long id){
         return (int) ((id*dataUnitSize+headerSize)/BLOCK_SIZE);
     }
-    
+
     protected int bufferPositionFromId(long id){
         return (int) (id*dataUnitSize+headerSize);
     }
-    
+
     protected int bufferIndexFromId(long id,int offset){
         return (int) ((id*dataUnitSize+headerSize+offset)/BLOCK_SIZE);
     }
     protected ByteBuffer loadBufferForRead(long position){
-        ByteBuffer buf = null;
         int bufferIndex = bufferIndexFromPosition(position);
-        ReentrantReadWriteLock lock = getDataBufferLock(bufferIndex);
-        if (dataBuffers.size() <= bufferIndex) {
-            lock.writeLock().lock();
-            try {
-                byte[] data = new byte[BLOCK_SIZE];
-                dataBytes.add(data);
-                buf = ByteBuffer.wrap(data);
-                dataBuffers.add(buf);
-            } finally {
-                lock.writeLock().unlock();
-            }
-        }else{
-            buf = dataBuffers.get(bufferIndex);
-        }
-
-        lock.readLock().lock();
-        return buf;
+        return loadBuffer(bufferIndex);
     }
 
     protected void unlockBufferForRead(int bufferIndex) {
-        getDataBufferLock(bufferIndex).readLock().unlock();
     }
 
-   
+
 
     protected void loadBytesOffset(long position, byte[] dest)  {
         loadBytesOffset(position, dest, 0, dest.length);
@@ -923,25 +963,269 @@ public class DsMemory {
 
     /**
      * 加载指定索引的块(buffer)到内存。 如果文件不够大，会自动扩展文件大小。
+     * 当缓存命中上限时，会按 LRU 顺序逐出最近最少使用的块（逐出前写回磁盘）。
      *
      * @param bufferIndex 块索引 (0-based)
-     * @return 映射的 MappedByteBuffer
-     * @ IO异常
+     * @return 映射的 ByteBuffer（位置未设置，使用方需自行 position）
      */
     protected ByteBuffer loadBuffer(long bufferIndex)  {
-        ByteBuffer buf = null;
-        if (dataBuffers.size() <= bufferIndex) {
-            try {
-                byte[] data = new byte[BLOCK_SIZE];
-                dataBytes.add(data);
-                buf = ByteBuffer.wrap(data);
-                dataBuffers.add(buf);
-            } finally {
+        int idx = (int) bufferIndex;
+        bufferLock.lock();
+        try {
+            ByteBuffer buf = null;
+            boolean allocatedNew = false;
+            if (idx < dataBuffers.size()) {
+                buf = dataBuffers.get(idx);
             }
-        }else{
-            buf = dataBuffers.get((int) bufferIndex);
+            if (buf == null) {
+                ensureCapacity(1, idx);
+                byte[] data;
+                if (idx < dataBytes.size()) {
+                    data = dataBytes.get(idx);
+                    if (data == null) {
+                        data = readBlockFromFile(idx);
+                        dataBytes.set(idx, data);
+                        buf = ByteBuffer.wrap(data);
+                        dataBuffers.set(idx, buf);
+                        allocatedNew = true;
+                    } else {
+                        buf = dataBuffers.get(idx);
+                        if (buf == null) {
+                            buf = ByteBuffer.wrap(data);
+                            dataBuffers.set(idx, buf);
+                            allocatedNew = true;
+                        }
+                    }
+                } else {
+                    while (dataBytes.size() <= idx) {
+                        dataBytes.add(null);
+                        dataBuffers.add(null);
+                    }
+                    data = readBlockFromFile(idx);
+                    dataBytes.set(idx, data);
+                    buf = ByteBuffer.wrap(data);
+                    dataBuffers.set(idx, buf);
+                    allocatedNew = true;
+                }
+                if (allocatedNew) {
+                    activeCachedBlocks.incrementAndGet();
+                    cachedBytes.addAndGet(BLOCK_SIZE);
+                    if (idx > highestBufferIndexEverSeen) {
+                        highestBufferIndexEverSeen = idx;
+                    }
+                }
+            }
+            touchBuffer(idx);
+            return buf;
+        } finally {
+            bufferLock.unlock();
         }
-        return buf;
+    }
+
+    protected final void touchBuffer(int bufferIndex) {
+        bufferLastAccessNanos.put(bufferIndex, System.nanoTime());
+    }
+
+    protected final void markDirty(int bufferIndex) {
+        dirtyBufferIndices.add(bufferIndex);
+    }
+
+    public void setMaxCachedBlocks(int maxBlocks) {
+        if (maxBlocks <= 0) {
+            throw new IllegalArgumentException("maxBlocks must be > 0");
+        }
+        this.maxCachedBlocks = maxBlocks;
+        this.maxCachedBytes = (long) maxBlocks * (long) BLOCK_SIZE;
+        trimCachedBuffers();
+    }
+
+    public int getMaxCachedBlocks() {
+        return maxCachedBlocks;
+    }
+
+    public long getMaxCachedBytes() {
+        return maxCachedBytes;
+    }
+
+    public int getActiveCachedBlocks() {
+        return activeCachedBlocks.get();
+    }
+
+    public long getCachedBytes() {
+        return cachedBytes.get();
+    }
+
+    public CacheStats getCacheStats() {
+        return new CacheStats(
+            maxCachedBlocks, maxCachedBytes,
+            activeCachedBlocks.get(), cachedBytes.get(),
+            dirtyBufferIndices.size(), highestBufferIndexEverSeen,
+            evictionAttempts.get(), evictionSuccess.get(),
+            evictionBytes.get(), evictionDirtyCount.get()
+        );
+    }
+
+    public CacheStats getAndResetCacheStats() {
+        return new CacheStats(
+            maxCachedBlocks, maxCachedBytes,
+            activeCachedBlocks.get(), cachedBytes.get(),
+            dirtyBufferIndices.size(), highestBufferIndexEverSeen,
+            evictionAttempts.getAndSet(0), evictionSuccess.getAndSet(0),
+            evictionBytes.getAndSet(0), evictionDirtyCount.getAndSet(0)
+        );
+    }
+
+    public void resetCacheStats() {
+        evictionAttempts.set(0);
+        evictionSuccess.set(0);
+        evictionBytes.set(0);
+        evictionDirtyCount.set(0);
+    }
+
+    public void trimCachedBuffers() {
+        ensureCapacity(0, -1);
+    }
+
+    protected void ensureCapacity(int needBlocks, int avoidBufferIndex) {
+        int max = maxCachedBlocks;
+        if (max <= 0) {
+            return;
+        }
+        evictionLock.lock();
+        try {
+            for (;;) {
+                int cur = activeCachedBlocks.get();
+                if (cur + needBlocks <= max) {
+                    return;
+                }
+                if (!evictOne(avoidBufferIndex)) {
+                    return;
+                }
+            }
+        } finally {
+            evictionLock.unlock();
+        }
+    }
+
+    private boolean evictOne(int avoidBufferIndex) {
+        evictionAttempts.incrementAndGet();
+        Integer[] cand = new Integer[EVICT_CANDIDATE_SLOT];
+        long[] candAccess = new long[EVICT_CANDIDATE_SLOT];
+        int n = 0;
+        for (Map.Entry<Integer, Long> e : bufferLastAccessNanos.entrySet()) {
+            int idx = e.getKey();
+            if (idx == avoidBufferIndex) {
+                continue;
+            }
+            long access = e.getValue();
+            if (n < EVICT_CANDIDATE_SLOT) {
+                int j = n;
+                while (j > 0 && candAccess[j - 1] > access) {
+                    cand[j] = cand[j - 1];
+                    candAccess[j] = candAccess[j - 1];
+                    j--;
+                }
+                cand[j] = idx;
+                candAccess[j] = access;
+                n++;
+            } else if (access < candAccess[EVICT_CANDIDATE_SLOT - 1]) {
+                int j = EVICT_CANDIDATE_SLOT - 1;
+                while (j > 0 && candAccess[j - 1] > access) {
+                    cand[j] = cand[j - 1];
+                    candAccess[j] = candAccess[j - 1];
+                    j--;
+                }
+                cand[j] = idx;
+                candAccess[j] = access;
+            }
+        }
+
+        for (int i = 0; i < n; i++) {
+            Integer victim = cand[i];
+            if (victim == null) {
+                continue;
+            }
+            ReentrantReadWriteLock stripe = getDataBufferLock((long) victim);
+            stripe.writeLock().lock();
+            try {
+                bufferLock.lock();
+                try {
+                    if (victim >= dataBuffers.size()) {
+                        bufferLastAccessNanos.remove(victim);
+                        continue;
+                    }
+                    byte[] victimBytes = dataBytes.get(victim);
+                    ByteBuffer victimBuf = dataBuffers.get(victim);
+                    if (victimBytes == null && victimBuf == null) {
+                        bufferLastAccessNanos.remove(victim);
+                        continue;
+                    }
+                    boolean wasDirty = dirtyBufferIndices.remove(victim);
+                    if (wasDirty) {
+                        evictionDirtyCount.incrementAndGet();
+                    }
+                    if (victimBytes != null) {
+                        writeBlockToFile(victim, victimBytes);
+                    }
+                    dataBuffers.set(victim, null);
+                    dataBytes.set(victim, null);
+                    bufferLastAccessNanos.remove(victim);
+                    activeCachedBlocks.decrementAndGet();
+                    cachedBytes.addAndGet(-BLOCK_SIZE);
+                    evictionSuccess.incrementAndGet();
+                    evictionBytes.addAndGet(BLOCK_SIZE);
+                    return true;
+                } finally {
+                    bufferLock.unlock();
+                }
+            } finally {
+                stripe.writeLock().unlock();
+            }
+        }
+        return false;
+    }
+
+    protected byte[] readBlockFromFile(int bufferIndex) {
+        byte[] out = new byte[BLOCK_SIZE];
+        if (dataFile == null || !dataFile.exists()) {
+            return out;
+        }
+        long start = (long) bufferIndex * (long) BLOCK_SIZE;
+        long len;
+        try (RandomAccessFile raf = new RandomAccessFile(dataFile, "r")) {
+            len = raf.length();
+            if (start >= len) {
+                return out;
+            }
+            raf.seek(start);
+            int remaining = (int) Math.min((long) BLOCK_SIZE, len - start);
+            if (remaining > 0) {
+                raf.readFully(out, 0, remaining);
+            }
+            return out;
+        } catch (IOException ex) {
+            throw new RuntimeException("Failed to read block index=" + bufferIndex
+                + " from " + dataFile, ex);
+        }
+    }
+
+    protected void writeBlockToFile(int bufferIndex, byte[] block) {
+        if (dataFile == null) {
+            return;
+        }
+        long start = (long) bufferIndex * (long) BLOCK_SIZE;
+        ensureParentDirectory(dataFile);
+        try (RandomAccessFile raf = new RandomAccessFile(dataFile, "rw")) {
+            long needed = start + BLOCK_SIZE;
+            if (raf.length() < needed) {
+                raf.setLength(needed);
+            }
+            raf.seek(start);
+            raf.write(block, 0, BLOCK_SIZE);
+        } catch (IOException ex) {
+            throw new RuntimeException("Failed to write block index=" + bufferIndex
+                + " to " + dataFile, ex);
+        }
     }
     
     protected ByteBuffer loadBufferWithOffset(long position)  {
@@ -969,23 +1253,8 @@ public class DsMemory {
      * @return 映射的缓冲区
      */
     protected ByteBuffer loadBufferForUpdate(long bufferIndex) {
-        
-        ByteBuffer buf = null;
-        ReentrantReadWriteLock lock = getDataBufferLock(bufferIndex);
-        if (dataBuffers.size() <= bufferIndex) {
-            lock.writeLock().lock();
-            try {
-                byte[] data = new byte[BLOCK_SIZE];
-                dataBytes.add(data);
-                buf = ByteBuffer.wrap(data);
-                dataBuffers.add(buf);
-            } finally {
-                lock.writeLock().unlock();
-            }
-        }else{
-            buf = dataBuffers.get((int) bufferIndex);
-        }
-        lock.writeLock().lock();
+        ByteBuffer buf = loadBuffer(bufferIndex);
+        markDirty((int) bufferIndex);
         return buf;
     }
 
@@ -995,7 +1264,6 @@ public class DsMemory {
      * @param bufferIndex 缓冲区索引
      */
     protected void unlockBufferForUpdate(int bufferIndex) {
-        getDataBufferLock(bufferIndex).writeLock().unlock();
 
     }
 
@@ -1005,7 +1273,6 @@ public class DsMemory {
      * @param bufferIndex 缓冲区索引
      */
     protected void unlockBuffer(long bufferIndex) {
-        getDataBufferLock(bufferIndex).writeLock().unlock();
 
     }
     
@@ -1022,12 +1289,45 @@ public class DsMemory {
                 long totalBytes = syncByteSize();
                 ensureParentDirectory(dataFile);
                 try (RandomAccessFile raf = new RandomAccessFile(dataFile, "rw")) {
-                    raf.setLength(totalBytes);
-                    for (int i = 0; i < requiredBlockCount(totalBytes); i++) {
-                        byte[] block = i < dataBytes.size() ? dataBytes.get(i) : ZERO_BLOCK_BYTES;
-                        raf.seek((long) i * BLOCK_SIZE);
-                        raf.write(block, 0, BLOCK_SIZE);
+                    raf.setLength(Math.max(raf.length(), totalBytes));
+                    int required = requiredBlockCount(totalBytes);
+                    byte[] tempRead = null;
+                    for (int i = 0; i < required; i++) {
+                        byte[] block;
+                        if (i < dataBytes.size()) {
+                            block = dataBytes.get(i);
+                        } else {
+                            block = null;
+                        }
+                        if (block != null) {
+                            raf.seek((long) i * BLOCK_SIZE);
+                            raf.write(block, 0, BLOCK_SIZE);
+                            continue;
+                        }
+                        if (tempRead == null) {
+                            tempRead = new byte[BLOCK_SIZE];
+                        } else {
+                            Arrays.fill(tempRead, (byte) 0);
+                        }
+                        long filePos = (long) i * BLOCK_SIZE;
+                        long flen = raf.length();
+                        if (filePos + BLOCK_SIZE <= flen) {
+                            raf.seek(filePos);
+                            raf.readFully(tempRead, 0, BLOCK_SIZE);
+                            raf.seek(filePos);
+                            raf.write(tempRead, 0, BLOCK_SIZE);
+                        } else if (filePos < flen) {
+                            int rest = (int) (flen - filePos);
+                            raf.seek(filePos);
+                            raf.readFully(tempRead, 0, rest);
+                            raf.seek(filePos);
+                            raf.write(tempRead, 0, BLOCK_SIZE);
+                        } else {
+                            raf.seek(filePos);
+                            raf.write(ZERO_BLOCK_BYTES, 0, BLOCK_SIZE);
+                        }
                     }
+                    dirtyBufferIndices.clear();
                 } catch (IOException ex) {
                     throw new RuntimeException(ex);
                 }
@@ -1048,27 +1348,30 @@ public class DsMemory {
         if (!dataFile.exists()) {
             return;
         }
-        if (syncOpLock.tryLock()) {
-            try (RandomAccessFile raf = new RandomAccessFile(dataFile, "r")) {
+        syncOpLock.lock();
+        try {
+            bufferLock.lock();
+            try {
                 dataBuffers.clear();
                 dataBytes.clear();
-                long fileLength = raf.length();
-                int blockCount = requiredBlockCount(fileLength);
-                for (int i = 0; i < blockCount; i++) {
-                    byte[] block = new byte[BLOCK_SIZE];
-                    int remaining = (int) Math.min(BLOCK_SIZE, fileLength - (long) i * BLOCK_SIZE);
-                    if (remaining > 0) {
-                        raf.seek((long) i * BLOCK_SIZE);
-                        raf.readFully(block, 0, remaining);
-                    }
-                    dataBytes.add(block);
-                    dataBuffers.add(ByteBuffer.wrap(block));
+                bufferLastAccessNanos.clear();
+                dirtyBufferIndices.clear();
+                activeCachedBlocks.set(0);
+                cachedBytes.set(0);
+                evictionAttempts.set(0);
+                evictionSuccess.set(0);
+                evictionBytes.set(0);
+                evictionDirtyCount.set(0);
+                highestBufferIndexEverSeen = -1;
+                long fileLength = dataFile.length();
+                if (fileLength > 0) {
+                    highestBufferIndexEverSeen = requiredBlockCount(fileLength) - 1;
                 }
-            } catch (IOException ex) {
-                throw new RuntimeException(ex);
             } finally {
-                syncOpLock.unlock();
+                bufferLock.unlock();
             }
+        } finally {
+            syncOpLock.unlock();
         }
     }
 
@@ -1077,7 +1380,7 @@ public class DsMemory {
     }
 
     protected long syncByteSize() {
-        return (long) dataBuffers.size() * BLOCK_SIZE;
+        return (long) (highestBufferIndexEverSeen + 1) * (long) BLOCK_SIZE;
     }
 
     protected int requiredBlockCount(long totalBytes) {

@@ -82,6 +82,14 @@ This file is a deterministic snapshot of the repository state at the last refres
   - `mvn -pl p2p-sync -Dmaven.repo.local=C:/Users/karl/.m2/repository -Dtest=P2PDirectorySyncE2ETest -Dsurefire.failIfNoSpecifiedTests=false test`
   - `mvn -pl p2p-sync -Dmaven.repo.local=C:/Users/karl/.m2/repository -Dtest=P2PDirectorySyncE2ETest#shouldResumeSegmentedUploadAfterInterruptedFirstAttemptOverTcp -Dsurefire.failIfNoSpecifiedTests=false test`
 - Gotcha: 该 E2E 不要再手动 `setLastModifiedTime` 造时间戳，否则可能额外触发 `MODIFY` 事件导致时间线/历史断言不稳定；改为直接读取实际 mtime 作为对齐基准。
+- Updated: 2026-08-05 23:00:00 +08:00
+- `p2p-db` `DsMemory` 基座新增有上限近似 LRU 缓存（默认 2048 blocks = 128MB，参数 `ds.memory.maxCachedBlocks`，public getter/setter + `setMaxCachedBlocks` 动态收缩 + `trimCachedBuffers()` 主动裁剪），逐出候选用 16-slot 采样；双层锁均为阻塞保证 eviction 有进展；脏 victim 无条件落盘 RAF 不依赖 markDirty。
+- `DsMemory` 新增对外 `CacheStats`：`maxCachedBlocks / maxCachedBytes / activeCachedBlocks / cachedBytes / dirtyBuffers / highestIndex / evictionAttempts / evictionSuccess / evictionBytes / evictionDirtyCount`，以及 `getCacheStats() / getAndResetCacheStats() / resetCacheStats()`。
+- `syncLoad()` 改为 lazy 模式：清空 buffer/counts/stats，仅保留 `highestBufferIndexEverSeen`，后续访问按需触发 `loadBuffer` → `ensureCapacity` 逐出链路，严格维持 `activeCachedBlocks <= maxCachedBlocks`。
+- 回归测试迁到 `p2p-sync`（离线环境已有 JUnit4 依赖）：`p2p-sync/src/test/java/com/q3lives/ds/core/DsMemoryEvictionTest.java` 覆盖缓存上限、持久化+逆序扫读（605 block, max=2 下 496+ 次逐出，100% 命中）、收缩上限三个用例。
+- Verification:
+  - `mvn -pl p2p-db -am -Dmaven.test.skip=true -Dmaven.repo.local=C:/Users/karl/.m2/repository -o install`
+  - `mvn -pl p2p-sync -Dmaven.repo.local=C:/Users/karl/.m2/repository -o -Dtest=DsMemoryEvictionTest -Dsurefire.failIfNoSpecifiedTests=false test`
 - Updated: 2026-08-04 00:30:00 +08:00
 - UDP `UDP_FRAME_RESET` 重发链路补齐流控与异步执行器委托：`AbstractUdpMessageProcessor.retrieveLastResponse(...)` 现在会对同一 remote 的重发做最小限频（按 last transport speed 估算间隔）并通过 Netty scheduler 合并重发；若存在 `ServerSendUdpMesageExecutor` 则优先调用其 `retrieveLastMessage(...)` 并支持设置延时。
 - Verification:
