@@ -134,7 +134,7 @@ SyncReceiverStateStore   → DsHashMap (pending-path lock, write_conflict tracki
 | 5 | **LRU 采样迭代 + 排序**：n 候选内 O(n log 16)，非近似但慢 | 大规模 activeCachedBlocks 上千后 GC 压力高 | DsMemory.evictOne() 全量 entrySet 遍历 |
 | 6 | **bufferLock 全局**：loadBuffer 任何读都拿全局锁 | 多读吞吐卡在单锁；不能并发 load 不同块 | DsMemory.loadBuffer() 入口第一行 bufferLock.lock() |
 | 7 | **跨页写的 int/long 递减计数 bug**：`i = buf.remaining(); i>=INT_SIZE; i-=INT_SIZE` 递减次数少算 1 | 大数组写尾部丢字节 | DsMemory.storeIntOffset/loadLongOffset 尾部剩余字节处理循环 |
-| 8 | **DsHashMap 无范围查询**：只能点查；RANGE / GT / LT 操作需遍历 | p2p-sync 想做时间范围回放只能 O(n) | DsHashMap 内部 bucket chain 结构天然不支持 range |
+| 8 | **DsHashMap 范围查询 public API 未接通（非结构限制）**：底层 8 层 256-ary trie 天然按 long 高位→低位整数序存储，已有 `collectRangeOrdered`（skip+limit 有序分页、countSubtree 跳子树）、`indexOfOrdered`（target key → 有序 index）、`getByIndexOrdered` 等 O(log N + count) 原语；但 `public range(start,count)` 仍退化用 iterator() 从头扫，且缺少 NavigableMap 风格 GT/LT/CEIL/HIGHER 对外 API | p2p-sync 时间范围回放当前只能走 `public range(start,count)` O(n)；但内部结构已支持按 long 键有序，后续接一层 API 即可 | 详见 DsHashMap L931-L1089 的 `traverseOrdered/collectRangeOrdered/indexOfOrdered/getByIndexOrdered` + `slotOrderForDepth(true)=0..255 升序`；注意同 slot 内冲突链（indexInChain/countChain）需要线性扫，但冲突率低时是 O(log N + count) 级别 |
 
 ---
 
