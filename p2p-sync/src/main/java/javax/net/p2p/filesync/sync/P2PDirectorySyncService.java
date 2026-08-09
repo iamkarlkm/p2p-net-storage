@@ -48,7 +48,7 @@ public final class P2PDirectorySyncService implements AutoCloseable {
     private final List<PathMatcher> includeMatchers;
     private final List<PathMatcher> excludeMatchers;
     private final Map<Path, PendingDelete> pendingDeletes = new java.util.concurrent.ConcurrentHashMap<>();
-    private static final long RENAME_MERGE_WINDOW_MILLIS = 500L;
+    private static final long RENAME_MERGE_WINDOW_MILLIS = 1500L;
 
     private static final class PendingDelete {
         final String relativePath;
@@ -500,12 +500,12 @@ public final class P2PDirectorySyncService implements AutoCloseable {
                 continue;
             }
             long age = now - pd.createdAtMillis;
-            if (age > RENAME_MERGE_WINDOW_MILLIS) {
-                it.remove();
-                flushOneDelete(pd);
-                continue;
-            }
+            boolean aged = age > RENAME_MERGE_WINDOW_MILLIS;
             if (pd.directory != directoryTarget) {
+                if (aged) {
+                    it.remove();
+                    flushOneDelete(pd);
+                }
                 continue;
             }
             boolean sizeKnown = pd.contentLength >= 0L && targetSize >= 0L;
@@ -523,6 +523,15 @@ public final class P2PDirectorySyncService implements AutoCloseable {
                 score = sizeDelta + mtimeDelta * 1000L;
             } else {
                 score = mtimeDelta;
+            }
+            if (aged) {
+                if (score <= 10000L * 1000L) {
+                    it.remove();
+                    return pd;
+                }
+                it.remove();
+                flushOneDelete(pd);
+                continue;
             }
             if (score < bestDelta) {
                 bestDelta = score;
