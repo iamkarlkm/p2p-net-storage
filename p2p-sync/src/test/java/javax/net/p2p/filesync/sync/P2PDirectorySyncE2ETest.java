@@ -120,6 +120,87 @@ public class P2PDirectorySyncE2ETest {
     }
 
     @Test
+    public void shouldSyncAtomicFileRenameWithVerifiedContentOverTcp() throws Exception {
+        long taskId = 1201L;
+        Path senderRoot = Files.createTempDirectory("p2p_sync_sender_root_atomic_rename_");
+        Path senderState = Files.createTempDirectory("p2p_sync_sender_state_atomic_rename_");
+        try (ReceiverNode receiver = ReceiverNode.start(taskId, 1801);
+             ManagedTcpHandler handler = ManagedTcpHandler.connect(taskId, receiver.port);
+             P2PDirectorySyncService svc = new P2PDirectorySyncService(senderConfig(taskId, senderRoot, senderState), handler);
+             P2PSyncMonitorServer monitor = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
+            svc.start();
+            monitor.start();
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            Path oldFile = senderRoot.resolve("d1").resolve("original.txt");
+            Files.createDirectories(oldFile.getParent());
+            long initialTs = System.currentTimeMillis() - 5_000L;
+            String payload = "atomic rename verified content payload";
+            writeUtf8(oldFile, payload);
+            Files.setLastModifiedTime(oldFile, FileTime.fromMillis(initialTs));
+            assertFileSynced(receiver.root.resolve("d1").resolve("original.txt"), payload, initialTs);
+
+            Path newFile = senderRoot.resolve("d1").resolve("renamed.txt");
+            long renamedTs = System.currentTimeMillis() - 1_500L;
+            Files.move(oldFile, newFile);
+            Files.setLastModifiedTime(newFile, FileTime.fromMillis(renamedTs));
+
+            assertPathAbsent(receiver.root.resolve("d1").resolve("original.txt"));
+            assertFileSynced(receiver.root.resolve("d1").resolve("renamed.txt"), payload, renamedTs);
+
+            waitForQueuesJsonContains(monitor.getPort(),
+                "\"recentCompletedUploads\"",
+                "\"path\":\"d1/renamed.txt\"",
+                "\"sourcePath\":\"d1/original.txt\"",
+                "\"verifiedContentMd5\"",
+                "\"verifiedContentLength\"");
+        }
+    }
+
+    @Test
+    public void shouldSyncCrossDirectoryFileMoveWithVerifiedContentOverTcp() throws Exception {
+        long taskId = 1202L;
+        Path senderRoot = Files.createTempDirectory("p2p_sync_sender_root_cross_move_");
+        Path senderState = Files.createTempDirectory("p2p_sync_sender_state_cross_move_");
+        try (ReceiverNode receiver = ReceiverNode.start(taskId, 1802);
+             ManagedTcpHandler handler = ManagedTcpHandler.connect(taskId, receiver.port);
+             P2PDirectorySyncService svc = new P2PDirectorySyncService(senderConfig(taskId, senderRoot, senderState), handler);
+             P2PSyncMonitorServer monitor = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
+            svc.start();
+            monitor.start();
+            waitUntil(() -> svc.isWatchReady(), 5, TimeUnit.SECONDS);
+
+            Path srcFile = senderRoot.resolve("srcdir").resolve("movethis.txt");
+            Files.createDirectories(srcFile.getParent());
+            long initialTs = System.currentTimeMillis() - 5_000L;
+            byte[] payloadBytes = new byte[4096 + 42];
+            for (int i = 0; i < payloadBytes.length; i++) {
+                payloadBytes[i] = (byte) ((i * 131) & 0xFF);
+            }
+            Files.write(srcFile, payloadBytes);
+            Files.setLastModifiedTime(srcFile, FileTime.fromMillis(initialTs));
+            assertFileBytesSynced(receiver.root.resolve("srcdir").resolve("movethis.txt"), payloadBytes, initialTs);
+
+            Path dstDir = senderRoot.resolve("dstdir").resolve("nested");
+            Files.createDirectories(dstDir);
+            Path dstFile = dstDir.resolve("washere.bin");
+            long movedTs = System.currentTimeMillis() - 1_500L;
+            Files.move(srcFile, dstFile);
+            Files.setLastModifiedTime(dstFile, FileTime.fromMillis(movedTs));
+
+            assertPathAbsent(receiver.root.resolve("srcdir").resolve("movethis.txt"));
+            assertFileBytesSynced(receiver.root.resolve("dstdir").resolve("nested").resolve("washere.bin"), payloadBytes, movedTs);
+
+            waitForQueuesJsonContains(monitor.getPort(),
+                "\"recentCompletedUploads\"",
+                "\"path\":\"dstdir/nested/washere.bin\"",
+                "\"sourcePath\":\"srcdir/movethis.txt\"",
+                "\"verifiedContentMd5\"",
+                "\"verifiedContentLength\":" + payloadBytes.length);
+        }
+    }
+
+    @Test
     public void shouldFanOutFileToMultipleReceiversOverTcp() throws Exception {
         long taskId = 102L;
         Path senderRoot = Files.createTempDirectory("p2p_sync_sender_root_fanout_");
@@ -897,6 +978,13 @@ public class P2PDirectorySyncE2ETest {
         }
 
         @Override
+        public void handleRename(FileSyncEventType type, long targetFileId, String targetRelativePath, Path targetAbsolutePath,
+                                 String sourceRelativePath, boolean directory, FileSyncAcker acker) {
+            calls.incrementAndGet();
+            delegate.handleRename(type, targetFileId, targetRelativePath, targetAbsolutePath, sourceRelativePath, directory, acker);
+        }
+
+        @Override
         public void close() throws Exception {
             if (delegate instanceof AutoCloseable) {
                 ((AutoCloseable) delegate).close();
@@ -919,6 +1007,18 @@ public class P2PDirectorySyncE2ETest {
             delegate.handle(type, fileId, relativePath, absolutePath, directory, acker);
         }
 
+        @Override
+        public void handleRename(FileSyncEventType type, long targetFileId, String targetRelativePath, Path targetAbsolutePath,
+                                 String sourceRelativePath, boolean directory, FileSyncAcker acker) {
+            attempts.incrementAndGet();
+            FileSyncEventHandler delegate = delegateRef.get();
+            if (delegate == null) {
+                acker.fail("network_unreachable");
+                return;
+            }
+            delegate.handleRename(type, targetFileId, targetRelativePath, targetAbsolutePath, sourceRelativePath, directory, acker);
+        }
+
         private void recover(FileSyncEventHandler delegate) {
             delegateRef.set(delegate);
         }
@@ -933,6 +1033,13 @@ public class P2PDirectorySyncE2ETest {
 
         @Override
         public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
+            attempts.incrementAndGet();
+            acker.retry();
+        }
+
+        @Override
+        public void handleRename(FileSyncEventType type, long targetFileId, String targetRelativePath, Path targetAbsolutePath,
+                                 String sourceRelativePath, boolean directory, FileSyncAcker acker) {
             attempts.incrementAndGet();
             acker.retry();
         }
@@ -973,6 +1080,12 @@ public class P2PDirectorySyncE2ETest {
         @Override
         public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
             delegate.handle(type, fileId, relativePath, absolutePath, directory, acker);
+        }
+
+        @Override
+        public void handleRename(FileSyncEventType type, long targetFileId, String targetRelativePath, Path targetAbsolutePath,
+                                 String sourceRelativePath, boolean directory, FileSyncAcker acker) {
+            delegate.handleRename(type, targetFileId, targetRelativePath, targetAbsolutePath, sourceRelativePath, directory, acker);
         }
 
         @Override

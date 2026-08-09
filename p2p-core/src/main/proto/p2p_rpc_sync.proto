@@ -11,6 +11,8 @@ enum SyncEventType {
   CREATE = 1;
   MODIFY = 2;
   DELETE = 3;
+  RENAME = 4;
+  MOVE = 5;
 }
 
 message SyncEventRequest {
@@ -21,6 +23,7 @@ message SyncEventRequest {
   bool directory = 5;
   SyncEventType type = 6;
   int64 last_modified_millis = 7;
+  string source_path = 8;
 }
 
 message SyncEventAck {
@@ -29,6 +32,8 @@ message SyncEventAck {
   bool needs_upload = 3;
   int32 store_id = 4;
   string message = 5;
+  int64 verified_content_length = 6;
+  string verified_content_md5 = 7;
 }
 
 message SyncFinalizeRequest {
@@ -40,4 +45,5 @@ message SyncFinalizeRequest {
   int64 last_modified_millis = 6;
   int64 content_length = 7;
   string content_md5 = 8;
+  string source_path = 9;
 }

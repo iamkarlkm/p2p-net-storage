@@ -72,6 +72,18 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
 
     @Override
     public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
+        dispatchToAll(type, fileId, relativePath, absolutePath, null, directory, acker);
+    }
+
+    @Override
+    public void handleRename(FileSyncEventType type, long targetFileId, String targetRelativePath, Path targetAbsolutePath,
+                             String sourceRelativePath, boolean directory, FileSyncAcker acker) {
+        Objects.requireNonNull(acker, "acker");
+        dispatchToAll(type, targetFileId, targetRelativePath, targetAbsolutePath, sourceRelativePath, directory, acker);
+    }
+
+    private void dispatchToAll(FileSyncEventType type, long fileId, String relativePath, Path absolutePath,
+                               String sourceRelativePath, boolean directory, FileSyncAcker acker) {
         Objects.requireNonNull(acker, "acker");
         EventKey eventKey = new EventKey(type, directory, fileId);
         DeliveryState deliveryState = deliveryStates.computeIfAbsent(eventKey, key -> loadDeliveryState(type, directory, fileId));
@@ -87,7 +99,7 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
         for (PendingDispatch dispatch : pending) {
             EndpointClient client = dispatch.client;
             try {
-                client.handler.handle(type, fileId, relativePath, absolutePath, directory, new FileSyncAcker() {
+                FileSyncAcker nested = new FileSyncAcker() {
                     @Override
                     public void ack() {
                         deliveryState.markStatus(dispatch.index, P2PSyncStateStore.REPLICA_ACKED);
@@ -130,7 +142,12 @@ public final class MultiEndpointRpcSyncEventHandler implements FileSyncEventHand
                             acker.ack();
                         }
                     }
-                });
+                };
+                if (type.isRenameKind()) {
+                    client.handler.handleRename(type, fileId, relativePath, absolutePath, sourceRelativePath, directory, nested);
+                } else {
+                    client.handler.handle(type, fileId, relativePath, absolutePath, directory, nested);
+                }
             } catch (Exception e) {
                 deliveryState.markStatus(dispatch.index, P2PSyncStateStore.REPLICA_RETRY);
                 markReplicaState(type, directory, fileId, client.label, P2PSyncStateStore.REPLICA_RETRY);

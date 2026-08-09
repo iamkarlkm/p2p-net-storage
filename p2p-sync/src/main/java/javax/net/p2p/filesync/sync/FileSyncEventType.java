@@ -3,7 +3,9 @@ package javax.net.p2p.filesync.sync;
 public enum FileSyncEventType {
     CREATE(0),
     MODIFY(1),
-    DELETE(2);
+    DELETE(2),
+    RENAME(3),
+    MOVE(4);
 
     private final int id;
 
@@ -13,6 +15,10 @@ public enum FileSyncEventType {
 
     public int getId() {
         return id;
+    }
+
+    public boolean isRenameKind() {
+        return this == RENAME || this == MOVE;
     }
 
     public static FileSyncEventType fromId(int id) {

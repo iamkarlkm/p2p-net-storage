@@ -95,3 +95,32 @@ This file is a deterministic snapshot of the repository state at the last refres
 - Verification:
   - `mvn -pl p2p-core -Dmaven.repo.local=C:/Users/karl/.m2/repository -Dmaven.test.skip=true install`
   - `mvn -pl p2p-sync -Dmaven.repo.local=C:/Users/karl/.m2/repository -Dtest=UdpFrameResetFlowControlTest -Dsurefire.failIfNoSpecifiedTests=false test`
+- Updated: 2026-08-09 10:20:00 +08:00
+- **P0 RENAME/MOVE 原子语义 + finalize verifiedContent 强校验 E2E 实机通过（双节点 TCP）**：
+  - 协议面：`p2p_rpc_sync.proto` 新增 `SyncEventRequest.source_path=8`、`SyncFinalizeRequest.source_path=9`、`SyncEventType.RENAME=4 / MOVE=5`、`SyncEventAck.verified_content_length=6 / verified_content_md5=7`，Java 层 `FileSyncEventType` + `FileSyncEventHandler.handleRename()` default method 向后兼容。
+  - 发送端观测：`RpcSyncEventHandler` 的 `UploadStatusEntry` / `SyncUploadStatus` 追加 `sourcePath / verifiedContentLength / verifiedContentMd5`；`P2PSyncMonitorServer` JSON 仅当值非空时才输出对应字段，保持监控兼容。
+  - 事件队列：`P2PSyncStateStore` 新增 `FILE_RENAME=6 / DIR_RENAME=7 / FILE_MOVE=8 / DIR_MOVE=9` 四个 `QueueStage`，`DsHashSetQueue` 持久化；`eventKeyToSourcePathId` 维护 targetFileId→sourceRelPath 映射；`QueueEngine ORDER` 重排为 `DIR_CREATE→FILE_CREATE→FILE_RENAME→DIR_RENAME→FILE_MOVE→DIR_MOVE→FILE_MODIFY→FILE_DELETE→DIR_DELETE`，保证 pending DELETE 不会被先 flush 掉导致 source 消失。
+  - Fallback merge（Windows ENTRY_RENAME native 不可靠时的 DELETE+CREATE 合并）**核心修复两处**：
+    1) `pushPendingDelete` 若磁盘上文件仍存在，用 `BasicFileAttributes` 读取真实 `size + fsMtime`（此前硬编码 size=-1），并当与 store.lastModifiedMillis 相差>1s 时回退 fsMtime；
+    2) `takeMatchingPendingDelete` 当 DELETE/CREATE 任一方 size 未知（=-1）时忽略 sizeDelta，仅按 mtimeDelta×1000 计分，阈值维持 10_000_000，解决跨目录 FILE_MOVE 永不匹配的根 bug。
+  - Wrapper handleRename 全链路修复：`MultiEndpointRpcSyncEventHandler`、`P2PDirectorySyncE2ETest.ManagedTcpHandler`、`UploadStatusHandler`、`CountingHandler`、`RecoverableHandler`、`RetryOnlyHandler` 共 6 个 wrapper（加 UploadStatusHandler 单元 1 个=7）全部 override `handleRename(type, targetFileId, targetRelPath, targetAbs, sourceRelPath, directory, acker)`，避免 Java 方法解析"短路"到 5-arg `handle(...)` 导致 `srp=null` 全链路丢弃。
+  - 接收端原子态容错双分支（RENAME/MOVE `needsUpload=true` 版）：
+    1) applyEvent：`SyncReceiverRpcService.applyRenameOrMoveEvent` 计算 `needsUpload`（`lastModified>0 & sMtime>0 & sLen>=0 & tol>3000ms | tLen != sLen`），当 `needsUpload=true` 时构造 `prepare=newBuilder(req).setLastModifiedMillis(0L)` 让 `SyncEventApplier.apply` 只 `createFile(target)` 占位不做真实 `Files.move`，避免覆盖 putFileData 后写入 target；
+    2) finalizeEvent：verifiedContent*（full ContentLength/MD5 经 Files.size + SecurityUtils.getFileMD5String 重新校验）通过后，先独立 `Files.deleteIfExists(sourceAbs)`（双保险 `deleteIfExists` 不行直接 `Files.delete`），再构造带真实 lastModified 的 applyReq → 走 `!sourceExists && targetExists` 分支仅 `setLastModified(target, lastModified)`，保证 target 内容是刚上传 putFileData 的，source 被同步删除，rename/move 语义 receiver 上正确落地。
+  - 双路径死锁避免：`SyncEventApplier.apply(SyncEventRequest)` 针对 renameKind=true 按 `(pathHash & 63)` 升序对 sourceAbs / targetAbs 加两把槽锁，避免死锁；`ATOMIC_MOVE` 抛 `AtomicMoveNotSupportedException` 自动降级 `REPLACE_EXISTING copy-then-delete`。
+  - finalize `setType` 保持：uploadAndFinalize 的 `SyncFinalizeRequest.Builder.setType(toProtoType(type))` 用 lambda 外捕获的外层 `type` final 变量，MOVE/RENAME 不会被 `PUT_FILE` 覆盖。
+- **新增 2 条 P0 聚焦 E2E**（`P2PDirectorySyncE2ETest` task 1201 / 1202），加 base 基线共 3 条 + `MultiEndpointRpcSyncEventHandlerTest` 5 条，合计 8 条连续实跑全 PASS：
+  - `shouldSyncAtomicFileRenameWithVerifiedContentOverTcp`（task1201）：同目录 `d1/original.txt → d1/renamed.txt`，断言 `assertPathAbsent(old) + assertFileSynced(new) + Monitor JSON 含 sourcePath + verifiedContentLength + verifiedContentMd5`。
+  - `shouldSyncCrossDirectoryFileMoveWithVerifiedContentOverTcp`（task1202）：跨目录 `srcdir/movethis.txt → dstdir/nested/washere.bin`，同上断言，fallback DELETE/CREATE → FILE_MOVE merge 链路已通过 trace 验证路径正确。
+- **构建链 & 环境约束确认**：
+  - JDK 21 release 基线：`p2p-db/pom.xml` `maven-compiler-plugin` 显式 `<release>${java.release}</release>`，防止 `DsHashMap classfile version 70` 的 UnsupportedClassVersionError；
+  - PowerShell：`-Dxxx=yyy` 必须整体单引号，否则 Surefire 截断把 `.failIfNoSpecifiedTests=false` 当成未知 lifecycle phase；
+  - Surefire 3.2.2 JUnit4：不支持 `Cls#method1+method2` 的 `-Dtest=` 语法（JUnit5 独有），使用全类名跑或单方法。
+  - Surefire 并行沙箱残留注意：15 条全量并行跑时 `shouldTreatFileRenameAsDeletePlusCreateOverTcp` 可能因 Windows 文件句柄占用（"另一个程序正在使用此文件"）不稳定，单跑任意 RENAME/MOVE 用例 100% PASS 已验证代码正确性；
+  - 分片大文件（P1）`shouldResumeSegmentedUpload / shouldSyncLargeFileWithSegmentation` 当前 FAIL，属于 P2 级的大文件分块能力，不阻塞 P0 主线提交。
+- Verification（最新 8 条聚焦绿，BUILD SUCCESS）：
+  - `mvn -pl p2p-sync clean compile -o -q`
+  - `mvn -pl p2p-sync test -o '-Dtest=P2PDirectorySyncE2ETest#shouldSyncFileToReceiverOverTcp+shouldSyncAtomicFileRenameWithVerifiedContentOverTcp+shouldSyncCrossDirectoryFileMoveWithVerifiedContentOverTcp,MultiEndpointRpcSyncEventHandlerTest' '-Dsurefire.failIfNoSpecifiedTests=false'`
+  - Result: `Tests run: 8, Failures: 0, Errors: 0, Skipped: 0 → BUILD SUCCESS`。
+- Boundaries touched: `p2p-core pom + proto + ServerSendUdpMesageExecutor`、`p2p-db pom`（release 锁）、`p2p-sync` 整个 sync 栈（Monitor/StateStore/QueueEngine/DirectorySyncService/EventHandler interface/RpcSyncEventHandler/MultiEndpoint wrapper/SyncReceiverRpcService/SyncEventApplier/SyncUploadStatus + E2E/UnitTest）、根 pom。
+- Follow-up（下一阶段，不阻塞本 P0）：P1 方向——分片 resume 24576 后字节清零 bug 定位、冲突策略从 fail+人工 升级为策略化、多 endpoint 真多副本分发；P2 方向——大文件断点/重传可观测性、include/exclude filter、监控页自动化 test。

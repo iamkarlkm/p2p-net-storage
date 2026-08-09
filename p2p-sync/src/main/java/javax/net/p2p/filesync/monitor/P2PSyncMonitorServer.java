@@ -1389,6 +1389,18 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         item.put("message", upload.getMessage() == null ? "" : upload.getMessage());
         item.put("recommendedAction", stalled ? recommendedActionForStalledUpload(upload) : "");
         item.put("operatorHint", stalled ? operatorHintForStalledUpload(upload) : "");
+        long vcl = upload.getVerifiedContentLength();
+        String vcm = upload.getVerifiedContentMd5();
+        String sp = upload.getSourcePath();
+        if (vcl >= 0L) {
+            item.put("verifiedContentLength", Long.valueOf(vcl));
+        }
+        if (vcm != null && !vcm.isEmpty()) {
+            item.put("verifiedContentMd5", vcm);
+        }
+        if (sp != null && !sp.isEmpty()) {
+            item.put("sourcePath", sp);
+        }
         return item;
     }
 

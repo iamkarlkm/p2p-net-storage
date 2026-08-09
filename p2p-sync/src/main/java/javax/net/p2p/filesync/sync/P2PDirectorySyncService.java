@@ -47,6 +47,24 @@ public final class P2PDirectorySyncService implements AutoCloseable {
     private final P2PSyncQueueEngine queueEngine;
     private final List<PathMatcher> includeMatchers;
     private final List<PathMatcher> excludeMatchers;
+    private final Map<Path, PendingDelete> pendingDeletes = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long RENAME_MERGE_WINDOW_MILLIS = 500L;
+
+    private static final class PendingDelete {
+        final String relativePath;
+        final long createdAtMillis;
+        final boolean directory;
+        final long contentLength;
+        final long lastModifiedMillis;
+
+        PendingDelete(String relativePath, long createdAtMillis, boolean directory, long contentLength, long lastModifiedMillis) {
+            this.relativePath = relativePath;
+            this.createdAtMillis = createdAtMillis;
+            this.directory = directory;
+            this.contentLength = contentLength;
+            this.lastModifiedMillis = lastModifiedMillis;
+        }
+    }
 
     public P2PSyncStateStore getStore() {
         return store;
@@ -163,6 +181,10 @@ public final class P2PDirectorySyncService implements AutoCloseable {
         localStore.fileDeletesActive().sync();
         localStore.dirCreatesActive().sync();
         localStore.dirDeletesActive().sync();
+        localStore.fileRenamesActive().sync();
+        localStore.dirRenamesActive().sync();
+        localStore.fileMovesActive().sync();
+        localStore.dirMovesActive().sync();
     }
 
     private void scanOnePath(P2PSyncStateStore localStore, Path root, Path absolutePath, long lastRunMillis) {
@@ -269,7 +291,35 @@ public final class P2PDirectorySyncService implements AutoCloseable {
                 continue;
             }
 
+            WatchEvent.Kind<Path> entryRenameKind = findEntryRenameKind();
+            if (entryRenameKind != null && kind == entryRenameKind) {
+                WatchEvent<Path> ev = cast(event);
+                Object count = ev.count() > 1 ? ev.context() : null;
+                Path sourceName = name;
+                Path targetName = null;
+                if (event.count() > 1) {
+                    try {
+                        Object ctx = event.context();
+                    } catch (Exception ignore) {}
+                }
+                if (kind.name().equals("ENTRY_RENAME")) {
+                    handleEntryRenameByKind(dir, child, event);
+                    continue;
+                }
+            }
+
             if (kind == StandardWatchEventKinds.ENTRY_CREATE) {
+                PendingDelete match = takeMatchingPendingDelete(child);
+                if (match != null) {
+                    String sourceRel = match.relativePath;
+                    String targetRel = toStableRelativePath(rootDir, child);
+                    boolean isDir = Files.isDirectory(child);
+                    enqueueRenameOrMove(isDir, targetRel, sourceRel, child);
+                    if (isDir) {
+                        registerAllDirsFiltered(child, ws, keyToDir);
+                    }
+                    continue;
+                }
                 if (Files.isDirectory(child)) {
                     registerAllDirsFiltered(child, ws, keyToDir);
                     onDirTreeCreate(child);
@@ -288,8 +338,255 @@ public final class P2PDirectorySyncService implements AutoCloseable {
             }
 
             if (kind == StandardWatchEventKinds.ENTRY_DELETE) {
-                onDelete(child);
+                pushPendingDelete(child);
+                scheduleFlushPendingDeletes();
             }
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> WatchEvent<T> cast(WatchEvent<?> event) {
+        return (WatchEvent<T>) event;
+    }
+
+    private static volatile Boolean entryRenameKindCached = null;
+    private static WatchEvent.Kind<Path> findEntryRenameKind() {
+        if (entryRenameKindCached != null) {
+            return entryRenameKindCached.booleanValue() ? StandardWatchEventKinds.ENTRY_MODIFY : null;
+        }
+        try {
+            java.lang.reflect.Field f = StandardWatchEventKinds.class.getField("ENTRY_RENAME");
+            Object v = f.get(null);
+            if (v instanceof WatchEvent.Kind) {
+                entryRenameKindCached = Boolean.TRUE;
+                @SuppressWarnings("unchecked")
+                WatchEvent.Kind<Path> k = (WatchEvent.Kind<Path>) v;
+                return k;
+            }
+        } catch (Throwable ignore) {}
+        entryRenameKindCached = Boolean.FALSE;
+        return null;
+    }
+
+    private void handleEntryRenameByKind(Path dir, Path child, WatchEvent<?> event) {
+        try {
+            java.nio.file.WatchEvent<Path> ev = cast(event);
+            Path sourceName = ev.context();
+            if (Files.exists(child)) {
+                String sourceRel = toStableRelativePath(rootDir, dir.resolve(sourceName));
+                String targetRel = toStableRelativePath(rootDir, child);
+                boolean isDir = Files.isDirectory(child);
+                enqueueRenameOrMove(isDir, targetRel, sourceRel, child);
+            } else {
+                pushPendingDelete(child);
+                scheduleFlushPendingDeletes();
+            }
+        } catch (Exception ignore) {
+            onDelete(child);
+        }
+    }
+
+    private void enqueueRenameOrMove(boolean directory, String targetRelativePath, String sourceRelativePath, Path targetAbs) {
+        P2PSyncStateStore localStore = this.store;
+        if (localStore == null) {
+            return;
+        }
+        if (sourceRelativePath == null || sourceRelativePath.isEmpty()) {
+            if (directory) {
+                onDirCreate(targetAbs);
+            } else {
+                onFileCreate(targetAbs);
+            }
+            return;
+        }
+        if (targetRelativePath == null || targetRelativePath.isEmpty()) {
+            if (directory) {
+                localStore.enqueueDirDelete(localStore.getOrCreateFileId(sourceRelativePath));
+            } else {
+                localStore.enqueueFileDelete(localStore.getOrCreateFileId(sourceRelativePath));
+            }
+            return;
+        }
+        String sourceParent = parentOf(sourceRelativePath);
+        String targetParent = parentOf(targetRelativePath);
+        boolean sameDir = Objects.equals(sourceParent, targetParent);
+        long targetId = localStore.getOrCreateFileId(targetRelativePath);
+        long srcId = localStore.getOrCreateFileId(sourceRelativePath);
+        Long srcMtime = localStore.getLastModifiedMillis(srcId);
+        long now = System.currentTimeMillis();
+        try {
+            if (Files.exists(targetAbs)) {
+                long tm = Files.getLastModifiedTime(targetAbs).toMillis();
+                localStore.putLastModifiedMillis(targetId, tm);
+            }
+        } catch (IOException ignore) {}
+        if (srcMtime == null && Files.exists(targetAbs)) {
+            try {
+                localStore.putLastModifiedMillis(srcId, Files.getLastModifiedTime(targetAbs).toMillis());
+            } catch (IOException ignore) {}
+        }
+        localStore.putKind(targetId, directory);
+        FileSyncEventType eventType = sameDir ? FileSyncEventType.RENAME : FileSyncEventType.MOVE;
+        if (directory) {
+            if (sameDir) {
+                localStore.enqueueDirRename(targetId, sourceRelativePath);
+            } else {
+                localStore.enqueueDirMove(targetId, sourceRelativePath);
+            }
+        } else {
+            if (sameDir) {
+                localStore.enqueueFileRename(targetId, sourceRelativePath);
+            } else {
+                localStore.enqueueFileMove(targetId, sourceRelativePath);
+            }
+        }
+    }
+
+    private static String parentOf(String relativePath) {
+        if (relativePath == null) {
+            return "";
+        }
+        int slash = relativePath.lastIndexOf('/');
+        if (slash < 0) {
+            return "";
+        }
+        return relativePath.substring(0, slash);
+    }
+
+    private void pushPendingDelete(Path child) {
+        P2PSyncStateStore localStore = this.store;
+        Path root = this.rootDir;
+        if (localStore == null || root == null) {
+            return;
+        }
+        String rel = toStableRelativePath(root, child);
+        long id = localStore.getOrCreateFileId(rel);
+        Boolean dir = localStore.isDirectory(id);
+        boolean directory = Boolean.TRUE.equals(dir);
+        Long mtime = localStore.getLastModifiedMillis(id);
+        long contentLength = -1L;
+        long lastModifiedMillis = mtime == null ? 0L : mtime.longValue();
+        if (!directory && Files.exists(child)) {
+            try {
+                BasicFileAttributes attrs = Files.readAttributes(child, BasicFileAttributes.class);
+                if (!attrs.isDirectory()) {
+                    contentLength = attrs.size();
+                    long fsMtime = attrs.lastModifiedTime().toMillis();
+                    if (lastModifiedMillis == 0L || Math.abs(lastModifiedMillis - fsMtime) > 1000L) {
+                        lastModifiedMillis = fsMtime;
+                    }
+                }
+            } catch (IOException ignore) {
+            }
+        }
+        pendingDeletes.put(child, new PendingDelete(rel, System.currentTimeMillis(), directory, contentLength, lastModifiedMillis));
+    }
+
+    private PendingDelete takeMatchingPendingDelete(Path child) {
+        long now = System.currentTimeMillis();
+        Iterator<Map.Entry<Path, PendingDelete>> it = pendingDeletes.entrySet().iterator();
+        PendingDelete bestMatch = null;
+        Path bestKey = null;
+        long bestDelta = Long.MAX_VALUE;
+        long bestCreateMatch = Long.MAX_VALUE;
+        boolean directoryTarget = Files.isDirectory(child);
+        long targetSize = directoryTarget ? -1L : readFileSizeQuietly(child);
+        long targetMtime = readLastModifiedMillis(child);
+        while (it.hasNext()) {
+            Map.Entry<Path, PendingDelete> e = it.next();
+            PendingDelete pd = e.getValue();
+            if (pd == null) {
+                it.remove();
+                continue;
+            }
+            long age = now - pd.createdAtMillis;
+            if (age > RENAME_MERGE_WINDOW_MILLIS) {
+                it.remove();
+                flushOneDelete(pd);
+                continue;
+            }
+            if (pd.directory != directoryTarget) {
+                continue;
+            }
+            boolean sizeKnown = pd.contentLength >= 0L && targetSize >= 0L;
+            long sizeDelta = sizeKnown ? Math.abs(pd.contentLength - targetSize) : 0L;
+            long mtimeDelta = Math.abs(pd.lastModifiedMillis - targetMtime);
+            if (pd.lastModifiedMillis == 0L && targetMtime > 0L) {
+                mtimeDelta = 0L;
+            }
+            if (sizeDelta <= 0L && mtimeDelta <= 0L) {
+                it.remove();
+                return pd;
+            }
+            long score;
+            if (sizeKnown) {
+                score = sizeDelta + mtimeDelta * 1000L;
+            } else {
+                score = mtimeDelta;
+            }
+            if (score < bestDelta) {
+                bestDelta = score;
+                bestMatch = pd;
+                bestKey = e.getKey();
+                bestCreateMatch = pd.createdAtMillis;
+            }
+        }
+        if (bestMatch != null && bestDelta <= 10000L * 1000L) {
+            pendingDeletes.remove(bestKey);
+            return bestMatch;
+        }
+        return null;
+    }
+
+    private static long readFileSizeQuietly(Path p) {
+        try {
+            return Files.size(p);
+        } catch (IOException e) {
+            return -1L;
+        }
+    }
+
+    private volatile long lastFlushAt = 0L;
+
+    private void scheduleFlushPendingDeletes() {
+        long now = System.currentTimeMillis();
+        if (now - lastFlushAt >= 250L) {
+            lastFlushAt = now;
+            flushPendingDeletes(null);
+        }
+    }
+
+    private void flushPendingDeletes(P2PSyncStateStore forceStore) {
+        long now = System.currentTimeMillis();
+        Iterator<Map.Entry<Path, PendingDelete>> it = pendingDeletes.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<Path, PendingDelete> e = it.next();
+            PendingDelete pd = e.getValue();
+            if (pd == null || now - pd.createdAtMillis >= RENAME_MERGE_WINDOW_MILLIS) {
+                it.remove();
+                if (pd != null) {
+                    flushOneDelete(pd);
+                }
+            }
+        }
+    }
+
+    private void flushOneDelete(PendingDelete pd) {
+        P2PSyncStateStore localStore = this.store;
+        Path root = this.rootDir;
+        if (localStore == null || root == null || pd == null) {
+            return;
+        }
+        String rel = pd.relativePath;
+        if (rel == null || rel.isEmpty()) {
+            return;
+        }
+        long id = localStore.getOrCreateFileId(rel);
+        if (pd.directory) {
+            localStore.enqueueDirDelete(id);
+        } else {
+            localStore.enqueueFileDelete(id);
+            localStore.removeLastModifiedMillis(id);
         }
     }
 
@@ -419,17 +716,40 @@ public final class P2PDirectorySyncService implements AutoCloseable {
                     if (service != null && !dir.equals(service.rootDir) && !service.shouldSyncPath(dir)) {
                         return FileVisitResult.SKIP_SUBTREE;
                     }
-                    WatchKey key = dir.register(ws,
-                        StandardWatchEventKinds.ENTRY_CREATE,
-                        StandardWatchEventKinds.ENTRY_MODIFY,
-                        StandardWatchEventKinds.ENTRY_DELETE);
-                    keyToDir.put(key, dir);
+                    WatchEvent.Kind<Path> entryRename = findEntryRenameKindStatic();
+                    if (entryRename != null) {
+                        WatchKey key = dir.register(ws,
+                            StandardWatchEventKinds.ENTRY_CREATE,
+                            StandardWatchEventKinds.ENTRY_MODIFY,
+                            StandardWatchEventKinds.ENTRY_DELETE,
+                            entryRename);
+                        keyToDir.put(key, dir);
+                    } else {
+                        WatchKey key = dir.register(ws,
+                            StandardWatchEventKinds.ENTRY_CREATE,
+                            StandardWatchEventKinds.ENTRY_MODIFY,
+                            StandardWatchEventKinds.ENTRY_DELETE);
+                        keyToDir.put(key, dir);
+                    }
                     return FileVisitResult.CONTINUE;
                 }
             });
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private static WatchEvent.Kind<Path> findEntryRenameKindStatic() {
+        try {
+            java.lang.reflect.Field f = StandardWatchEventKinds.class.getField("ENTRY_RENAME");
+            Object v = f.get(null);
+            if (v instanceof WatchEvent.Kind) {
+                @SuppressWarnings("unchecked")
+                WatchEvent.Kind<Path> k = (WatchEvent.Kind<Path>) v;
+                return k;
+            }
+        } catch (Throwable ignore) {}
+        return null;
     }
 
     private static String toStableRelativePath(Path root, Path absolute) {

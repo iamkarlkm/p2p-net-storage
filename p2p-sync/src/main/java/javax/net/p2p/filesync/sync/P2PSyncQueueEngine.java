@@ -15,6 +15,10 @@ final class P2PSyncQueueEngine {
     private static final QueueDef[] ORDER = new QueueDef[] {
         new QueueDef(QueueKey.DIR_CREATE, FileSyncEventType.CREATE, true),
         new QueueDef(QueueKey.FILE_CREATE, FileSyncEventType.CREATE, false),
+        new QueueDef(QueueKey.FILE_RENAME, FileSyncEventType.RENAME, false),
+        new QueueDef(QueueKey.DIR_RENAME, FileSyncEventType.RENAME, true),
+        new QueueDef(QueueKey.FILE_MOVE, FileSyncEventType.MOVE, false),
+        new QueueDef(QueueKey.DIR_MOVE, FileSyncEventType.MOVE, true),
         new QueueDef(QueueKey.FILE_MODIFY, FileSyncEventType.MODIFY, false),
         new QueueDef(QueueKey.FILE_DELETE, FileSyncEventType.DELETE, false),
         new QueueDef(QueueKey.DIR_DELETE, FileSyncEventType.DELETE, true)
@@ -87,8 +91,6 @@ final class P2PSyncQueueEngine {
         int processed = 0;
         while (it.hasNext() && processed < maxBatchSize && running.get()) {
             long fileId = it.next();
-            // Keep same-path events serialized across queue types so CREATE/DELETE
-            // can finish before a follow-up MODIFY for the same file is dispatched.
             if (isInflight(store, fileId)) {
                 continue;
             }
@@ -99,7 +101,14 @@ final class P2PSyncQueueEngine {
             it.remove();
             String relativePath = store.getRelativePath(fileId);
             Path abs = relativePath == null ? null : rootDir.resolve(relativePath);
-            handler.handle(def.type, fileId, relativePath, abs, def.directory, new InflightAcker(store, def, queue, inflight, fileId, maxRetryCount));
+            if (def.type.isRenameKind()) {
+                String sourceRelPath = store.getRenameSourcePath(def.type, def.directory, fileId);
+                handler.handleRename(def.type, fileId, relativePath, abs, sourceRelPath, def.directory,
+                    new InflightAcker(store, def, queue, inflight, fileId, maxRetryCount));
+            } else {
+                handler.handle(def.type, fileId, relativePath, abs, def.directory,
+                    new InflightAcker(store, def, queue, inflight, fileId, maxRetryCount));
+            }
             processed++;
         }
         return processed;
@@ -173,9 +182,10 @@ final class P2PSyncQueueEngine {
             inflight.sync();
             store.advanceLastSuccessRunMillis(store.getLastModifiedMillis(fileId) == null ? 0L : store.getLastModifiedMillis(fileId).longValue());
             store.clearRetryCount(def.type, def.directory, fileId);
-            if (def.type == FileSyncEventType.DELETE) {
+            if (def.type == FileSyncEventType.DELETE || def.type.isRenameKind()) {
                 store.removeKind(fileId);
                 store.removeLastModifiedMillis(fileId);
+                store.clearRenameSourcePath(def.type, def.directory, fileId);
                 store.fileIdToLastModifiedMap().sync();
                 store.fileIdToKindMap().sync();
             }

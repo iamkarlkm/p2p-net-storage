@@ -259,6 +259,12 @@ public class MultiEndpointRpcSyncEventHandlerTest {
         }
 
         @Override
+        public void handleRename(FileSyncEventType type, long targetFileId, String targetRelativePath, Path targetAbsolutePath,
+                                 String sourceRelativePath, boolean directory, FileSyncAcker acker) {
+            acker.ack();
+        }
+
+        @Override
         public List<SyncUploadStatus> snapshotActiveUploads(int limit) {
             return active;
         }

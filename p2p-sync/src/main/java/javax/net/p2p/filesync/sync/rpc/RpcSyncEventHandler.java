@@ -123,7 +123,17 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
 
     @Override
     public void handle(FileSyncEventType type, long fileId, String relativePath, Path absolutePath, boolean directory, FileSyncAcker acker) {
-        // 严格 ACK：事件已转入 inflight，此处只负责发起 RPC，并在回调里 ack/retry
+        doHandleInternal(type, fileId, relativePath, absolutePath, null, directory, acker);
+    }
+
+    @Override
+    public void handleRename(FileSyncEventType type, long targetFileId, String targetRelativePath, Path targetAbsolutePath,
+                            String sourceRelativePath, boolean directory, FileSyncAcker acker) {
+        doHandleInternal(type, targetFileId, targetRelativePath, targetAbsolutePath, sourceRelativePath, directory, acker);
+    }
+
+    private void doHandleInternal(FileSyncEventType type, long fileId, String relativePath, Path absolutePath,
+                                  String sourceRelativePath, boolean directory, FileSyncAcker acker) {
         long lastModifiedMillis = 0L;
         if (!directory && absolutePath != null) {
             try {
@@ -133,19 +143,24 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
         }
         final long lastModifiedMillisFinal = lastModifiedMillis;
 
-        long eventUid = computeEventUid(taskId, fileId, type, directory, lastModifiedMillisFinal, relativePath);
-        // eventUid 用于对端幂等：同一个事件重发必须保持一致
-        SyncEventRequest req = SyncEventRequest.newBuilder()
+        long eventUid = (type.isRenameKind() && sourceRelativePath != null && !sourceRelativePath.isEmpty())
+            ? computeRenameEventUid(taskId, fileId, type, directory, lastModifiedMillisFinal, relativePath, sourceRelativePath)
+            : computeEventUid(taskId, fileId, type, directory, lastModifiedMillisFinal, relativePath);
+        SyncEventRequest.Builder reqb = SyncEventRequest.newBuilder()
             .setTaskId(taskId)
             .setEventUid(eventUid)
             .setFileId(fileId)
             .setPath(relativePath == null ? "" : relativePath)
             .setDirectory(directory)
             .setType(toProtoType(type))
-            .setLastModifiedMillis(lastModifiedMillisFinal)
-            .build();
+            .setLastModifiedMillis(lastModifiedMillisFinal);
+        if (type.isRenameKind()) {
+            reqb.setSourcePath(sourceRelativePath == null ? "" : sourceRelativePath);
+        }
+        SyncEventRequest req = reqb.build();
 
         RpcCallOptions options = RpcCallOptions.withDeadline(System.currentTimeMillis() + 5_000).withIdempotent(true);
+        final String effectiveSourcePath = (sourceRelativePath == null || sourceRelativePath.isEmpty()) ? null : sourceRelativePath;
         rpcClient.unaryAsync(SyncRpcServices.SYNC_SERVICE, SyncRpcServices.APPLY_EVENT, req, SyncEventAck.class, options)
             .whenComplete((resp, ex) -> {
                 if (ex != null || resp == null) {
@@ -166,20 +181,26 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
                     acker.ack();
                     return;
                 }
-                if (directory || type == FileSyncEventType.DELETE || absolutePath == null) {
+                if (type == FileSyncEventType.DELETE || absolutePath == null) {
                     acker.retry();
                     return;
                 }
-                uploadAndFinalize(resp.getStoreId(), eventUid, fileId, type, relativePath, absolutePath, lastModifiedMillisFinal, acker);
+                uploadAndFinalize(resp.getStoreId(), eventUid, fileId, type, relativePath, absolutePath, lastModifiedMillisFinal, directory, acker, effectiveSourcePath);
             });
     }
 
-    private void uploadAndFinalize(int storeId, long eventUid, long fileId, FileSyncEventType type, String relativePath, Path absolutePath, long lastModifiedMillis, FileSyncAcker acker) {
-        // 两阶段：ApplyEvent 通过 -> 上传文件内容 -> FinalizeEvent 才算最终 ACK
+    private void uploadAndFinalize(int storeId, long eventUid, long fileId, FileSyncEventType type, String relativePath, Path absolutePath, long lastModifiedMillis, boolean directory, FileSyncAcker acker) {
+        uploadAndFinalize(storeId, eventUid, fileId, type, relativePath, absolutePath, lastModifiedMillis, directory, acker, null);
+    }
+
+    private void uploadAndFinalize(int storeId, long eventUid, long fileId, FileSyncEventType type, String relativePath, Path absolutePath, long lastModifiedMillis, boolean directory, FileSyncAcker acker, String sourceRelativePath) {
         final UploadStatusEntry statusEntry;
         try {
             int resumedSegments = segmentedUploadedSegments(storeId, relativePath);
             statusEntry = new UploadStatusEntry(storeId, eventUid, fileId, relativePath, Files.size(absolutePath), resumedSegments);
+            if (sourceRelativePath != null && !sourceRelativePath.isEmpty()) {
+                statusEntry.setSourcePath(sourceRelativePath);
+            }
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -209,16 +230,19 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
             statusEntry.setPhase("finalizing");
             log.info("p2p-sync finalize dispatch: taskId={}, path={}, eventUid={}, lastModifiedMillis={}",
                 taskId, relativePath, eventUid, finalizeLastModifiedMillis);
-            SyncFinalizeRequest fin = SyncFinalizeRequest.newBuilder()
+            SyncFinalizeRequest.Builder finb = SyncFinalizeRequest.newBuilder()
                 .setTaskId(taskId)
                 .setEventUid(eventUid)
                 .setPath(relativePath == null ? "" : relativePath)
-                .setDirectory(false)
+                .setDirectory(directory)
                 .setType(toProtoType(type))
                 .setLastModifiedMillis(finalizeLastModifiedMillis)
                 .setContentLength(metadata.getLength())
-                .setContentMd5(metadata.getMd5())
-                .build();
+                .setContentMd5(metadata.getMd5());
+            if (type.isRenameKind() && sourceRelativePath != null && !sourceRelativePath.isEmpty()) {
+                finb.setSourcePath(sourceRelativePath);
+            }
+            SyncFinalizeRequest fin = finb.build();
             RpcCallOptions options = RpcCallOptions.withDeadline(System.currentTimeMillis() + 10_000).withIdempotent(true);
             return rpcClient.unaryAsync(SyncRpcServices.SYNC_SERVICE, SyncRpcServices.FINALIZE_EVENT, fin, SyncEventAck.class, options);
         }).whenComplete((ack, ex) -> {
@@ -232,6 +256,11 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
             }
             if (ack.getOk() && ack.getEventUid() == eventUid) {
                 activeUploads.remove(Long.valueOf(eventUid));
+                long vcl = ack.getVerifiedContentLength();
+                String vcm = ack.getVerifiedContentMd5();
+                if (vcl > 0L || (vcm != null && !vcm.isEmpty())) {
+                    statusEntry.setVerifiedContent(vcl <= 0L ? -1L : vcl, vcm);
+                }
                 recordCompleted(statusEntry);
                 log.info("p2p-sync finalize acked: taskId={}, path={}, eventUid={}", taskId, relativePath, eventUid);
                 acker.ack();
@@ -361,7 +390,16 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
         if (type == FileSyncEventType.MODIFY) {
             return SyncEventType.MODIFY;
         }
-        return SyncEventType.DELETE;
+        if (type == FileSyncEventType.DELETE) {
+            return SyncEventType.DELETE;
+        }
+        if (type == FileSyncEventType.RENAME) {
+            return SyncEventType.RENAME;
+        }
+        if (type == FileSyncEventType.MOVE) {
+            return SyncEventType.MOVE;
+        }
+        return SyncEventType.SYNC_EVENT_TYPE_UNSPECIFIED;
     }
 
     private static long computeEventUid(long taskId, long fileId, FileSyncEventType type, boolean directory, long lastModifiedMillis, String relativePath) {
@@ -374,6 +412,23 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
         buf.putLong(lastModifiedMillis);
         buf.putInt(pathBytes.length);
         buf.put(pathBytes);
+        return XXHashUtil.hash64(buf.array());
+    }
+
+    private static long computeRenameEventUid(long taskId, long fileId, FileSyncEventType type, boolean directory,
+                                             long lastModifiedMillis, String targetRelativePath, String sourceRelativePath) {
+        byte[] targetBytes = targetRelativePath == null ? new byte[0] : targetRelativePath.getBytes(StandardCharsets.UTF_8);
+        byte[] sourceBytes = sourceRelativePath == null ? new byte[0] : sourceRelativePath.getBytes(StandardCharsets.UTF_8);
+        ByteBuffer buf = ByteBuffer.allocate(8 + 8 + 4 + 1 + 8 + 4 + targetBytes.length + 4 + sourceBytes.length);
+        buf.putLong(taskId);
+        buf.putLong(fileId);
+        buf.putInt(type.ordinal());
+        buf.put((byte) (directory ? 1 : 0));
+        buf.putLong(lastModifiedMillis);
+        buf.putInt(targetBytes.length);
+        buf.put(targetBytes);
+        buf.putInt(sourceBytes.length);
+        buf.put(sourceBytes);
         return XXHashUtil.hash64(buf.array());
     }
 
@@ -409,6 +464,9 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
         private final AtomicInteger uploadedSegments = new AtomicInteger();
         private volatile long updatedAtMillis;
         private volatile long lastProgressAtMillis;
+        private volatile String sourcePath;
+        private volatile long verifiedContentLength = -1L;
+        private volatile String verifiedContentMd5;
 
         private UploadStatusEntry(int storeId, long eventUid, long fileId, String path, long fileSize, int resumedSegments) {
             this.storeId = storeId;
@@ -431,6 +489,16 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
             this.lastProgressAtMillis = this.startedAtMillis;
             this.phase = "queued";
             this.uploadedSegments.set(this.resumedSegments);
+        }
+
+        private void setSourcePath(String sourcePath) {
+            this.sourcePath = sourcePath;
+        }
+
+        private void setVerifiedContent(long length, String md5) {
+            this.verifiedContentLength = length;
+            this.verifiedContentMd5 = md5;
+            this.updatedAtMillis = System.currentTimeMillis();
         }
 
         private void setPhase(String phase) {
@@ -470,7 +538,8 @@ public final class RpcSyncEventHandler implements FileSyncEventHandler, SyncUplo
 
         private SyncUploadStatus snapshot(String message) {
             return new SyncUploadStatus(eventUid, fileId, path, phase, fileSize, segmented,
-                totalSegments, uploadedSegments.get(), startedAtMillis, updatedAtMillis, lastProgressAtMillis, resumedSegments, null, message);
+                totalSegments, uploadedSegments.get(), startedAtMillis, updatedAtMillis, lastProgressAtMillis, resumedSegments, null, message,
+                verifiedContentLength, verifiedContentMd5, sourcePath);
         }
 
         private static int segmentCount(long fileSize) {

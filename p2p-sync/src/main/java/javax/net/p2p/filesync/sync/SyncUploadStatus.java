@@ -16,30 +16,41 @@ public final class SyncUploadStatus {
     private final int resumedSegments;
     private final String replicaLabel;
     private final String message;
+    private final long verifiedContentLength;
+    private final String verifiedContentMd5;
+    private final String sourcePath;
 
     public SyncUploadStatus(long eventUid, long fileId, String path, String phase, long fileSize,
         boolean segmented, int totalSegments, int uploadedSegments, long startedAtMillis, long updatedAtMillis) {
         this(eventUid, fileId, path, phase, fileSize, segmented, totalSegments, uploadedSegments,
-            startedAtMillis, updatedAtMillis, updatedAtMillis, 0, null, null);
+            startedAtMillis, updatedAtMillis, updatedAtMillis, 0, null, null, -1L, null, null);
     }
 
     public SyncUploadStatus(long eventUid, long fileId, String path, String phase, long fileSize,
         boolean segmented, int totalSegments, int uploadedSegments, long startedAtMillis, long updatedAtMillis,
         String message) {
         this(eventUid, fileId, path, phase, fileSize, segmented, totalSegments, uploadedSegments,
-            startedAtMillis, updatedAtMillis, updatedAtMillis, 0, null, message);
+            startedAtMillis, updatedAtMillis, updatedAtMillis, 0, null, message, -1L, null, null);
     }
 
     public SyncUploadStatus(long eventUid, long fileId, String path, String phase, long fileSize,
         boolean segmented, int totalSegments, int uploadedSegments, long startedAtMillis, long updatedAtMillis,
         String replicaLabel, String message) {
         this(eventUid, fileId, path, phase, fileSize, segmented, totalSegments, uploadedSegments,
-            startedAtMillis, updatedAtMillis, updatedAtMillis, 0, replicaLabel, message);
+            startedAtMillis, updatedAtMillis, updatedAtMillis, 0, replicaLabel, message, -1L, null, null);
     }
 
     public SyncUploadStatus(long eventUid, long fileId, String path, String phase, long fileSize,
         boolean segmented, int totalSegments, int uploadedSegments, long startedAtMillis, long updatedAtMillis,
         long lastProgressAtMillis, int resumedSegments, String replicaLabel, String message) {
+        this(eventUid, fileId, path, phase, fileSize, segmented, totalSegments, uploadedSegments,
+            startedAtMillis, updatedAtMillis, lastProgressAtMillis, resumedSegments, replicaLabel, message, -1L, null, null);
+    }
+
+    public SyncUploadStatus(long eventUid, long fileId, String path, String phase, long fileSize,
+        boolean segmented, int totalSegments, int uploadedSegments, long startedAtMillis, long updatedAtMillis,
+        long lastProgressAtMillis, int resumedSegments, String replicaLabel, String message,
+        long verifiedContentLength, String verifiedContentMd5, String sourcePath) {
         this.eventUid = eventUid;
         this.fileId = fileId;
         this.path = path;
@@ -54,6 +65,9 @@ public final class SyncUploadStatus {
         this.resumedSegments = resumedSegments;
         this.replicaLabel = replicaLabel;
         this.message = message;
+        this.verifiedContentLength = verifiedContentLength;
+        this.verifiedContentMd5 = verifiedContentMd5;
+        this.sourcePath = sourcePath;
     }
 
     public long getEventUid() {
@@ -114,5 +128,17 @@ public final class SyncUploadStatus {
 
     public String getMessage() {
         return message;
+    }
+
+    public long getVerifiedContentLength() {
+        return verifiedContentLength;
+    }
+
+    public String getVerifiedContentMd5() {
+        return verifiedContentMd5;
+    }
+
+    public String getSourcePath() {
+        return sourcePath;
     }
 }

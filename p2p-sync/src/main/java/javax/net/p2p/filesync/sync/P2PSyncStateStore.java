@@ -37,7 +37,11 @@ public final class P2PSyncStateStore implements AutoCloseable {
         DIR_DELETE,
         FILE_CREATE,
         FILE_MODIFY,
-        FILE_DELETE
+        FILE_DELETE,
+        DIR_RENAME,
+        FILE_RENAME,
+        DIR_MOVE,
+        FILE_MOVE
     }
 
     private final Path dsHome;
@@ -53,30 +57,47 @@ public final class P2PSyncStateStore implements AutoCloseable {
     private final DsHashMap failedKeyToRetryCount;
     private final DsHashMap failedKeyToFailedAtMillis;
     private final DsHashMap failedKeyToLastRetriedAtMillis;
+    private final DsHashMap eventKeyToSourcePathId;
 
     private DsHashSet fileCreatesActive;
     private DsHashSet fileModifiesActive;
     private DsHashSet fileDeletesActive;
     private DsHashSet dirCreatesActive;
     private DsHashSet dirDeletesActive;
+    private DsHashSet fileRenamesActive;
+    private DsHashSet dirRenamesActive;
+    private DsHashSet fileMovesActive;
+    private DsHashSet dirMovesActive;
 
     private DsHashSet fileCreatesStartup;
     private DsHashSet fileModifiesStartup;
     private DsHashSet fileDeletesStartup;
     private DsHashSet dirCreatesStartup;
     private DsHashSet dirDeletesStartup;
+    private DsHashSet fileRenamesStartup;
+    private DsHashSet dirRenamesStartup;
+    private DsHashSet fileMovesStartup;
+    private DsHashSet dirMovesStartup;
 
     private DsHashSet fileCreatesInflight;
     private DsHashSet fileModifiesInflight;
     private DsHashSet fileDeletesInflight;
     private DsHashSet dirCreatesInflight;
     private DsHashSet dirDeletesInflight;
+    private DsHashSet fileRenamesInflight;
+    private DsHashSet dirRenamesInflight;
+    private DsHashSet fileMovesInflight;
+    private DsHashSet dirMovesInflight;
 
     private DsHashSet fileCreatesFailed;
     private DsHashSet fileModifiesFailed;
     private DsHashSet fileDeletesFailed;
     private DsHashSet dirCreatesFailed;
     private DsHashSet dirDeletesFailed;
+    private DsHashSet fileRenamesFailed;
+    private DsHashSet dirRenamesFailed;
+    private DsHashSet fileMovesFailed;
+    private DsHashSet dirMovesFailed;
 
     private final PersistentLongQueue[] queueRefs = new PersistentLongQueue[QueueKey.values().length * QueueStage.values().length];
 
@@ -109,29 +130,47 @@ public final class P2PSyncStateStore implements AutoCloseable {
             this.failedKeyToFailedAtMillis.setSyncModeStrong100ms();
             this.failedKeyToLastRetriedAtMillis = new DsHashMap(this.dsHome.resolve("last_retried_at.map").toFile());
             this.failedKeyToLastRetriedAtMillis.setSyncModeStrong100ms();
+            this.eventKeyToSourcePathId = new DsHashMap(this.dsHome.resolve("rename_source_path.map").toFile());
+            this.eventKeyToSourcePathId.setSyncModeStrong100ms();
             this.fileCreatesActive = new DsHashSet(this.dsHome.resolve("events_file_create.active.set").toFile());
             this.fileModifiesActive = new DsHashSet(this.dsHome.resolve("events_file_modify.active.set").toFile());
             this.fileDeletesActive = new DsHashSet(this.dsHome.resolve("events_file_delete.active.set").toFile());
             this.dirCreatesActive = new DsHashSet(this.dsHome.resolve("events_dir_create.active.set").toFile());
             this.dirDeletesActive = new DsHashSet(this.dsHome.resolve("events_dir_delete.active.set").toFile());
+            this.fileRenamesActive = new DsHashSet(this.dsHome.resolve("events_file_rename.active.set").toFile());
+            this.dirRenamesActive = new DsHashSet(this.dsHome.resolve("events_dir_rename.active.set").toFile());
+            this.fileMovesActive = new DsHashSet(this.dsHome.resolve("events_file_move.active.set").toFile());
+            this.dirMovesActive = new DsHashSet(this.dsHome.resolve("events_dir_move.active.set").toFile());
 
             this.fileCreatesStartup = new DsHashSet(this.dsHome.resolve("events_file_create.startup.set").toFile());
             this.fileModifiesStartup = new DsHashSet(this.dsHome.resolve("events_file_modify.startup.set").toFile());
             this.fileDeletesStartup = new DsHashSet(this.dsHome.resolve("events_file_delete.startup.set").toFile());
             this.dirCreatesStartup = new DsHashSet(this.dsHome.resolve("events_dir_create.startup.set").toFile());
             this.dirDeletesStartup = new DsHashSet(this.dsHome.resolve("events_dir_delete.startup.set").toFile());
+            this.fileRenamesStartup = new DsHashSet(this.dsHome.resolve("events_file_rename.startup.set").toFile());
+            this.dirRenamesStartup = new DsHashSet(this.dsHome.resolve("events_dir_rename.startup.set").toFile());
+            this.fileMovesStartup = new DsHashSet(this.dsHome.resolve("events_file_move.startup.set").toFile());
+            this.dirMovesStartup = new DsHashSet(this.dsHome.resolve("events_dir_move.startup.set").toFile());
 
             this.fileCreatesInflight = new DsHashSet(this.dsHome.resolve("events_file_create.inflight.set").toFile());
             this.fileModifiesInflight = new DsHashSet(this.dsHome.resolve("events_file_modify.inflight.set").toFile());
             this.fileDeletesInflight = new DsHashSet(this.dsHome.resolve("events_file_delete.inflight.set").toFile());
             this.dirCreatesInflight = new DsHashSet(this.dsHome.resolve("events_dir_create.inflight.set").toFile());
             this.dirDeletesInflight = new DsHashSet(this.dsHome.resolve("events_dir_delete.inflight.set").toFile());
+            this.fileRenamesInflight = new DsHashSet(this.dsHome.resolve("events_file_rename.inflight.set").toFile());
+            this.dirRenamesInflight = new DsHashSet(this.dsHome.resolve("events_dir_rename.inflight.set").toFile());
+            this.fileMovesInflight = new DsHashSet(this.dsHome.resolve("events_file_move.inflight.set").toFile());
+            this.dirMovesInflight = new DsHashSet(this.dsHome.resolve("events_dir_move.inflight.set").toFile());
 
             this.fileCreatesFailed = new DsHashSet(this.dsHome.resolve("events_file_create.failed.set").toFile());
             this.fileModifiesFailed = new DsHashSet(this.dsHome.resolve("events_file_modify.failed.set").toFile());
             this.fileDeletesFailed = new DsHashSet(this.dsHome.resolve("events_file_delete.failed.set").toFile());
             this.dirCreatesFailed = new DsHashSet(this.dsHome.resolve("events_dir_create.failed.set").toFile());
             this.dirDeletesFailed = new DsHashSet(this.dsHome.resolve("events_dir_delete.failed.set").toFile());
+            this.fileRenamesFailed = new DsHashSet(this.dsHome.resolve("events_file_rename.failed.set").toFile());
+            this.dirRenamesFailed = new DsHashSet(this.dsHome.resolve("events_dir_rename.failed.set").toFile());
+            this.fileMovesFailed = new DsHashSet(this.dsHome.resolve("events_file_move.failed.set").toFile());
+            this.dirMovesFailed = new DsHashSet(this.dsHome.resolve("events_dir_move.failed.set").toFile());
 
             initQueueRefs();
         } catch (IOException e) {
@@ -224,6 +263,88 @@ public final class P2PSyncStateStore implements AutoCloseable {
         dirDeletesActive.add(Long.valueOf(fileId));
     }
 
+    public void enqueueFileRename(long fileId) {
+        fileRenamesActive.add(Long.valueOf(fileId));
+    }
+
+    public void enqueueFileRename(long targetFileId, String sourceRelativePath) {
+        enqueueFileRename(targetFileId);
+        putRenameSourcePath(FileSyncEventType.RENAME, false, targetFileId, sourceRelativePath);
+    }
+
+    public void enqueueDirRename(long fileId) {
+        dirRenamesActive.add(Long.valueOf(fileId));
+    }
+
+    public void enqueueDirRename(long targetFileId, String sourceRelativePath) {
+        enqueueDirRename(targetFileId);
+        putRenameSourcePath(FileSyncEventType.RENAME, true, targetFileId, sourceRelativePath);
+    }
+
+    public void enqueueFileMove(long fileId) {
+        fileMovesActive.add(Long.valueOf(fileId));
+    }
+
+    public void enqueueFileMove(long targetFileId, String sourceRelativePath) {
+        enqueueFileMove(targetFileId);
+        putRenameSourcePath(FileSyncEventType.MOVE, false, targetFileId, sourceRelativePath);
+    }
+
+    public void enqueueDirMove(long fileId) {
+        dirMovesActive.add(Long.valueOf(fileId));
+    }
+
+    public void enqueueDirMove(long targetFileId, String sourceRelativePath) {
+        enqueueDirMove(targetFileId);
+        putRenameSourcePath(FileSyncEventType.MOVE, true, targetFileId, sourceRelativePath);
+    }
+
+    private void putRenameSourcePath(FileSyncEventType type, boolean directory, long targetFileId, String sourceRelativePath) {
+        if (sourceRelativePath == null || sourceRelativePath.isEmpty()) {
+            return;
+        }
+        int code = codeFor(type, directory);
+        if (code < 0) {
+            return;
+        }
+        long key = failedKey(code, targetFileId);
+        try {
+            long stringId = fileIdStrings.add(sourceRelativePath);
+            eventKeyToSourcePathId.put(Long.valueOf(key), Long.valueOf(stringId));
+            eventKeyToSourcePathId.sync();
+        } catch (Exception e) {
+            log.warn("store rename source path error: {}", e.getMessage());
+        }
+    }
+
+    public String getRenameSourcePath(FileSyncEventType type, boolean directory, long targetFileId) {
+        int code = codeFor(type, directory);
+        if (code < 0) {
+            return "";
+        }
+        long key = failedKey(code, targetFileId);
+        Long stringId = eventKeyToSourcePathId.get(Long.valueOf(key));
+        if (stringId == null) {
+            return "";
+        }
+        try {
+            String v = fileIdStrings.get(stringId.longValue());
+            return v == null ? "" : v;
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    public void clearRenameSourcePath(FileSyncEventType type, boolean directory, long targetFileId) {
+        int code = codeFor(type, directory);
+        if (code < 0) {
+            return;
+        }
+        long key = failedKey(code, targetFileId);
+        eventKeyToSourcePathId.remove(Long.valueOf(key));
+        eventKeyToSourcePathId.sync();
+    }
+
     public DsHashSet fileCreatesActive() {
         return fileCreatesActive;
     }
@@ -304,6 +425,70 @@ public final class P2PSyncStateStore implements AutoCloseable {
         return dirDeletesFailed;
     }
 
+    public DsHashSet fileRenamesActive() {
+        return fileRenamesActive;
+    }
+
+    public DsHashSet dirRenamesActive() {
+        return dirRenamesActive;
+    }
+
+    public DsHashSet fileMovesActive() {
+        return fileMovesActive;
+    }
+
+    public DsHashSet dirMovesActive() {
+        return dirMovesActive;
+    }
+
+    public DsHashSet fileRenamesStartup() {
+        return fileRenamesStartup;
+    }
+
+    public DsHashSet dirRenamesStartup() {
+        return dirRenamesStartup;
+    }
+
+    public DsHashSet fileMovesStartup() {
+        return fileMovesStartup;
+    }
+
+    public DsHashSet dirMovesStartup() {
+        return dirMovesStartup;
+    }
+
+    public DsHashSet fileRenamesInflight() {
+        return fileRenamesInflight;
+    }
+
+    public DsHashSet dirRenamesInflight() {
+        return dirRenamesInflight;
+    }
+
+    public DsHashSet fileMovesInflight() {
+        return fileMovesInflight;
+    }
+
+    public DsHashSet dirMovesInflight() {
+        return dirMovesInflight;
+    }
+
+    public DsHashSet fileRenamesFailed() {
+        return fileRenamesFailed;
+    }
+
+    public DsHashSet dirRenamesFailed() {
+        return dirRenamesFailed;
+    }
+
+    public DsHashSet fileMovesFailed() {
+        return fileMovesFailed;
+    }
+
+    public DsHashSet dirMovesFailed() {
+        return dirMovesFailed;
+    }
+
     public DsHashSet queue(QueueKey key, QueueStage stage) {
         int code = codeForKey(key);
         if (code < 0) {
@@ -344,6 +529,10 @@ public final class P2PSyncStateStore implements AutoCloseable {
         if (key == QueueKey.FILE_CREATE) return 2;
         if (key == QueueKey.FILE_MODIFY) return 3;
         if (key == QueueKey.FILE_DELETE) return 4;
+        if (key == QueueKey.DIR_RENAME) return 5;
+        if (key == QueueKey.FILE_RENAME) return 6;
+        if (key == QueueKey.DIR_MOVE) return 7;
+        if (key == QueueKey.FILE_MOVE) return 8;
         return -1;
     }
 
@@ -637,16 +826,28 @@ public final class P2PSyncStateStore implements AutoCloseable {
         moveAll(fileDeletesInflight, fileDeletesActive);
         moveAll(dirCreatesInflight, dirCreatesActive);
         moveAll(dirDeletesInflight, dirDeletesActive);
+        moveAll(fileRenamesInflight, fileRenamesActive);
+        moveAll(dirRenamesInflight, dirRenamesActive);
+        moveAll(fileMovesInflight, fileMovesActive);
+        moveAll(dirMovesInflight, dirMovesActive);
         fileCreatesInflight.sync();
         fileModifiesInflight.sync();
         fileDeletesInflight.sync();
         dirCreatesInflight.sync();
         dirDeletesInflight.sync();
+        fileRenamesInflight.sync();
+        dirRenamesInflight.sync();
+        fileMovesInflight.sync();
+        dirMovesInflight.sync();
         fileCreatesActive.sync();
         fileModifiesActive.sync();
         fileDeletesActive.sync();
         dirCreatesActive.sync();
         dirDeletesActive.sync();
+        fileRenamesActive.sync();
+        dirRenamesActive.sync();
+        fileMovesActive.sync();
+        dirMovesActive.sync();
     }
 
     public DsHashMap fileIdToLastModifiedMap() {
@@ -665,22 +866,34 @@ public final class P2PSyncStateStore implements AutoCloseable {
         fileDeletesActive.sync();
         dirCreatesActive.sync();
         dirDeletesActive.sync();
+        fileRenamesActive.sync();
+        dirRenamesActive.sync();
+        fileMovesActive.sync();
+        dirMovesActive.sync();
         fileCreatesStartup.sync();
         fileModifiesStartup.sync();
         fileDeletesStartup.sync();
         dirCreatesStartup.sync();
         dirDeletesStartup.sync();
+        fileRenamesStartup.sync();
+        dirRenamesStartup.sync();
+        fileMovesStartup.sync();
+        dirMovesStartup.sync();
     }
 
     private void swapPairForStartupFile() {
         moveAll(fileCreatesActive, fileCreatesStartup);
         moveAll(fileModifiesActive, fileModifiesStartup);
         moveAll(fileDeletesActive, fileDeletesStartup);
+        moveAll(fileRenamesActive, fileRenamesStartup);
+        moveAll(fileMovesActive, fileMovesStartup);
     }
 
     private void swapPairForStartupDir() {
         moveAll(dirCreatesActive, dirCreatesStartup);
         moveAll(dirDeletesActive, dirDeletesStartup);
+        moveAll(dirRenamesActive, dirRenamesStartup);
+        moveAll(dirMovesActive, dirMovesStartup);
     }
 
     private static void moveAll(DsHashSet from, DsHashSet to) {
@@ -786,11 +999,15 @@ public final class P2PSyncStateStore implements AutoCloseable {
         if (directory) {
             if (type == FileSyncEventType.CREATE) return 0;
             if (type == FileSyncEventType.DELETE) return 1;
+            if (type == FileSyncEventType.RENAME) return 5;
+            if (type == FileSyncEventType.MOVE) return 7;
             return -1;
         }
         if (type == FileSyncEventType.CREATE) return 2;
         if (type == FileSyncEventType.MODIFY) return 3;
         if (type == FileSyncEventType.DELETE) return 4;
+        if (type == FileSyncEventType.RENAME) return 6;
+        if (type == FileSyncEventType.MOVE) return 8;
         return -1;
     }
 
@@ -800,6 +1017,10 @@ public final class P2PSyncStateStore implements AutoCloseable {
         if (code == 2) return fileCreatesActive;
         if (code == 3) return fileModifiesActive;
         if (code == 4) return fileDeletesActive;
+        if (code == 5) return dirRenamesActive;
+        if (code == 6) return fileRenamesActive;
+        if (code == 7) return dirMovesActive;
+        if (code == 8) return fileMovesActive;
         return null;
     }
 
@@ -809,6 +1030,10 @@ public final class P2PSyncStateStore implements AutoCloseable {
         if (code == 2) return fileCreatesFailed;
         if (code == 3) return fileModifiesFailed;
         if (code == 4) return fileDeletesFailed;
+        if (code == 5) return dirRenamesFailed;
+        if (code == 6) return fileRenamesFailed;
+        if (code == 7) return dirMovesFailed;
+        if (code == 8) return fileMovesFailed;
         return null;
     }
 
@@ -820,6 +1045,10 @@ public final class P2PSyncStateStore implements AutoCloseable {
             if (code == 2) return fileCreatesStartup;
             if (code == 3) return fileModifiesStartup;
             if (code == 4) return fileDeletesStartup;
+            if (code == 5) return dirRenamesStartup;
+            if (code == 6) return fileRenamesStartup;
+            if (code == 7) return dirMovesStartup;
+            if (code == 8) return fileMovesStartup;
             return null;
         }
         if (stage == QueueStage.INFLIGHT) {
@@ -828,6 +1057,10 @@ public final class P2PSyncStateStore implements AutoCloseable {
             if (code == 2) return fileCreatesInflight;
             if (code == 3) return fileModifiesInflight;
             if (code == 4) return fileDeletesInflight;
+            if (code == 5) return dirRenamesInflight;
+            if (code == 6) return fileRenamesInflight;
+            if (code == 7) return dirMovesInflight;
+            if (code == 8) return fileMovesInflight;
             return null;
         }
         if (stage == QueueStage.FAILED) return failedSetForCode(code);
@@ -870,6 +1103,14 @@ public final class P2PSyncStateStore implements AutoCloseable {
         dirCreatesActive.close();
         dirDeletesActive.sync();
         dirDeletesActive.close();
+        fileRenamesActive.sync();
+        fileRenamesActive.close();
+        dirRenamesActive.sync();
+        dirRenamesActive.close();
+        fileMovesActive.sync();
+        fileMovesActive.close();
+        dirMovesActive.sync();
+        dirMovesActive.close();
 
         fileCreatesStartup.sync();
         fileCreatesStartup.close();
@@ -881,6 +1122,14 @@ public final class P2PSyncStateStore implements AutoCloseable {
         dirCreatesStartup.close();
         dirDeletesStartup.sync();
         dirDeletesStartup.close();
+        fileRenamesStartup.sync();
+        fileRenamesStartup.close();
+        dirRenamesStartup.sync();
+        dirRenamesStartup.close();
+        fileMovesStartup.sync();
+        fileMovesStartup.close();
+        dirMovesStartup.sync();
+        dirMovesStartup.close();
 
         fileCreatesInflight.sync();
         fileCreatesInflight.close();
@@ -892,6 +1141,15 @@ public final class P2PSyncStateStore implements AutoCloseable {
         dirCreatesInflight.close();
         dirDeletesInflight.sync();
         dirDeletesInflight.close();
+        fileRenamesInflight.sync();
+        fileRenamesInflight.close();
+        dirRenamesInflight.sync();
+        dirRenamesInflight.close();
+        fileMovesInflight.sync();
+        fileMovesInflight.close();
+        dirMovesInflight.sync();
+        dirMovesInflight.close();
+
         fileCreatesFailed.sync();
         fileCreatesFailed.close();
         fileModifiesFailed.sync();
@@ -902,6 +1160,14 @@ public final class P2PSyncStateStore implements AutoCloseable {
         dirCreatesFailed.close();
         dirDeletesFailed.sync();
         dirDeletesFailed.close();
+        fileRenamesFailed.sync();
+        fileRenamesFailed.close();
+        dirRenamesFailed.sync();
+        dirRenamesFailed.close();
+        fileMovesFailed.sync();
+        fileMovesFailed.close();
+        dirMovesFailed.sync();
+        dirMovesFailed.close();
         meta.sync();
         meta.close();
         fileIdToLastModified.sync();
@@ -912,6 +1178,8 @@ public final class P2PSyncStateStore implements AutoCloseable {
         failedKeyToReasonId.close();
         eventKeyToReplicaStateId.sync();
         eventKeyToReplicaStateId.close();
+        eventKeyToSourcePathId.sync();
+        eventKeyToSourcePathId.close();
         pathHashToFileId.sync();
         pathHashToFileId.close();
         fileIdStrings.close();

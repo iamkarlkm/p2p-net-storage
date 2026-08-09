@@ -30,20 +30,37 @@ public final class SyncEventApplier {
         if (req == null) {
             return SyncEventAck.newBuilder().setOk(false).setMessage("empty request").build();
         }
-        long pathHash = hashPath(req.getPath());
-        ReentrantLock lock = locks[(int) (pathHash ^ (pathHash >>> 32)) & (locks.length - 1)];
-        lock.lock();
+        SyncEventType t = req.getType();
+        boolean renameKind = t == SyncEventType.RENAME || t == SyncEventType.MOVE;
+        long targetPathHash = hashPath(req.getPath());
+        long sourcePathHash = renameKind ? hashPath(req.getSourcePath()) : 0L;
+        int idxT = (int) (targetPathHash ^ (targetPathHash >>> 32)) & (locks.length - 1);
+        int idxS = renameKind ? (int) (sourcePathHash ^ (sourcePathHash >>> 32)) & (locks.length - 1) : idxT;
+        boolean dualLock = renameKind && idxT != idxS;
+        ReentrantLock first = dualLock ? (idxT < idxS ? locks[idxT] : locks[idxS]) : locks[idxT];
+        ReentrantLock second = dualLock ? (idxT < idxS ? locks[idxS] : locks[idxT]) : null;
+        first.lock();
         try {
-            Path target = resolveSafeTarget(req.getPath());
-            boolean ok = applyOne(req, target);
-            if (!ok) {
-                return SyncEventAck.newBuilder().setEventUid(req.getEventUid()).setOk(false).setMessage("apply failed").build();
+            if (second != null) {
+                second.lock();
             }
-            return SyncEventAck.newBuilder().setEventUid(req.getEventUid()).setOk(true).setMessage("ok").build();
+            try {
+                Path target = resolveSafeTarget(req.getPath());
+                Path source = renameKind ? resolveSafeTarget(req.getSourcePath()) : null;
+                boolean ok = applyOne(req, source, target);
+                if (!ok) {
+                    return SyncEventAck.newBuilder().setEventUid(req.getEventUid()).setOk(false).setMessage("apply failed").build();
+                }
+                return SyncEventAck.newBuilder().setEventUid(req.getEventUid()).setOk(true).setMessage("ok").build();
+            } finally {
+                if (second != null) {
+                    second.unlock();
+                }
+            }
         } catch (Exception e) {
             return SyncEventAck.newBuilder().setEventUid(req.getEventUid()).setOk(false).setMessage(e.getMessage() == null ? "error" : e.getMessage()).build();
         } finally {
-            lock.unlock();
+            first.unlock();
         }
     }
 
@@ -78,37 +95,121 @@ public final class SyncEventApplier {
         return javax.net.p2p.utils.XXHashUtil.hash64(bytes);
     }
 
-    private boolean applyOne(SyncEventRequest req, Path target) throws IOException {
+    private boolean applyOne(SyncEventRequest req, Path source, Path target) throws IOException {
         if (req.getType() == SyncEventType.SYNC_EVENT_TYPE_UNSPECIFIED) {
             throw new IllegalArgumentException("type is required");
         }
         if (req.getDirectory()) {
-            return applyDirectory(req, target);
+            return applyDirectory(req, source, target);
         }
-        return applyFile(req, target);
+        return applyFile(req, source, target);
     }
 
-    private boolean applyDirectory(SyncEventRequest req, Path target) throws IOException {
-        if (req.getType() == SyncEventType.CREATE) {
+    private boolean applyDirectory(SyncEventRequest req, Path source, Path target) throws IOException {
+        SyncEventType t = req.getType();
+        if (t == SyncEventType.CREATE) {
             Files.createDirectories(target);
+            long ts = req.getLastModifiedMillis();
+            if (ts > 0L) {
+                Files.setLastModifiedTime(target, FileTime.fromMillis(ts));
+            }
             return true;
         }
-        if (req.getType() == SyncEventType.DELETE) {
+        if (t == SyncEventType.DELETE) {
             deleteRecursivelyIfExists(target);
             return true;
         }
-        throw new IllegalArgumentException("directory only supports CREATE/DELETE");
+        if (t == SyncEventType.RENAME || t == SyncEventType.MOVE) {
+            if (source == null) {
+                throw new IllegalArgumentException("rename/move requires source_path");
+            }
+            boolean sourceExists = Files.exists(source);
+            boolean targetExists = Files.exists(target);
+            if (!sourceExists && !targetExists) {
+                throw new IllegalArgumentException("rename/move source does not exist");
+            }
+            if (!sourceExists && targetExists) {
+                long ts = req.getLastModifiedMillis();
+                if (ts > 0L) {
+                    try { Files.setLastModifiedTime(target, FileTime.fromMillis(ts)); } catch (Exception ignore) {}
+                }
+                return true;
+            }
+            if (targetExists) {
+                deleteRecursivelyIfExists(target);
+            } else {
+                Path parent = target.getParent();
+                if (parent != null) {
+                    Files.createDirectories(parent);
+                }
+            }
+            try {
+                Files.move(source, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(source, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+            long ts = req.getLastModifiedMillis();
+            if (ts > 0L) {
+                try { Files.setLastModifiedTime(target, FileTime.fromMillis(ts)); } catch (Exception ignore) {}
+            }
+            return true;
+        }
+        throw new IllegalArgumentException("directory only supports CREATE/DELETE/RENAME/MOVE");
     }
 
-    private boolean applyFile(SyncEventRequest req, Path target) throws IOException {
+    private boolean applyFile(SyncEventRequest req, Path source, Path target) throws IOException {
+        SyncEventType t = req.getType();
+        if (t == SyncEventType.DELETE) {
+            Files.deleteIfExists(target);
+            return true;
+        }
+        if (t == SyncEventType.RENAME || t == SyncEventType.MOVE) {
+            if (source == null) {
+                throw new IllegalArgumentException("rename/move requires source_path");
+            }
+            long ts = req.getLastModifiedMillis();
+            if (ts == 0L) {
+                Path parent = target.getParent();
+                if (parent != null) {
+                    Files.createDirectories(parent);
+                }
+                try {
+                    Files.createFile(target);
+                } catch (FileAlreadyExistsException ignored) {
+                }
+                return true;
+            }
+            boolean sourceExists = Files.exists(source);
+            boolean targetExists = Files.exists(target);
+            if (!sourceExists && !targetExists) {
+                throw new IllegalArgumentException("rename/move source does not exist");
+            }
+            if (!sourceExists && targetExists) {
+                if (ts > 0L) {
+                    try { Files.setLastModifiedTime(target, FileTime.fromMillis(ts)); } catch (Exception ignore) {}
+                }
+                return true;
+            }
+            Path parent = target.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            if (targetExists) {
+                Files.deleteIfExists(target);
+            }
+            try {
+                Files.move(source, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (java.nio.file.AtomicMoveNotSupportedException e) {
+                Files.move(source, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+            if (ts > 0L) {
+                try { Files.setLastModifiedTime(target, FileTime.fromMillis(ts)); } catch (Exception ignore) {}
+            }
+            return true;
+        }
         Path parent = target.getParent();
         if (parent != null) {
             Files.createDirectories(parent);
-        }
-
-        if (req.getType() == SyncEventType.DELETE) {
-            Files.deleteIfExists(target);
-            return true;
         }
 
         try {
