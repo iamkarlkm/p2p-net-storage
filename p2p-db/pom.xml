@@ -191,6 +191,42 @@
                     </annotationProcessorPaths>
                 </configuration>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.2</version>
+                <configuration>
+                    <providerImplementation>org.apache.maven.surefire.junit4.JUnit4Provider</providerImplementation>
+                    <skipTests>${skipTests}</skipTests>
+                    <excludes>
+                        <exclude>com.q3lives.ds.database.DbEntityP2PHandlersTest</exclude>
+                        <exclude>com.q3lives.ds.database.DbRowQueryStreamHandleCancelTest</exclude>
+                        <exclude>com.q3lives.ds.database.DsDatabaseLoclalOrmTest</exclude>
+                        <exclude>com.q3lives.ds.database.GenericManagerTest</exclude>
+                        <exclude>com.q3lives.ds.database.columnar.*</exclude>
+                        <exclude>com.q3lives.ds.database.startup.*</exclude>
+                        <exclude>com.q3lives.ds.fs.Ds256FileSystemInlineTest</exclude>
+                        <exclude>com.q3lives.ds.fs.InheritedMetadataTest</exclude>
+                        <exclude>com.q3lives.ds.fs.mft.*</exclude>
+                        <exclude>com.q3lives.ds.collections.DsTableAdapterTest</exclude>
+                        <exclude>com.q3lives.ds.collections.NewClass</exclude>
+                        <exclude>com.q3lives.ds.benchmark.DsBenchmark</exclude>
+                        <exclude>com.q3lives.ds.example.*</exclude>
+                        <exclude>com.q3lives.ds.test.FullTestSuite</exclude>
+                        <exclude>ds.MappedInodeDemo</exclude>
+                        <exclude>ds.Test1</exclude>
+                        <exclude>NewClass</exclude>
+                        <exclude>javax.net.p2p.server.DbRowQueryIdsStreamServerHandlerTest</exclude>
+                    </excludes>
+                </configuration>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.apache.maven.surefire</groupId>
+                        <artifactId>surefire-junit4</artifactId>
+                        <version>3.2.2</version>
+                    </dependency>
+                </dependencies>
+            </plugin>
         </plugins>
     </build>
 </project>

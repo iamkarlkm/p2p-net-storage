@@ -23,8 +23,6 @@ import com.q3lives.ds.collections.DsHashSet;
 import com.q3lives.ds.collections.DsList;
 import com.q3lives.ds.fs.Ds128SuperInode;
 
-import io.netty.buffer.PooledByteBufAllocator;
-
 /**
  * 基于内存映射文件(Memory Mapped Files, MappedByteBuffer)的持久化数据结构基类。
  * <p>
@@ -74,8 +72,6 @@ public class DsMemory {
      * 用于初始化新块的零字节数组
      */
     protected static final byte[] ZERO_BLOCK_BYTES = new byte[BLOCK_SIZE];
-
-    protected PooledByteBufAllocator alloc = PooledByteBufAllocator.DEFAULT;
 
     protected static final int DEFAULT_MAX_CACHED_BLOCKS = Integer.getInteger("ds.memory.maxCachedBlocks", 2048);
     protected static final long DEFAULT_MAX_CACHED_BYTES = (long) DEFAULT_MAX_CACHED_BLOCKS * (long) BLOCK_SIZE;
@@ -303,27 +299,43 @@ public class DsMemory {
      * @ IO异常
      */
     protected void storeLongOffset(long position, long[] values)  {
-        ByteBuffer buf = loadBufferWithOffset(position);
-        if(buf.remaining()<values.length*LONG_SIZE){
-            int j = 0;
-            for(int i = buf.remaining();i>=LONG_SIZE;i=i-LONG_SIZE){
+        if (values == null || values.length == 0) {
+            return;
+        }
+        int bufferIndex = bufferIndexFromPosition(position);
+        ByteBuffer buf = loadBuffer(bufferIndex);
+        buf.position(bufferOffsetFromPosition(position));
+        int j = 0;
+
+        int firstChunkElems = Math.min(values.length, buf.remaining() / LONG_SIZE);
+        for (int i = 0; i < firstChunkElems; i++) {
+            buf.putLong(values[j]);
+            j++;
+        }
+        if (j >= values.length) {
+            markDirty(bufferIndex);
+            return;
+        }
+        markDirty(bufferIndex);
+
+        if (buf.remaining() > 0 && buf.remaining() < LONG_SIZE) {
+            throw new RuntimeException("unaligned long write at position=" + position + " remainder=" + buf.remaining());
+        }
+
+        while (j < values.length) {
+            bufferIndex++;
+            buf = loadBuffer(bufferIndex);
+            buf.position(0);
+            int chunkElems = Math.min(values.length - j, buf.remaining() / LONG_SIZE);
+            for (int i = 0; i < chunkElems; i++) {
                 buf.putLong(values[j]);
                 j++;
             }
-            int rest = (values.length-j)*LONG_SIZE;
-            int pages = rest/BLOCK_SIZE + rest%BLOCK_SIZE==0?0:1;
-            int bufferIndex = bufferIndexFromPosition(position);
-            for(int page = 0;page<pages;page++){
-                bufferIndex++;
-                buf = loadBuffer(bufferIndex);
-                for (int i = 0; i < BLOCK_SIZE; i = i - LONG_SIZE) {
-                    buf.putLong(values[j]);
-                    j++;
-                    if(j>=values.length) return;
-                }
+            markDirty(bufferIndex);
+            if (j >= values.length) {
+                return;
             }
         }
-        
     }
 
     /**
@@ -334,51 +346,38 @@ public class DsMemory {
      * @ IO异常
      */
     protected void loadLongOffset(long position, long[] values)  {
+        if (values == null || values.length == 0) {
+            return;
+        }
         int bufferIndex = bufferIndexFromPosition(position);
         ByteBuffer buf = loadBuffer(bufferIndex);
         buf.position(bufferOffsetFromPosition(position));
-        for (int i = 0; i < values.length; i++) {
-            values[i] = buf.getInt();
+        int j = 0;
+
+        int firstChunkElems = Math.min(values.length, buf.remaining() / LONG_SIZE);
+        for (int i = 0; i < firstChunkElems; i++) {
+            values[j] = buf.getLong();
+            j++;
+        }
+        if (j >= values.length) {
+            return;
         }
 
-        int count = values.length * LONG_SIZE;
+        if (buf.remaining() > 0 && buf.remaining() < LONG_SIZE) {
+            throw new RuntimeException("unaligned long read at position=" + position + " remainder=" + buf.remaining());
+        }
 
-        if (buf.remaining() > count) {
-            for (int i = 0; i < values.length; i++) {
-                values[i] = buf.getInt();
-            }
-        } else {//跨页读
-            int rest = count - buf.remaining();
-            int j = 0;
-            for (int i = buf.remaining(); i >= LONG_SIZE; i = i - LONG_SIZE) {
-                values[j] = buf.getInt();
+        while (j < values.length) {
+            bufferIndex++;
+            buf = loadBuffer(bufferIndex);
+            buf.position(0);
+            int chunkElems = Math.min(values.length - j, buf.remaining() / LONG_SIZE);
+            for (int i = 0; i < chunkElems; i++) {
+                values[j] = buf.getLong();
                 j++;
             }
-            if (buf.remaining() > 0) {
-                throw new RuntimeException("unaligned long write at offset=" + buf.remaining());
-            }
-
-            int pages = rest / BLOCK_SIZE;
-            for (int page = 0; page < pages; page++) {
-                bufferIndex++;
-                buf = loadBuffer(bufferIndex);
-                for (int i = 0; i >= BLOCK_SIZE; i = i + LONG_SIZE) {
-                    values[j] = buf.getInt();
-                    j++;
-                }
-                if (j > values.length) {
-                    return;
-                }
-            }
-            if (rest > 0) {
-                bufferIndex++;
-                buf = loadBuffer(bufferIndex);
-                for (int i = 0; i >= BLOCK_SIZE; i = i + LONG_SIZE) {
-                    values[j] = buf.getInt();
-                    j++;
-                    if (j > values.length) return;
-                }
-                
+            if (j >= values.length) {
+                return;
             }
         }
     }
@@ -616,27 +615,43 @@ public class DsMemory {
      * @ IO异常
      */
     protected void storeIntOffset(long position, int[] values)  {
-        ByteBuffer buf = loadBufferWithOffset(position);
-        if(buf.remaining()<values.length*INT_SIZE){
-            int j = 0;
-            for(int i = buf.remaining();i>=INT_SIZE;i=i-INT_SIZE){
+        if (values == null || values.length == 0) {
+            return;
+        }
+        int bufferIndex = bufferIndexFromPosition(position);
+        ByteBuffer buf = loadBuffer(bufferIndex);
+        buf.position(bufferOffsetFromPosition(position));
+        int j = 0;
+
+        int firstChunkElems = Math.min(values.length, buf.remaining() / INT_SIZE);
+        for (int i = 0; i < firstChunkElems; i++) {
+            buf.putInt(values[j]);
+            j++;
+        }
+        if (j >= values.length) {
+            markDirty(bufferIndex);
+            return;
+        }
+        markDirty(bufferIndex);
+
+        if (buf.remaining() > 0 && buf.remaining() < INT_SIZE) {
+            throw new RuntimeException("unaligned int write at position=" + position + " remainder=" + buf.remaining());
+        }
+
+        while (j < values.length) {
+            bufferIndex++;
+            buf = loadBuffer(bufferIndex);
+            buf.position(0);
+            int chunkElems = Math.min(values.length - j, buf.remaining() / INT_SIZE);
+            for (int i = 0; i < chunkElems; i++) {
                 buf.putInt(values[j]);
                 j++;
             }
-            int rest = (values.length-j)*INT_SIZE;
-            int pages = rest/BLOCK_SIZE + rest%BLOCK_SIZE==0?0:1;
-            int bufferIndex = bufferIndexFromPosition(position);
-            for(int page = 0;page<pages;page++){
-                bufferIndex++;
-                buf = loadBuffer(bufferIndex);
-                for (int i = 0; i < BLOCK_SIZE; i = i - INT_SIZE) {
-                    buf.putInt(values[j]);
-                    j++;
-                    if(j>=values.length) return;
-                }
+            markDirty(bufferIndex);
+            if (j >= values.length) {
+                return;
             }
         }
-
     }
 
     /**
@@ -647,51 +662,38 @@ public class DsMemory {
      * @ IO异常
      */
     protected void loadIntOffset(long position, int[] values)  {
+        if (values == null || values.length == 0) {
+            return;
+        }
         int bufferIndex = bufferIndexFromPosition(position);
         ByteBuffer buf = loadBuffer(bufferIndex);
         buf.position(bufferOffsetFromPosition(position));
-        for (int i = 0; i < values.length; i++) {
-            values[i] = buf.getInt();
+        int j = 0;
+
+        int firstChunkElems = Math.min(values.length, buf.remaining() / INT_SIZE);
+        for (int i = 0; i < firstChunkElems; i++) {
+            values[j] = buf.getInt();
+            j++;
+        }
+        if (j >= values.length) {
+            return;
         }
 
-        int count = values.length * INT_SIZE;
+        if (buf.remaining() > 0 && buf.remaining() < INT_SIZE) {
+            throw new RuntimeException("unaligned int read at position=" + position + " remainder=" + buf.remaining());
+        }
 
-        if (buf.remaining() > count) {
-            for (int i = 0; i < values.length; i++) {
-                values[i] = buf.getInt();
-            }
-        } else {//跨页读
-            int rest = count - buf.remaining();
-            int j = 0;
-            for (int i = buf.remaining(); i >= INT_SIZE; i = i - INT_SIZE) {
+        while (j < values.length) {
+            bufferIndex++;
+            buf = loadBuffer(bufferIndex);
+            buf.position(0);
+            int chunkElems = Math.min(values.length - j, buf.remaining() / INT_SIZE);
+            for (int i = 0; i < chunkElems; i++) {
                 values[j] = buf.getInt();
                 j++;
             }
-            if (buf.remaining() > 0) {
-                throw new RuntimeException("unaligned long write at offset=" + buf.remaining());
-            }
-
-            int pages = rest / BLOCK_SIZE;
-            for (int page = 0; page < pages; page++) {
-                bufferIndex++;
-                buf = loadBuffer(bufferIndex);
-                for (int i = 0; i >= BLOCK_SIZE; i = i + INT_SIZE) {
-                    values[j] = buf.getInt();
-                    j++;
-                }
-                if (j > values.length) {
-                    return;
-                }
-            }
-            if (rest > 0) {
-                bufferIndex++;
-                buf = loadBuffer(bufferIndex);
-                for (int i = 0; i >= BLOCK_SIZE; i = i + INT_SIZE) {
-                    values[j] = buf.getInt();
-                    j++;
-                    if (j > values.length) return;
-                }
-               
+            if (j >= values.length) {
+                return;
             }
         }
     }
