@@ -444,16 +444,8 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         if (count <= 0 || start < 0) {
             return new ArrayList<>(0);
         }
-        List<Entry<Long, Long>> out = new ArrayList<>(count);
-        long idx = 0;
-        Iterator<Entry<Long, Long>> it = iterator();
-        while (it.hasNext() && idx < start) {
-            it.next();
-            idx++;
-        }
-        while (it.hasNext() && out.size() < count) {
-            out.add(it.next());
-        }
+        List<Entry<Long, Long>> out = new ArrayList<>(Math.min(count, 256));
+        forEachRange(start, count, (k, v) -> out.add(new SnapshotEntry(this, k, v)));
         return out;
     }
 
@@ -464,24 +456,174 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         if (count <= 0 || start < 0) {
             return 0;
         }
-        long idx = 0;
-        int emitted = 0;
-        Iterator<Entry<Long, Long>> it = iterator();
-        while (it.hasNext() && idx < start) {
-            it.next();
-            idx++;
+        if (rootMap != this) {
+            return rootMap.forEachRange(start, count, consumer);
         }
-        while (it.hasNext() && emitted < count) {
-            Entry<Long, Long> e = it.next();
-            Long k = e.getKey();
-            Long v = e.getValue();
-            if (k == null || v == null) {
-                continue;
+        opReadLock.lock();
+        try {
+            long idx = 0L;
+            int emitted = 0;
+            Iterator<Entry<Long, Long>> it = iterator();
+            while (it.hasNext() && idx < start) {
+                it.next();
+                idx++;
             }
-            consumer.accept(k.longValue(), v.longValue());
-            emitted++;
+            while (it.hasNext() && emitted < count) {
+                Entry<Long, Long> e = it.next();
+                Long k = e.getKey();
+                Long v = e.getValue();
+                if (k == null || v == null) {
+                    continue;
+                }
+                consumer.accept(k.longValue(), v.longValue());
+                emitted++;
+            }
+            return emitted;
+        } finally {
+            opReadLock.unlock();
         }
-        return emitted;
+    }
+
+    public List<Entry<Long, Long>> subMap(long fromKeyInclusive, long toKeyExclusive) {
+        return subMap(fromKeyInclusive, true, toKeyExclusive, false, Integer.MAX_VALUE);
+    }
+
+    public List<Entry<Long, Long>> subMap(long fromKey, boolean fromInclusive, long toKey, boolean toInclusive, int limit) {
+        if (limit <= 0) {
+            return new ArrayList<>(0);
+        }
+        List<Entry<Long, Long>> out = new ArrayList<>(Math.min(limit, 256));
+        forEachKeyRange(fromKey, fromInclusive, toKey, toInclusive, limit, (k, v) -> out.add(new SnapshotEntry(this, k, v)));
+        return out;
+    }
+
+    public List<Entry<Long, Long>> tailMap(long fromKey, boolean inclusive, int limit) {
+        return subMap(fromKey, inclusive, Long.MAX_VALUE, true, limit);
+    }
+
+    public List<Entry<Long, Long>> headMap(long toKey, boolean inclusive, int limit) {
+        if (limit <= 0) {
+            return new ArrayList<>(0);
+        }
+        List<Entry<Long, Long>> ascending = subMap(Long.MIN_VALUE, true, toKey, inclusive, Integer.MAX_VALUE);
+        if (ascending.size() <= limit) {
+            return ascending;
+        }
+        return ascending.subList(ascending.size() - limit, ascending.size());
+    }
+
+    public List<Entry<Long, Long>> gt(long key, int limit) {
+        return tailMap(key, false, limit);
+    }
+
+    public List<Entry<Long, Long>> gte(long key, int limit) {
+        return tailMap(key, true, limit);
+    }
+
+    public List<Entry<Long, Long>> lt(long key, int limit) {
+        return headMap(key, false, limit);
+    }
+
+    public List<Entry<Long, Long>> lte(long key, int limit) {
+        return headMap(key, true, limit);
+    }
+
+    public Long ceilingKey(long key) {
+        List<Entry<Long, Long>> r = tailMap(key, true, 1);
+        return r.isEmpty() ? null : r.get(0).getKey();
+    }
+
+    public Long higherKey(long key) {
+        List<Entry<Long, Long>> r = tailMap(key, false, 1);
+        return r.isEmpty() ? null : r.get(0).getKey();
+    }
+
+    public Long floorKey(long key) {
+        List<Entry<Long, Long>> r = lte(key, 1);
+        return r.isEmpty() ? null : r.get(r.size() - 1).getKey();
+    }
+
+    public Long lowerKey(long key) {
+        List<Entry<Long, Long>> r = lt(key, 1);
+        return r.isEmpty() ? null : r.get(r.size() - 1).getKey();
+    }
+
+    public Long firstKey() {
+        List<Entry<Long, Long>> r = range(0, 1);
+        return r.isEmpty() ? null : r.get(0).getKey();
+    }
+
+    public Long lastKey() {
+        long total = sizeLong();
+        if (total == 0) {
+            return null;
+        }
+        List<Entry<Long, Long>> r = range(total - 1, 1);
+        return r.isEmpty() ? null : r.get(0).getKey();
+    }
+
+    public int forEachKeyRange(long fromKey, boolean fromInclusive, long toKey, boolean toInclusive, int limit, LongLongConsumer consumer) {
+        if (consumer == null) {
+            throw new NullPointerException("consumer");
+        }
+        if (limit <= 0) {
+            return 0;
+        }
+        if (rootMap != this) {
+            return rootMap.forEachKeyRange(fromKey, fromInclusive, toKey, toInclusive, limit, consumer);
+        }
+        long effFrom;
+        if (fromInclusive) {
+            effFrom = fromKey;
+        } else {
+            if (fromKey == Long.MAX_VALUE) {
+                return 0;
+            }
+            effFrom = fromKey + 1L;
+        }
+        long effTo;
+        if (toInclusive) {
+            effTo = toKey;
+        } else {
+            if (toKey == Long.MIN_VALUE) {
+                return 0;
+            }
+            effTo = toKey - 1L;
+        }
+        if (!fromInclusive && effFrom < fromKey) {
+            return 0;
+        }
+        if (!toInclusive && effTo > toKey) {
+            return 0;
+        }
+        if (effFrom > effTo) {
+            return 0;
+        }
+        opReadLock.lock();
+        try {
+            int emitted = 0;
+            Iterator<Entry<Long, Long>> it = iterator();
+            while (it.hasNext() && emitted < limit) {
+                Entry<Long, Long> e = it.next();
+                Long kObj = e.getKey();
+                Long vObj = e.getValue();
+                if (kObj == null || vObj == null) {
+                    continue;
+                }
+                long k = kObj.longValue();
+                if (k < effFrom) {
+                    continue;
+                }
+                if (k > effTo) {
+                    break;
+                }
+                consumer.accept(k, vObj.longValue());
+                emitted++;
+            }
+            return emitted;
+        } finally {
+            opReadLock.unlock();
+        }
     }
 
     public interface LongLongConsumer {
@@ -929,7 +1071,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
     }
 
     private boolean traverseOrdered(long nodeId, int level, boolean ascending, EntryVisitor visitor) throws IOException {
-        return traverseOrdered(nodeId, level, ascending, visitor, new TraversalContext(hashLen));
+        return traverseOrdered(nodeId, level, ascending, visitor, new TraversalContext(HASH_DEPTH));
     }
 
     private boolean traverseOrdered(long nodeId, int level, boolean ascending, EntryVisitor visitor, TraversalContext ctx) throws IOException {
