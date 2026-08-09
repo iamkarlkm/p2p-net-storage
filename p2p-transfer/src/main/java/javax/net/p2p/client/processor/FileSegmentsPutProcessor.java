@@ -7,10 +7,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
 import javax.net.p2p.interfaces.P2PFileService;
 import javax.net.p2p.model.FileSegmentsDataModel;
 import javax.net.p2p.utils.FileUtil;
-import javax.net.p2p.utils.P2PUtils;
 import javax.net.p2p.utils.SecurityUtils;
 
 /**
@@ -59,19 +59,15 @@ public class FileSegmentsPutProcessor implements Runnable {
 		try {
 			if(data!=null && model.blockData ==null){
 				model.blockData = FileUtil.loadFile(data, model.start, model.blockSize);
-				//System.out.println(Hex.encodeHexString(model.blockData));
 				model.blockMd5 = SecurityUtils.toMD5(model.blockData);
 			}
-			//if(model.blockIndex==0)
 			node.putFileSegment(model);
 			FileUtil.concurentAppend(infoFile, (model.blockIndex+"\n").getBytes());
 		} catch (Exception ex) {
 			Logger.getLogger(FileSegmentsPutProcessor.class.getName()).log(Level.SEVERE, null, ex);
 			errorTag.set(true);
 		}finally{
-			 // 子线程中，业务处理完成后，利用countDown的特性，计数器减一操作
 			countDownLatch.countDown();
-			//System.out.println("::"+model.blockIndex);
 		}
       
         // 子阻塞，直到其他子线程完成操作

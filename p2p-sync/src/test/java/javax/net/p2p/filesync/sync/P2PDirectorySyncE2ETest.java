@@ -41,6 +41,22 @@ import org.junit.Test;
 
 public class P2PDirectorySyncE2ETest {
 
+    static {
+        cleanP2PUpTmpIdx();
+    }
+
+    private static void cleanP2PUpTmpIdx() {
+        try {
+            Path tmpDir = new File(System.getProperty("java.io.tmpdir")).toPath();
+            try (var stream = Files.newDirectoryStream(tmpDir, "p2p_up_*.up.idx")) {
+                for (Path p : stream) {
+                    try { Files.deleteIfExists(p); } catch (Exception ignored) {}
+                }
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     @Test
     public void shouldSyncFileToReceiverOverTcp() throws Exception {
         long taskId = 101L;
@@ -294,7 +310,9 @@ public class P2PDirectorySyncE2ETest {
                 "\"path\":\"resume/interrupted.bin\"",
                 "\"resumedUpload\":true",
                 "\"resumedSegments\":2",
-                "\"uploadedSegments\":2");
+                "\"totalSegments\":7",
+                "\"uploadedSegments\":7",
+                "\"verifiedContentLength\":49473");
         } finally {
             P2PConfig.DATA_PUT_BLOCK_SIZE = originalBlockSize;
         }
@@ -1128,6 +1146,8 @@ public class P2PDirectorySyncE2ETest {
         private InterruptedOnceP2PUtils(P2PClientTcp client, int partialSegments) {
             super(client);
             this.partialSegments = partialSegments;
+            String ns = "resume-test-" + java.util.UUID.randomUUID().toString().replace("-", "");
+            System.setProperty("p2p.up.namespace", ns);
         }
 
         @Override

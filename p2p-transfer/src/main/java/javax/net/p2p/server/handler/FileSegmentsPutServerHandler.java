@@ -24,19 +24,15 @@ public class FileSegmentsPutServerHandler extends AbstractLongTimedRequestAdapte
 	}
     
     @Override
-    public P2PWrapper process(P2PWrapper request) {
+	public P2PWrapper process(P2PWrapper request) {
         try {
             if (request.getCommand().getValue() == P2PCommand.PUT_FILE_SEGMENTS.getValue()) {
                 FileSegmentsDataModel payload = (FileSegmentsDataModel) request.getData();
-                System.out.println("FileSegmentsPutServerHandler:"+payload.start);
                if(payload.blockMd5!=null && !payload.blockMd5.equals(SecurityUtils.toMD5(payload.blockData))){
 				   return P2PWrapper.build(request.getSeq(),P2PCommand.INVALID_DATA, "Md5 check error -> "+payload.blockMd5);
 			   }
-               File file = FileUtil.getSandboxFileForWrite(payload.storeId, payload.path);				//                LssjImageDataModel rdata = new LssjImageDataModel();
-				
+               File file = FileUtil.getSandboxFileForWrite(payload.storeId, payload.path);				
                FileUtil.storeFile(file,payload.start,payload.blockData.length,payload.blockData);
-				//payload.blockMd5 = SecurityUtils.toMD5(payload.blockData);
-				//payload.blockData  = null;
                 return P2PWrapper.build(request.getSeq(),P2PCommand.STD_OK, null);
             } else {
                 return P2PErrors.stdError(request.getSeq(), P2PErrorCode.ROUTING_HANDLER_MISMATCH, "指令内部校验错误！");

@@ -5,7 +5,6 @@
  */
 package javax.net.p2p.utils;
 
-import com.google.common.collect.Lists;
 import java.io.File;
 import java.io.RandomAccessFile;
 import java.net.InetAddress;
@@ -13,31 +12,36 @@ import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
+
 import javax.net.p2p.api.P2PCommand;
-import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.client.P2PClientTcp;
 import javax.net.p2p.client.processor.FileSegmentsGetProcessor;
 import javax.net.p2p.client.processor.FileSegmentsPutProcessor;
 import javax.net.p2p.config.P2PConfig;
+import javax.net.p2p.error.P2PErrors;
 import javax.net.p2p.interfaces.P2PFileService;
 import javax.net.p2p.interfaces.P2PMessageService;
-import javax.net.p2p.model.FileSegmentsDataModel;
+import javax.net.p2p.model.FileDataModel;
 import javax.net.p2p.model.FileListEntry;
 import javax.net.p2p.model.FileListRequest;
 import javax.net.p2p.model.FileListResponse;
 import javax.net.p2p.model.FileRenameRequest;
-import javax.net.p2p.model.FilesCommandModel;
+import javax.net.p2p.model.FileSegmentsDataModel;
 import javax.net.p2p.model.LssjImageModel;
 import javax.net.p2p.model.P2PWrapper;
-import javax.net.p2p.model.FileDataModel;
-import lombok.extern.slf4j.Slf4j;
+
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.time.StopWatch;
 import org.apache.commons.lang3.tuple.Triple;
+
+import com.google.common.collect.Lists;
+
+import lombok.extern.slf4j.Slf4j;
 
 /**
  *
@@ -502,6 +506,13 @@ public class P2PUtils  implements P2PFileService{
 
 			Triple<File, File, Set<Integer>> upInfo = FileUtil.getUpInfoTmp(storeId, path);
 			Set<Integer> indexes = upInfo.getRight();
+			Set<Integer> validIndexes = new HashSet<>();
+			for (Integer idx : indexes) {
+				if (idx != null && idx >= 0 && idx < count) {
+					validIndexes.add(idx);
+				}
+			}
+			indexes = validIndexes;
 			AtomicBoolean errorTag = new AtomicBoolean(false);
 			try (RandomAccessFile indexFile = FileUtil.getLockedFile(upInfo.getMiddle())) {
 				List<Integer> execIndexes = new ArrayList();
@@ -626,6 +637,13 @@ public class P2PUtils  implements P2PFileService{
 
 			Triple<File, File, Set<Integer>> upInfo = FileUtil.getUpInfoTmp(storeId, path);
 			Set<Integer> indexes = upInfo.getRight();
+			Set<Integer> validIndexes = new HashSet<>();
+			for (Integer idx : indexes) {
+				if (idx != null && idx >= 0 && idx < count) {
+					validIndexes.add(idx);
+				}
+			}
+			indexes = validIndexes;
 			AtomicBoolean errorTag = new AtomicBoolean(false);
 			try (RandomAccessFile indexFile = FileUtil.getLockedFile(upInfo.getMiddle())) {
 				List<Integer> execIndexes = new ArrayList();
@@ -698,10 +716,12 @@ public class P2PUtils  implements P2PFileService{
 				throw new RuntimeException("多线程上传文件执行出现异常");
 			}
 			
-			
-	
-			//upInfo.getLeft().delete();
-			//upInfo.getMiddle().delete();
+			if (upInfo.getLeft() != null) {
+				try { upInfo.getLeft().delete(); } catch (Exception ignored) {}
+			}
+			if (upInfo.getMiddle() != null) {
+				try { upInfo.getMiddle().delete(); } catch (Exception ignored) {}
+			}
 
 			P2PWrapper p2p = P2PWrapper.build(P2PCommand.PUT_FILE_SEGMENTS_COMPLETE, new FileSegmentsDataModel(storeId, path, length, md5));
 			P2PWrapper response = (P2PWrapper) node.excute(p2p);
