@@ -28,26 +28,31 @@ import java.util.Date;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-
 /**
  * 通用 long->long 映射索引（以 64-bit 哈希值作为 key）。
  *
- * <p>实现上与 {@link DsHash64MasterIndex} 基本一致，都是 256-ary trie（8 层，每层 1 byte）。</p>
+ * <p>
+ * 实现上与 {@link DsHash64MasterIndex} 基本一致，都是 256-ary trie（8 层，每层 1 byte）。
+ * </p>
  *
- * <p>使用场景：</p>
+ * <p>
+ * 使用场景：
+ * </p>
  * <ul>
- *   <li>历史/实验性结构：用于在不引入完整 tiered 逻辑时，快速把 hash64 映射到一个 value。</li>
- *   <li>slot payload 仍使用 32B，支持 VALUE、CHILD、VALUE_CHILD 三种状态组合。</li>
+ * <li>历史/实验性结构：用于在不引入完整 tiered 逻辑时，快速把 hash64 映射到一个 value。</li>
+ * <li>slot payload 仍使用 32B，支持 VALUE、CHILD、VALUE_CHILD 三种状态组合。</li>
  * </ul>
  *
- * <p>注意：</p>
+ * <p>
+ * 注意：
+ * </p>
  * <ul>
- *   <li>该类实现 {@link Map} 接口（key/value 均为 {@link Long}）。</li>
+ * <li>该类实现 {@link Map} 接口（key/value 均为 {@link Long}）。</li>
  * </ul>
  */
 public class DsHashMap extends DsObject implements Map<Long, Long> {
     private static final Logger log = LoggerFactory.getLogger(DsHashMap.class);
-    private static final byte[] MAGIC = new byte[] {'.', 'M', 'A', 'P'};
+    private static final byte[] MAGIC = new byte[] { '.', 'M', 'A', 'P' };
     private static final int HEADER_SIZE = DsFixedBucketStore.HEADER_SIZE;
     private static final int HDR_MAGIC = 0;
     private static final int HDR_VALUE_SIZE = 4;
@@ -58,13 +63,13 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
     private static final int STATE_EMPTY = 0;
     private static final int STATE_VALUE = 1;
     private static final int STATE_CHILD = 2;
-    private static final int STATE_NEXT_LEVEL = 3;//存储层升级。
+    private static final int STATE_NEXT_LEVEL = 3;// 存储层升级。
 
-//    private static final int BITMAP_BYTES = 128;
-    private static final int BITMAP_BYTES = 64;//256*2bit(位图)/8   00->empty,01->value,10->sub layer,11->next hashmap
+    // private static final int BITMAP_BYTES = 128;
+    private static final int BITMAP_BYTES = 64;// 256*2bit(位图)/8 00->empty,01->value,10->sub layer,11->next hashmap
     private static final int SLOT_PAYLOAD_BYTES = 8;
-//    private static final int NODE_SIZE = BITMAP_BYTES + 256 * SLOT_PAYLOAD_BYTES;
-     /**
+    // private static final int NODE_SIZE = BITMAP_BYTES + 256 * SLOT_PAYLOAD_BYTES;
+    /**
      * Trie 深度（8 层，每层 1 字节）
      */
     private static final int HASH_DEPTH = 8;
@@ -82,17 +87,16 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
     private long size;
     private final long[] zeroNode;
     private long nextEntryId;
-    
+
     private int hashOffset = 6;
     private int hashLen = 2;
-//    private int hashEnd = 1;
+    // private int hashEnd = 1;
     private int ptrSize = 2;
     private final ThreadLocal<byte[]> hashesLocal1 = ThreadLocal.withInitial(() -> new byte[HASH_DEPTH]);
-    
-    
+
     private final DsObject entryStore;
     private final DsFreeRing freeEntryRing;
-    
+
     private final DsHashMap nextHashMap;
     private DsHashMap nextHashMap64;
     private final DsHashMap rootMap;
@@ -119,8 +123,6 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         Arrays.sort(keys);
         return keys;
     }
-
-
 
     private static final class TraversalContext {
         final LongCountCache countCache = new LongCountCache();
@@ -210,8 +212,6 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
             return (int) mixed;
         }
     }
-    
-    
 
     /**
      * 创建一个 key->value 的 trie 映射文件。
@@ -219,32 +219,35 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
      * @param file
      */
     public DsHashMap(File file) {
-        super(file, HEADER_SIZE, 64 + 256 * 2);//2字节指针 8位哈希 => 256*2-bit(位图)/8 + 256*2-byte(ptr) = 64+512 =576
+        super(file, HEADER_SIZE, 64 + 256 * 2);// 2字节指针 8位哈希 => 256*2-bit(位图)/8 + 256*2-byte(ptr) = 64+512 =576
         zeroNode = new long[this.dataUnitSize / 8];
         rootMap = this;
         opLock = new ReentrantReadWriteLock();
         opReadLock = opLock.readLock();
         opWriteLock = opLock.writeLock();
         initHeader();
-        
-        //16位哈希第一级。
+
+        // 16位哈希第一级。
         File entry16File = new File(file.getAbsolutePath() + ".e16");
         entryStore = new DsObject(entry16File, 16);
         this.freeEntryRing = openFreeRing(entry16File, 1024);
-       
-        //先创建64位第三级哈希存储,以便关联到上一级-32位
+
+        // 先创建64位第三级哈希存储,以便关联到上一级-32位
         File nextHashMap64File = new File(file.getAbsolutePath() + ".m64");
-        nextHashMap64 = new DsHashMap(nextHashMap64File, 0, HASH_DEPTH, 8, new File(file.getAbsolutePath() + ".e64"), null, this);
+        nextHashMap64 = new DsHashMap(nextHashMap64File, 0, HASH_DEPTH, 8, new File(file.getAbsolutePath() + ".e64"),
+                null, this);
 
         File nextHashMap32File = new File(file.getAbsolutePath() + ".m32");
-        nextHashMap = new DsHashMap(nextHashMap32File, 0, HASH_DEPTH, 4, new File(file.getAbsolutePath() + ".e32"), nextHashMap64, this);
+        nextHashMap = new DsHashMap(nextHashMap32File, 0, HASH_DEPTH, 4, new File(file.getAbsolutePath() + ".e32"),
+                nextHashMap64, this);
     }
-    
+
     public DsHashMap(File file, int hashOffset, int hashLen, int ptrSize, File entryFile, DsHashMap nextHashMap) {
         this(file, hashOffset, hashLen, ptrSize, entryFile, nextHashMap, null);
     }
 
-    private DsHashMap(File file, int hashOffset, int hashLen, int ptrSize, File entryFile, DsHashMap nextHashMap, DsHashMap rootMap) {
+    private DsHashMap(File file, int hashOffset, int hashLen, int ptrSize, File entryFile, DsHashMap nextHashMap,
+            DsHashMap rootMap) {
         super(file, HEADER_SIZE, 64 + 256 * ptrSize);
         zeroNode = new long[this.dataUnitSize / 8];
         this.hashOffset = hashOffset;
@@ -258,7 +261,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         this.opLock = shared;
         this.opReadLock = shared.readLock();
         this.opWriteLock = shared.writeLock();
-        //this.nextHashMap64 = nextHashMap;
+        // this.nextHashMap64 = nextHashMap;
         initHeader();
     }
 
@@ -270,15 +273,16 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
             if (Arrays.equals(m, MAGIC)) {
                 int storedPtrSize = headerBuffer.getInt(HDR_VALUE_SIZE);
                 if (storedPtrSize != ptrSize) {
-                    throw new IllegalStateException("ptrSize mismatch: stored=" + storedPtrSize + ", expected=" + ptrSize);
+                    throw new IllegalStateException(
+                            "ptrSize mismatch: stored=" + storedPtrSize + ", expected=" + ptrSize);
                 }
                 nextNodeId = headerBuffer.getLong(HDR_NEXT_NODE_ID);
                 size = headerBuffer.getLong(HDR_SIZE);
                 nextEntryId = headerBuffer.getLong(HDR_NEXT_ENTRY_ID);
                 return;
             }
-            headerBuffer.put(HDR_MAGIC, MAGIC, 0, 4);//4字节
-            headerBuffer.putInt(HDR_VALUE_SIZE, ptrSize);//pointer size
+            headerBuffer.put(HDR_MAGIC, MAGIC, 0, 4);// 4字节
+            headerBuffer.putInt(HDR_VALUE_SIZE, ptrSize);// pointer size
             nextNodeId = 1;
             size = 0;
             nextEntryId = 0;
@@ -287,7 +291,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
             headerBuffer.putLong(HDR_NEXT_ENTRY_ID, nextEntryId);
             dirty(0L);
             storeLongOffset(nodeBase(0L), zeroNode);
-            loadBuffer((long) HEADER_SIZE / BLOCK_SIZE);//标准64字节头
+            loadBuffer((long) HEADER_SIZE / BLOCK_SIZE);// 标准64字节头
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -321,11 +325,11 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
             opWriteLock.unlock();
         }
     }
-    
+
     public Long putDate(long key, Date value) throws IOException {
         return putInternal(key, value.getTime(), true);
     }
-    
+
     public Date getDate(long key) {
         try {
             return new Date(get(key));
@@ -333,44 +337,45 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
             throw new RuntimeException(ex);
         }
     }
-    
-    public Long putTable(long key,DsTableAdapter value) throws IOException {
-        // TODO 存储逻辑: value.getId()==null?新增:更新 调用DsFixedBucketStore -> 存储value.toBytes() 返回64位valueId
-        //return putInternal(key, valueId, true);
+
+    public Long putTable(long key, DsTableAdapter value) throws IOException {
+        // TODO 存储逻辑: value.getId()==null?新增:更新 调用DsFixedBucketStore ->
+        // 存储value.toBytes() 返回64位valueId
+        // return putInternal(key, valueId, true);
         return null;
-       
+
     }
-    
+
     public DsTableAdapter getTable(long key) {
         try {
             long valueId = get(key);
-            //TODO 调用DsFixedBucketStore -> load(ByteBuffer data)
+            // TODO 调用DsFixedBucketStore -> load(ByteBuffer data)
         } catch (IOException ex) {
             throw new RuntimeException(ex);
         }
         return null;
     }
-    
-    
+
     // ========================================================================
-// 统计和诊断
-// ========================================================================
+    // 统计和诊断
+    // ========================================================================
     /**
      * 获取存储空间使用量
-     * @return 
+     * 
+     * @return
      */
     public long getStoreUsed() {
         long used = 0;
-        if(nextHashMap64!=null){
+        if (nextHashMap64 != null) {
             used = nextHashMap64.getInnerStoreUsed();
         }
-        return getInnerStoreUsed()+nextHashMap.getInnerStoreUsed()+used;
+        return getInnerStoreUsed() + nextHashMap.getInnerStoreUsed() + used;
     }
-    
+
     private long getInnerStoreUsed() {
         return headerSize
-            + nextNodeId * dataUnitSize
-            + nextEntryId * entryStore.dataUnitSize+freeEntryRing.capacity();
+                + nextNodeId * dataUnitSize
+                + nextEntryId * entryStore.dataUnitSize + freeEntryRing.capacity();
     }
 
     public Long first() {
@@ -449,6 +454,193 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         return out;
     }
 
+    long internalIndexOfCeiling(long key, TraversalContext ctx) throws IOException {
+        byte[] hashes = hashBytes(key);
+        long exact = indexOfOrdered(0L, hashOffset, key, hashes, ctx, 0L);
+        if (exact >= 0L) {
+            return exact;
+        }
+        long ceilingIdx = indexOfCeiling(0L, hashOffset, key, hashes, ctx, 0L);
+        long total = countSubtree(0L, hashOffset, ctx);
+        return Math.min(ceilingIdx, total);
+    }
+
+    long internalIndexOfFloor(long key, TraversalContext ctx) throws IOException {
+        byte[] hashes = hashBytes(key);
+        long exact = indexOfOrdered(0L, hashOffset, key, hashes, ctx, 0L);
+        if (exact >= 0L) {
+            return exact;
+        }
+        return indexOfFloor(0L, hashOffset, key, hashes, ctx, 0L);
+    }
+
+    boolean internalCollectRangeOrdered(long[] skip, int limit, EntryVisitor visitor, int[] emitted,
+            TraversalContext ctx) throws IOException {
+        return collectRangeOrdered(0L, hashOffset, skip, limit, visitor, emitted, ctx);
+    }
+
+    long internalCountSubtree(TraversalContext ctx) throws IOException {
+        return countSubtree(0L, hashOffset, ctx);
+    }
+
+    private static long countSubtreeIncludingNextLevel(DsHashMap m, TraversalContext ctx) throws IOException {
+        if (m == null)
+            return 0L;
+        return m.countSubtreeIncludingNextLevel(0L, m.hashOffset, ctx);
+    }
+
+    private static boolean collectRangeOrderedIncludingNextLevel(DsHashMap m, long[] skip, int limit,
+            EntryVisitor visitor, int[] emitted, TraversalContext ctx) throws IOException {
+        if (m == null) {
+            return emitted[0] >= limit;
+        }
+        return m.collectRangeOrdered(0L, m.hashOffset, skip, limit, visitor, emitted, ctx);
+    }
+
+    private long indexOfCeiling(long nodeId, int level, long target, byte[] hashes, TraversalContext ctx,
+            long baseIndex) throws IOException {
+        if (level >= HASH_DEPTH) {
+            return baseIndex;
+        }
+        byte[] bitmap = ctx.bitmap(level);
+        long[] ptrs = ctx.ptrs(level);
+        loadNode(nodeId, bitmap, ptrs);
+        int[] slots = slotOrderForDepth(level - hashOffset, true);
+        int targetSlot = hashes[level] & 0xFF;
+        long index = baseIndex;
+        for (int slot : slots) {
+            int state = stateFromBitmap(bitmap, slot);
+            if (state == STATE_EMPTY) {
+                if (slot == targetSlot) {
+                    return index;
+                }
+                continue;
+            }
+            if (slot == targetSlot) {
+                if (state == STATE_VALUE) {
+                    long entryId = ptrs[slot];
+                    long storedKey = entryStore.readLong(entryId, 0);
+                    if (storedKey >= target) {
+                        return index;
+                    }
+                    return index + countChain(entryId);
+                }
+                if (state == STATE_CHILD && level + 1 < HASH_DEPTH) {
+                    long child = ptrs[slot];
+                    if (child <= 0) {
+                        return index;
+                    }
+                    return indexOfCeiling(child, level + 1, target, hashes, ctx, index);
+                }
+                if (state == STATE_NEXT_LEVEL) {
+                    return index;
+                }
+                return index;
+            }
+            boolean slotBeforeTarget;
+            if (hashOffset == 0 && level == hashOffset) {
+                slotBeforeTarget = rootSlotAscLessThan(slot, targetSlot);
+            } else {
+                slotBeforeTarget = slot < targetSlot;
+            }
+            if (slotBeforeTarget) {
+                if (state == STATE_VALUE) {
+                    index += countChain(ptrs[slot]);
+                } else if (state == STATE_CHILD && level + 1 < HASH_DEPTH) {
+                    long child = ptrs[slot];
+                    if (child > 0) {
+                        index += countSubtree(child, level + 1, ctx);
+                    }
+                }
+                continue;
+            }
+            return index;
+        }
+        return index;
+    }
+
+    private long indexOfFloor(long nodeId, int level, long target, byte[] hashes, TraversalContext ctx, long baseIndex)
+            throws IOException {
+        if (level >= HASH_DEPTH) {
+            return -1L;
+        }
+        byte[] bitmap = ctx.bitmap(level);
+        long[] ptrs = ctx.ptrs(level);
+        loadNode(nodeId, bitmap, ptrs);
+        int[] slots = slotOrderForDepth(level - hashOffset, true);
+        int targetSlot = hashes[level] & 0xFF;
+        long index = baseIndex;
+        long lastValid = -1L;
+        for (int slot : slots) {
+            int state = stateFromBitmap(bitmap, slot);
+            if (state == STATE_EMPTY) {
+                if (slot == targetSlot) {
+                    return lastValid;
+                }
+                continue;
+            }
+            boolean slotBeforeTarget;
+            if (hashOffset == 0 && level == hashOffset) {
+                slotBeforeTarget = rootSlotAscLessThan(slot, targetSlot);
+            } else {
+                slotBeforeTarget = slot < targetSlot;
+            }
+            boolean slotEqual = slot == targetSlot;
+            if (slotBeforeTarget) {
+                if (state == STATE_VALUE) {
+                    long entryId = ptrs[slot];
+                    long storedKey = entryStore.readLong(entryId, 0);
+                    if (storedKey <= target) {
+                        lastValid = index + countChain(entryId) - 1;
+                    }
+                    index += countChain(entryId);
+                } else if (state == STATE_CHILD && level + 1 < HASH_DEPTH) {
+                    long child = ptrs[slot];
+                    if (child > 0) {
+                        long sub = countSubtree(child, level + 1, ctx);
+                        lastValid = index + sub - 1;
+                        index += sub;
+                    }
+                } else if (state == STATE_NEXT_LEVEL) {
+                }
+                continue;
+            }
+            if (slotEqual) {
+                if (state == STATE_VALUE) {
+                    long entryId = ptrs[slot];
+                    long storedKey = entryStore.readLong(entryId, 0);
+                    if (storedKey <= target) {
+                        return index + countChain(entryId) - 1;
+                    }
+                    return lastValid;
+                }
+                if (state == STATE_CHILD && level + 1 < HASH_DEPTH) {
+                    long child = ptrs[slot];
+                    if (child <= 0) {
+                        return lastValid;
+                    }
+                    long sub = indexOfFloor(child, level + 1, target, hashes, ctx, index);
+                    if (sub >= 0) {
+                        return sub;
+                    }
+                    return lastValid;
+                }
+                return lastValid;
+            }
+            return lastValid;
+        }
+        return lastValid;
+    }
+
+    private static boolean rootSlotAscLessThan(int a, int b) {
+        boolean aNeg = a >= 128;
+        boolean bNeg = b >= 128;
+        if (aNeg != bNeg) {
+            return aNeg;
+        }
+        return a < b;
+    }
+
     public int forEachRange(long start, int count, LongLongConsumer consumer) {
         if (consumer == null) {
             throw new NullPointerException("consumer");
@@ -461,39 +653,117 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         }
         opReadLock.lock();
         try {
-            long idx = 0L;
-            int emitted = 0;
-            Iterator<Entry<Long, Long>> it = iterator();
-            while (it.hasNext() && idx < start) {
-                it.next();
-                idx++;
+            long sizeTotal = sizeLong();
+            if (start >= sizeTotal)
+                return 0;
+            int limit = (int) Math.min(count, sizeTotal - start);
+            if (nextHashMap64 == null || nextHashMap == null) {
+                int[] emitted = { 0 };
+                EntryVisitor visitor = (k, v) -> {
+                    consumer.accept(k, v);
+                    emitted[0]++;
+                    return emitted[0] >= limit;
+                };
+                long[] skip = new long[] { start };
+                TraversalContext ctx = new TraversalContext(HASH_DEPTH);
+                collectRangeOrdered(0L, hashOffset, skip, limit, visitor, emitted, ctx);
+                return emitted[0];
             }
-            while (it.hasNext() && emitted < count) {
-                Entry<Long, Long> e = it.next();
-                Long k = e.getKey();
-                Long v = e.getValue();
-                if (k == null || v == null) {
-                    continue;
+            final int[] emitted = { 0 };
+            long[] skipArr = new long[] { start };
+            TraversalContext ctxNeg = new TraversalContext(HASH_DEPTH);
+            long negSize = nextHashMap64.internalIndexOfCeiling(0L, ctxNeg);
+            TraversalContext ctx16c = new TraversalContext(HASH_DEPTH);
+            long size16 = this.countSubtreeIncludingNextLevel(0L, this.hashOffset, ctx16c);
+            TraversalContext ctx32c = new TraversalContext(HASH_DEPTH);
+            long size32 = nextHashMap == null ? 0L : nextHashMap.internalCountSubtree(ctx32c);
+            TraversalContext ctx64c = new TraversalContext(HASH_DEPTH);
+            long size64Total = nextHashMap64.internalCountSubtree(ctx64c);
+            long pos64Size = size64Total - negSize;
+            EntryVisitor emitVisitor = (k, v) -> {
+                if (emitted[0] >= limit)
+                    return true;
+                consumer.accept(k, v);
+                emitted[0]++;
+                return emitted[0] >= limit;
+            };
+            EntryVisitor negFilter = (k, v) -> (k < 0L) && emitVisitor.visit(k, v);
+            if (skipArr[0] < negSize) {
+                long segCap = negSize - skipArr[0];
+                int segLimit = (int) Math.min((long) (limit - emitted[0]), segCap);
+                if (segLimit > 0) {
+                    int[] segEmitted = { 0 };
+                    TraversalContext c = new TraversalContext(HASH_DEPTH);
+                    nextHashMap64.internalCollectRangeOrdered(skipArr, segLimit, negFilter, segEmitted, c);
                 }
-                consumer.accept(k.longValue(), v.longValue());
-                emitted++;
+                skipArr[0] = 0L;
+            } else {
+                skipArr[0] -= negSize;
             }
-            return emitted;
+            if (emitted[0] < limit) {
+                if (skipArr[0] < size16) {
+                    long segCap = size16 - skipArr[0];
+                    int segLimit = (int) Math.min((long) (limit - emitted[0]), segCap);
+                    if (segLimit > 0) {
+                        int[] segEmitted = { 0 };
+                        TraversalContext c = new TraversalContext(HASH_DEPTH);
+                        this.collectRangeOrdered(0L, this.hashOffset, skipArr, segLimit, emitVisitor, segEmitted, c);
+                    }
+                    skipArr[0] = 0L;
+                } else {
+                    skipArr[0] -= size16;
+                }
+            }
+            if (nextHashMap != null && emitted[0] < limit) {
+                if (skipArr[0] < size32) {
+                    long segCap = size32 - skipArr[0];
+                    int segLimit = (int) Math.min((long) (limit - emitted[0]), segCap);
+                    if (segLimit > 0) {
+                        int[] segEmitted = { 0 };
+                        TraversalContext c = new TraversalContext(HASH_DEPTH);
+                        nextHashMap.internalCollectRangeOrdered(skipArr, segLimit, emitVisitor, segEmitted, c);
+                    }
+                    skipArr[0] = 0L;
+                } else {
+                    skipArr[0] -= size32;
+                }
+            }
+            if (emitted[0] < limit && skipArr[0] < pos64Size) {
+                long segLocalStart = negSize + skipArr[0];
+                long segCap = pos64Size - skipArr[0];
+                int segLimit = (int) Math.min((long) (limit - emitted[0]), segCap);
+                if (segLimit > 0) {
+                    long[] segSkip = new long[] { segLocalStart };
+                    int[] segEmitted = { 0 };
+                    TraversalContext c = new TraversalContext(HASH_DEPTH);
+                    nextHashMap64.internalCollectRangeOrdered(segSkip, segLimit, emitVisitor, segEmitted, c);
+                }
+            }
+            return emitted[0];
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
         } finally {
             opReadLock.unlock();
         }
+    }
+
+    private long sizeOfNeg64Half() throws IOException {
+        TraversalContext ctx64 = new TraversalContext(HASH_DEPTH);
+        return nextHashMap64.internalIndexOfCeiling(0L, ctx64);
     }
 
     public List<Entry<Long, Long>> subMap(long fromKeyInclusive, long toKeyExclusive) {
         return subMap(fromKeyInclusive, true, toKeyExclusive, false, Integer.MAX_VALUE);
     }
 
-    public List<Entry<Long, Long>> subMap(long fromKey, boolean fromInclusive, long toKey, boolean toInclusive, int limit) {
+    public List<Entry<Long, Long>> subMap(long fromKey, boolean fromInclusive, long toKey, boolean toInclusive,
+            int limit) {
         if (limit <= 0) {
             return new ArrayList<>(0);
         }
         List<Entry<Long, Long>> out = new ArrayList<>(Math.min(limit, 256));
-        forEachKeyRange(fromKey, fromInclusive, toKey, toInclusive, limit, (k, v) -> out.add(new SnapshotEntry(this, k, v)));
+        forEachKeyRange(fromKey, fromInclusive, toKey, toInclusive, limit,
+                (k, v) -> out.add(new SnapshotEntry(this, k, v)));
         return out;
     }
 
@@ -562,7 +832,8 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         return r.isEmpty() ? null : r.get(0).getKey();
     }
 
-    public int forEachKeyRange(long fromKey, boolean fromInclusive, long toKey, boolean toInclusive, int limit, LongLongConsumer consumer) {
+    public int forEachKeyRange(long fromKey, boolean fromInclusive, long toKey, boolean toInclusive, int limit,
+            LongLongConsumer consumer) {
         if (consumer == null) {
             throw new NullPointerException("consumer");
         }
@@ -719,10 +990,10 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         public String toString() {
             return "Entry{" + "key=" + key + ", value=" + value + '}';
         }
-        
+
     }
-    
-        public static String hashToString(byte[] hashes) {
+
+    public static String hashToString(byte[] hashes) {
         StringBuilder sb = new StringBuilder(hashes.length + " byte hash:");
         for (int i = 0; i < hashes.length; i++) {
             int x = hashes[i] & 0xff;
@@ -734,14 +1005,17 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
     /**
      * 写入 hash64(8B) -> value 映射。
      *
-     * <p>实现为 8 层 256-ary trie；该版本在某些中间层遇到 STATE_VALUE_CHILD 时会抛异常（不完全支持）。</p>
+     * <p>
+     * 实现为 8 层 256-ary trie；该版本在某些中间层遇到 STATE_VALUE_CHILD 时会抛异常（不完全支持）。
+     * </p>
+     * 
      * @param hashes
      * @param key
      * @param value
-     * @return 
+     * @return
      * @throws java.io.IOException
      */
-    public Long put(byte[] hashes,long key, long value) throws IOException {
+    public Long put(byte[] hashes, long key, long value) throws IOException {
         ensureHashBytes(hashes, key);
         long nodeId = 0;
         long bufIdx = nodeBase(nodeId) / BLOCK_SIZE;
@@ -760,11 +1034,11 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                                 unlockBuffer(bufIdx);
                                 bufIdx = nextBuf;
                             }
-                            //继续处理下一个哈希。
+                            // 继续处理下一个哈希。
                             continue;
                         }
                         case STATE_EMPTY -> {
-                            //slot 空
+                            // slot 空
                             if (cannotStoreNewEntryId()) {
                                 if (nextHashMap == null) {
                                     throw new IOException("entryId overflow without nextHashMap");
@@ -785,38 +1059,38 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                             return null;
                         }
                         case STATE_VALUE -> {
-                            //slot有值,深入下一层
+                            // slot有值,深入下一层
                             long oldEntryId = loadPtrOffset(ptrPos(nodeId, slot));
                             long oldKey = entryStore.readLong(oldEntryId, 0);
                             long oldValue = entryStore.readLong(oldEntryId, 8);
-                            if(oldKey == key){
-                                if(oldValue != value){// Key同，值不同，更新。
+                            if (oldKey == key) {
+                                if (oldValue != value) {// Key同，值不同，更新。
                                     entryStore.writeLong(oldEntryId, 8, value);
                                 }
                                 return oldValue;
                             }
                             long child = allocateNodeId();
                             writeSlotAsChild(nodeId, slot, child);
-                            //深入下一层,分别存储两个值。
-                            int nextLevel = level+1;
-                        reinsertExistingEntryId(child, hashBytes(oldKey), oldKey, oldEntryId, nextLevel);
+                            // 深入下一层,分别存储两个值。
+                            int nextLevel = level + 1;
+                            reinsertExistingEntryId(child, hashBytes(oldKey), oldKey, oldEntryId, nextLevel);
                             putInner(child, hashes, key, value, nextLevel, true);
                             return null;
                         }
-//                        case STATE_NEXT_LEVEL -> {
-//                            if (nextHashMap == null) {
-//                                return null;
-//                            }
-//                            return nextHashMap.put(key, value);
-//                        }
-                        default -> {//并不存在这样的bitmap state,如果存在是数据可能损坏 TODO
-                            log.error(" [STATE_NEXT_LEVEL] hash level={} -> invalid state:{} " ,level, state);
+                        // case STATE_NEXT_LEVEL -> {
+                        // if (nextHashMap == null) {
+                        // return null;
+                        // }
+                        // return nextHashMap.put(key, value);
+                        // }
+                        default -> {// 并不存在这样的bitmap state,如果存在是数据可能损坏 TODO
+                            log.error(" [STATE_NEXT_LEVEL] hash level={} -> invalid state:{} ", level, state);
                             // throw new IOException("invalid state: " + state);
                         }
                     }
-                   
+
                 }
-                //本级最后一层特殊处理:
+                // 本级最后一层特殊处理:
                 switch (state) {
                     case STATE_EMPTY -> {
                         if (cannotStoreNewEntryId()) {
@@ -824,7 +1098,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                                 throw new IOException("entryId overflow without nextHashMap");
                             }
                             writeSlotAsNextLevel(nodeId, slot, 0L);
-                            return nextHashMap.put(hashes,key, value);
+                            return nextHashMap.put(hashes, key, value);
                         }
                         long entryId = allocateEntryId(key, value);
                         writeSlotAsValue(nodeId, slot, entryId);
@@ -842,8 +1116,8 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                         long oldEntryId = loadPtrOffset(ptrPos(nodeId, slot));
                         long oldKey = entryStore.readLong(oldEntryId, 0);
                         long oldValue = entryStore.readLong(oldEntryId, 8);
-                        if(oldKey == key){
-                            if(oldValue != value){// Key同，值不同，更新。
+                        if (oldKey == key) {
+                            if (oldValue != value) {// Key同，值不同，更新。
                                 entryStore.writeLong(oldEntryId, 8, value);
                             }
                             return oldValue;
@@ -851,18 +1125,18 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                         throw new IOException("terminal collision at VALUE slot: storedKey=" + oldKey + ", key=" + key);
                     }
                     case STATE_NEXT_LEVEL -> {
-                        //16位key store hashmap 升级到32位key store hashmap 或 32位key store hashmap 升级到64位key store hashmap
+                        // 16位key store hashmap 升级到32位key store hashmap 或 32位key store hashmap 升级到64位key
+                        // store hashmap
                         if (nextHashMap == null) {
                             throw new IOException("collision without nextHashMap");
                         }
-                        return nextHashMap.put(hashes,key, value);
+                        return nextHashMap.put(hashes, key, value);
                     }
-                    default -> {//理论上到了这里只有升级。不会有下一层 STATE_CHILD
+                    default -> {// 理论上到了这里只有升级。不会有下一层 STATE_CHILD
                         throw new IOException("invalid state: " + state);
                     }
                 }
-               
-                
+
             }
         } finally {
             unlockBuffer(bufIdx);
@@ -884,7 +1158,8 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         }
     }
 
-    private void reinsertExistingEntryId(long startNodeId, byte[] hashes, long key, long entryId, int currentLevel) throws IOException {
+    private void reinsertExistingEntryId(long startNodeId, byte[] hashes, long key, long entryId, int currentLevel)
+            throws IOException {
         long nodeId = startNodeId;
         long bufIdx = nodeBase(nodeId) / BLOCK_SIZE;
         loadBufferForUpdate(bufIdx);
@@ -933,7 +1208,8 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                     if (existingKey == key) {
                         return;
                     }
-                    throw new IOException("terminal collision at VALUE slot: storedKey=" + existingKey + ", key=" + key);
+                    throw new IOException(
+                            "terminal collision at VALUE slot: storedKey=" + existingKey + ", key=" + key);
                 }
                 throw new IOException("invalid state: " + state);
             }
@@ -941,8 +1217,9 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
             unlockBuffer(bufIdx);
         }
     }
-    
-    private Long putInner(long startNodeId, byte[] hashes, long key, long value, int currentLevel, boolean countSize) throws IOException {
+
+    private Long putInner(long startNodeId, byte[] hashes, long key, long value, int currentLevel, boolean countSize)
+            throws IOException {
         long nodeId = startNodeId;
         long bufIdx = nodeBase(nodeId) / BLOCK_SIZE;
         loadBufferForUpdate(bufIdx);
@@ -1004,20 +1281,20 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                         unlockBuffer(bufIdx);
                         return null;
                     }
-//                    case STATE_NEXT_LEVEL -> {
-//                        unlockBuffer(bufIdx);
-//                        if (nextHashMap == null) {
-//                            return null;
-//                        }
-//                        return nextHashMap.put(key, value);
-//                    }
+                    // case STATE_NEXT_LEVEL -> {
+                    // unlockBuffer(bufIdx);
+                    // if (nextHashMap == null) {
+                    // return null;
+                    // }
+                    // return nextHashMap.put(key, value);
+                    // }
                     default -> {
-                        //并不存在这样的bitmap state,如果存在是数据可能损坏 TODO
-                        log.error(" [STATE_NEXT_LEVEL] hash level={} -> invalid state:{} " ,level, state);
+                        // 并不存在这样的bitmap state,如果存在是数据可能损坏 TODO
+                        log.error(" [STATE_NEXT_LEVEL] hash level={} -> invalid state:{} ", level, state);
                     }
                 }
             }
-             //本级最后一层特殊处理:
+            // 本级最后一层特殊处理:
             switch (state) {
                 case STATE_EMPTY -> {
                     if (cannotStoreNewEntryId()) {
@@ -1026,7 +1303,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                         }
                         writeSlotAsNextLevel(nodeId, slot, 0L);
                         unlockBuffer(bufIdx);
-                        return nextHashMap.put(hashes,key, value);
+                        return nextHashMap.put(hashes, key, value);
                     }
                     long entryId = allocateEntryId(key, value);
                     writeSlotAsValue(nodeId, slot, entryId);
@@ -1061,7 +1338,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                     if (nextHashMap == null) {
                         throw new IOException("collision without nextHashMap");
                     }
-                    return nextHashMap.put(hashes,key, value);
+                    return nextHashMap.put(hashes, key, value);
                 }
                 default -> throw new IOException("unknown state: " + state);
             }
@@ -1070,11 +1347,13 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         return null;
     }
 
-    private boolean traverseOrdered(long nodeId, int level, boolean ascending, EntryVisitor visitor) throws IOException {
+    private boolean traverseOrdered(long nodeId, int level, boolean ascending, EntryVisitor visitor)
+            throws IOException {
         return traverseOrdered(nodeId, level, ascending, visitor, new TraversalContext(HASH_DEPTH));
     }
 
-    private boolean traverseOrdered(long nodeId, int level, boolean ascending, EntryVisitor visitor, TraversalContext ctx) throws IOException {
+    private boolean traverseOrdered(long nodeId, int level, boolean ascending, EntryVisitor visitor,
+            TraversalContext ctx) throws IOException {
         byte[] bitmap = ctx.bitmap(level);
         long[] ptrs = ctx.ptrs(level);
         loadNode(nodeId, bitmap, ptrs);
@@ -1103,11 +1382,12 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         return false;
     }
 
-    private boolean collectRangeOrdered(long nodeId, int level, long[] skip, int limit, EntryVisitor visitor, int[] emitted, TraversalContext ctx) throws IOException {
+    private boolean collectRangeOrdered(long nodeId, int level, long[] skip, int limit, EntryVisitor visitor,
+            int[] emitted, TraversalContext ctx) throws IOException {
         byte[] bitmap = ctx.bitmap(level);
         long[] ptrs = ctx.ptrs(level);
         loadNode(nodeId, bitmap, ptrs);
-        int[] slots = slotOrderForDepth(level, true);
+        int[] slots = slotOrderForDepth(level - hashOffset, true);
         for (int slot : slots) {
             if (emitted[0] >= limit) {
                 return true;
@@ -1117,16 +1397,27 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                 continue;
             }
             if (state == STATE_VALUE) {
-                if (skip[0] > 0) {
-                    skip[0]--;
-                } else {
-                    long entryId = ptrs[slot];
-                    long key = entryStore.readLong(entryId, 0);
-                    long value = entryStore.readLong(entryId, 8);
-                    emitted[0]++;
-                    if (visitor.visit(key, value) || emitted[0] >= limit) {
-                        return true;
+                long entryId = ptrs[slot];
+                long chainCount = countChain(entryId);
+                if (skip[0] >= chainCount) {
+                    skip[0] -= chainCount;
+                    continue;
+                }
+                long localSkip = skip[0];
+                skip[0] = 0L;
+                long chainIdx = 0L;
+                long cursor = entryId;
+                while (cursor >= 0L && chainIdx < chainCount) {
+                    if (chainIdx >= localSkip) {
+                        long key = entryStore.readLong(cursor, 0);
+                        long value = entryStore.readLong(cursor, 8);
+                        emitted[0]++;
+                        if (visitor.visit(key, value) || emitted[0] >= limit) {
+                            return true;
+                        }
                     }
+                    chainIdx++;
+                    cursor = chainCount > 1 ? loadPtrOffset(cursor + 16L) : -1L;
                 }
                 continue;
             }
@@ -1135,7 +1426,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                 if (child <= 0) {
                     continue;
                 }
-                long subtreeCount = countSubtree(child, level + 1, ctx);
+                long subtreeCount = countSubtreeIncludingNextLevel(child, level + 1, ctx);
                 if (skip[0] >= subtreeCount) {
                     skip[0] -= subtreeCount;
                     continue;
@@ -1144,15 +1435,164 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                     return true;
                 }
             }
+            if (state == STATE_NEXT_LEVEL) {
+                if (nextHashMap == null)
+                    continue;
+                if (level + 1 < HASH_DEPTH) {
+                    long subCount = nextHashMapCountSubtree(slot, level + 1);
+                    if (skip[0] >= subCount) {
+                        skip[0] -= subCount;
+                        continue;
+                    }
+                }
+                if (nextHashMapCollectRangeOrdered(slot, level + 1, skip, limit, visitor, emitted)) {
+                    return true;
+                }
+            }
         }
         return emitted[0] >= limit;
+    }
+
+    private long nextHashMapCountSubtree(int startSlot, int startLevel) throws IOException {
+        long[] keysForSlot = nextHashMapKeysUnder(startSlot, startLevel);
+        return keysForSlot.length;
+    }
+
+    private boolean nextHashMapCollectRangeOrdered(int startSlot, int startLevel, long[] skip, int limit,
+            EntryVisitor visitor, int[] emitted) throws IOException {
+        long[] keysForSlot = nextHashMapKeysUnder(startSlot, startLevel);
+        for (int i = 0; i < keysForSlot.length; i++) {
+            if (emitted[0] >= limit)
+                return true;
+            if (skip[0] > 0) {
+                skip[0]--;
+                continue;
+            }
+            long k = keysForSlot[i];
+            Long v = get(k);
+            if (v == null)
+                continue;
+            emitted[0]++;
+            if (visitor.visit(k, v) || emitted[0] >= limit) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private long[] nextHashMapKeysUnder(int startSlot, int startLevel) throws IOException {
+        Longs out = new Longs(16);
+        if (nextHashMap == null)
+            return out.toArray();
+        DsHashMap targetNext = rootMap != this ? nextHashMap : nextHashMap;
+        int hashOff = targetNext.hashOffset;
+        if (startLevel <= hashOff) {
+            targetNext.collectKeysWithNextLevel(out, 0L, hashOff);
+        } else {
+            byte[] hashes = new byte[HASH_DEPTH];
+            int writeIdx = startLevel - 1;
+            if (writeIdx >= 0 && writeIdx < HASH_DEPTH) {
+                hashes[writeIdx] = (byte) startSlot;
+            }
+            nextHashMapCollectKeys(targetNext, startLevel, hashes, out);
+        }
+        long[] arr = out.toArray();
+        if (arr.length > 1) {
+            Arrays.sort(arr);
+        }
+        return arr;
+    }
+
+    private static void nextHashMapCollectKeys(DsHashMap m, int prefixLevel, byte[] prefixHashes, Longs out)
+            throws IOException {
+        if (m == null)
+            return;
+        if (prefixLevel <= 0) {
+            m.collectKeysWithNextLevel(out, 0L, m.hashOffset);
+            return;
+        }
+        if (prefixLevel > HASH_DEPTH)
+            prefixLevel = HASH_DEPTH;
+        TraversalContext ctx = new TraversalContext(HASH_DEPTH);
+        long nodeId = 0L;
+        int level = m.hashOffset;
+        while (level < prefixLevel) {
+            if (level >= HASH_DEPTH)
+                return;
+            byte[] bitmap = ctx.bitmap(level);
+            long[] ptrs = ctx.ptrs(level);
+            m.loadNode(nodeId, bitmap, ptrs);
+            int slot = prefixHashes[level] & 0xFF;
+            int state = m.stateFromBitmap(bitmap, slot);
+            if (state == STATE_VALUE) {
+                long cursor = ptrs[slot];
+                while (cursor >= 0L) {
+                    long k = m.entryStore.readLong(cursor, 0);
+                    out.add(k);
+                    cursor = -1L;
+                }
+                return;
+            } else if (state == STATE_CHILD && level + 1 < HASH_DEPTH) {
+                long child = ptrs[slot];
+                if (child <= 0)
+                    return;
+                nodeId = child;
+                level++;
+                continue;
+            } else if (state == STATE_NEXT_LEVEL && m.nextHashMap != null) {
+                nextHashMapCollectKeys(m.nextHashMap, level + 1, prefixHashes, out);
+                return;
+            } else {
+                return;
+            }
+        }
+        if (level >= HASH_DEPTH)
+            return;
+        m.collectKeysWithNextLevel(out, nodeId, level);
+    }
+
+    private void collectKeysWithNextLevel(Longs out, long nodeId, int level) throws IOException {
+        TraversalContext ctx = new TraversalContext(HASH_DEPTH);
+        byte[] bitmap = ctx.bitmap(level);
+        long[] ptrs = ctx.ptrs(level);
+        loadNode(nodeId, bitmap, ptrs);
+        int[] slots = slotOrderForDepth(level - hashOffset, true);
+        for (int slot : slots) {
+            int state = stateFromBitmap(bitmap, slot);
+            if (state == STATE_EMPTY)
+                continue;
+            if (state == STATE_VALUE) {
+                long cursor = ptrs[slot];
+                if (cursor >= 0L) {
+                    long k = entryStore.readLong(cursor, 0);
+                    out.add(k);
+                }
+                continue;
+            }
+            if (state == STATE_CHILD && level + 1 < HASH_DEPTH) {
+                long child = ptrs[slot];
+                if (child > 0) {
+                    collectKeysWithNextLevel(out, child, level + 1);
+                }
+                continue;
+            }
+            if (state == STATE_NEXT_LEVEL && nextHashMap != null) {
+                nextHashMapCollectKeys(nextHashMap, level + 1, arrayForSlot(level, slot), out);
+            }
+        }
+    }
+
+    private static byte[] arrayForSlot(int level, int slot) {
+        byte[] b = new byte[8];
+        b[level] = (byte) slot;
+        return b;
     }
 
     private Long getByIndexOrdered(long nodeId, int level, long[] remaining, TraversalContext ctx) throws IOException {
         byte[] bitmap = ctx.bitmap(level);
         long[] ptrs = ctx.ptrs(level);
         loadNode(nodeId, bitmap, ptrs);
-        int[] slots = slotOrderForDepth(level, true);
+        int[] slots = slotOrderForDepth(level - hashOffset, true);
         for (int slot : slots) {
             int state = stateFromBitmap(bitmap, slot);
             if (state == STATE_EMPTY) {
@@ -1183,11 +1623,12 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         return null;
     }
 
-    private long indexOfOrdered(long nodeId, int level, long target, byte[] hashes, TraversalContext ctx, long baseIndex) throws IOException {
+    private long indexOfOrdered(long nodeId, int level, long target, byte[] hashes, TraversalContext ctx,
+            long baseIndex) throws IOException {
         byte[] bitmap = ctx.bitmap(level);
         long[] ptrs = ctx.ptrs(level);
         loadNode(nodeId, bitmap, ptrs);
-        int[] slots = slotOrderForDepth(level, true);
+        int[] slots = slotOrderForDepth(level - hashOffset, true);
         int targetSlot = hashes[level] & 0xFF;
         long index = baseIndex;
         for (int slot : slots) {
@@ -1252,6 +1693,24 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         }
         ctx.countCache.put(nodeId, count);
         return count;
+    }
+
+    private long countSubtreeIncludingNextLevel(long nodeId, int level, TraversalContext ctx) throws IOException {
+        long baseCount = countSubtree(nodeId, level, ctx);
+        if (nextHashMap == null)
+            return baseCount;
+        byte[] bitmap = ctx.bitmap(level);
+        long[] ptrs = ctx.ptrs(level);
+        loadNode(nodeId, bitmap, ptrs);
+        int[] slots = slotOrderForDepth(level - hashOffset, true);
+        long extra = 0L;
+        for (int slot : slots) {
+            int state = stateFromBitmap(bitmap, slot);
+            if (state == STATE_NEXT_LEVEL) {
+                extra += nextHashMapKeysUnder(slot, level + 1).length;
+            }
+        }
+        return baseCount + extra;
     }
 
     private void loadNode(long nodeId, byte[] bitmap, long[] ptrs) throws IOException {
@@ -1352,29 +1811,29 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         return out;
     }
 
-
     /**
      * 查询 hash64 对应的 value。
+     * 
      * @param key
-     * @return 
-     * @throws java.io.IOException 
+     * @return
+     * @throws java.io.IOException
      */
     public Long get(long key) throws IOException {
         opReadLock.lock();
         try {
             byte[] b = hashesLocal1.get();
-           // storeHashBytes(b, hashOffset, key);
+            // storeHashBytes(b, hashOffset, key);
             DsDataUtil.storeLong(b, 0, key);
-            //三段快速寻址: 
-            if(key<0 ){//负数直接跳转64位寻址
-                return nextHashMap64.getByHash(b,key);
-            }else if(key < 0xFFFFL ){//16位寻址
-                 return getByHash(b,key);
-            }else if(key<0xFFFFFFFFL){//32位寻址
-                return nextHashMap.getByHash(b,key);
+            // 三段快速寻址:
+            if (key < 0) {// 负数直接跳转64位寻址
+                return nextHashMap64.getByHash(b, key);
+            } else if (key < 0xFFFFL) {// 16位寻址
+                return getByHash(b, key);
+            } else if (key < 0xFFFFFFFFL) {// 32位寻址
+                return nextHashMap.getByHash(b, key);
             }
             // 直接跳转64位寻址
-            return nextHashMap64.getByHash(b,key);
+            return nextHashMap64.getByHash(b, key);
         } finally {
             opReadLock.unlock();
         }
@@ -1386,7 +1845,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
             int slot = hashes[level] & 0xFF;
             int state;
             if (level < HASH_END) {
-                    state = readState(nodeId, slot);
+                state = readState(nodeId, slot);
                 switch (state) {
                     case STATE_CHILD -> {
                         long child = stableReadPtr(nodeId, slot, STATE_CHILD);
@@ -1394,7 +1853,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                             return null;
                         }
                         nodeId = child;
-                        continue;//使用下一个哈希 level++ -> slot。
+                        continue;// 使用下一个哈希 level++ -> slot。
                     }
                     case STATE_VALUE -> {
                         long entryId = stableReadPtr(nodeId, slot, STATE_VALUE);
@@ -1404,16 +1863,16 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                         long storedKey = entryStore.readLong(entryId, 0);
                         return storedKey == key ? entryStore.readLong(entryId, 8) : null;
                     }
-//                    case STATE_NEXT_LEVEL -> {
-//                        if (nextHashMap == null) {
-//                            return null;
-//                        }
-//                        return nextHashMap.get(key);
-//                    }
+                    // case STATE_NEXT_LEVEL -> {
+                    // if (nextHashMap == null) {
+                    // return null;
+                    // }
+                    // return nextHashMap.get(key);
+                    // }
                     default -> {
                     }
                 }
-               
+
             }
 
             state = readState(nodeId, slot);
@@ -1426,10 +1885,10 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                 return storedKey == key ? entryStore.readLong(entryId, 8) : null;
             }
             if (state == STATE_NEXT_LEVEL) {
-                if (nextHashMap == null) {//理论上不会发生，此处应该数据异常
+                if (nextHashMap == null) {// 理论上不会发生，此处应该数据异常
                     return null;
                 }
-                Long v = nextHashMap.getByHash(hashes,key);
+                Long v = nextHashMap.getByHash(hashes, key);
                 return v;
             }
             return null;
@@ -1439,8 +1898,9 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
 
     /**
      * 删除 key 对应的映射。
+     * 
      * @param key
-     * @return 
+     * @return
      * @throws java.io.IOException
      */
     public Long remove(long key) throws IOException {
@@ -1451,8 +1911,8 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         opWriteLock.lock();
         try {
             byte[] b = hashesLocal1.get();
-    //        storeHashBytes(b, hashOffset, key);
-             DsDataUtil.storeLong(b, 0, key);
+            // storeHashBytes(b, hashOffset, key);
+            DsDataUtil.storeLong(b, 0, key);
             Long removed;
             if (key < 0) {
                 removed = nextHashMap64.remove(key, b);
@@ -1463,7 +1923,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
             } else {
                 removed = nextHashMap64.remove(key, b);
             }
-            if (countWriteRequest && removed!=null) {
+            if (countWriteRequest && removed != null) {
                 rootMap.afterWriteRequest();
             }
             return removed;
@@ -1474,13 +1934,14 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
 
     /**
      * 删除 hash64 对应的映射（hash64 必须为 8 字节）。
+     * 
      * @param key
      * @param hash64
-     * @return 
+     * @return
      * @throws java.io.IOException
      */
-    public Long remove(long key,byte[] hash64) throws IOException {
-      
+    public Long remove(long key, byte[] hash64) throws IOException {
+
         long nodeId = 0;
         long bufIdx = nodeBase(nodeId) / BLOCK_SIZE;
         loadBufferForUpdate(bufIdx);
@@ -1554,7 +2015,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                         if (nextHashMap == null) {
                             return null;
                         }
-                        return nextHashMap.remove(key,hash64);
+                        return nextHashMap.remove(key, hash64);
                     }
                     case STATE_EMPTY -> {
                         return null;
@@ -1572,7 +2033,8 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
 
     /**
      * 返回当前映射条目数
-     * @return 
+     * 
+     * @return
      */
     public long sizeLong() {
         opReadLock.lock();
@@ -1817,7 +2279,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         long k = ((Long) key).longValue();
         Long old;
         try {
-            return  remove(k);
+            return remove(k);
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -2288,7 +2750,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                         level--;
                         continue;
                     }
-                    int slot = map.slotOrderForDepth(level, true)[nextSlotIndex[level]++];
+                    int slot = map.slotOrderForDepth(level - map.hashOffset, true)[nextSlotIndex[level]++];
                     int state = map.stateFromBitmap(bitmapStack[level], slot);
                     if (state == STATE_EMPTY) {
                         continue;
@@ -2353,7 +2815,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
     private long[] toKeyArray() {
         Longs out = new Longs(size());
         try {
-            collectKeys(out, 0, 0);
+            collectKeysLegacy(out, 0, 0);
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -2366,11 +2828,11 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         return out.toArray();
     }
 
-    private void collectKeys(Longs out, long nodeId, int level) throws IOException {
+    private void collectKeysLegacy(Longs out, long nodeId, int level) throws IOException {
         for (int slot = 0; slot < 256; slot++) {
             int state = readState(nodeId, slot);
             switch (state) {
-               
+
                 case STATE_VALUE -> {
                     long entryId = loadPtrOffset(ptrPos(nodeId, slot));
                     long key = entryStore.readLong(entryId, 0);
@@ -2379,10 +2841,10 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
                 case STATE_CHILD -> {
                     long child = loadPtrOffset(ptrPos(nodeId, slot));
                     if (child > 0 && level + 1 < hashLen) {
-                        collectKeys(out, child, level + 1);
+                        collectKeysLegacy(out, child, level + 1);
                     }
                 }
-               
+
             }
         }
     }
@@ -2433,8 +2895,8 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
     private static DsFreeRing openFreeRing(File entryFile, int initialCap) {
         try {
             File freeFile = new File(entryFile.getAbsolutePath() + ".free");
-            //File tmp = new File(entryFile.getAbsolutePath() + ".free.tmp");
-            return new DsFreeRing(freeFile,  initialCap);
+            // File tmp = new File(entryFile.getAbsolutePath() + ".free.tmp");
+            return new DsFreeRing(freeFile, initialCap);
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -2473,16 +2935,16 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         }
     }
 
-      
-     /**
+    /**
      * 生成其他用途的哈希slots。
+     * 
      * @param key
-     * @return 
+     * @return
      */
     private byte[] hashBytes(long key) {
-       byte[] b = new byte[HASH_DEPTH];
-       // storeHashBytes(b, hashOffset, key);
-         DsDataUtil.storeLong(b, 0, key);
+        byte[] b = new byte[HASH_DEPTH];
+        // storeHashBytes(b, hashOffset, key);
+        DsDataUtil.storeLong(b, 0, key);
         return b;
     }
 
@@ -2504,7 +2966,7 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         } finally {
             headerOpLockWrite.unlock();
         }
-        
+
     }
 
     private void writeSlotAsValue(long nodeId, int slot, long entryId) throws IOException {
@@ -2534,36 +2996,35 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
     }
 
     private long bitmapPos(long nodeId, int slot) {
-        return nodeBase(nodeId) + (slot/4);
+        return nodeBase(nodeId) + (slot / 4);
     }
 
     private long ptrPos(long nodeId, int slot) {
         return nodeBase(nodeId) + BITMAP_BYTES + (long) slot * ptrSize;
     }
 
-
     private int readState(long nodeId, int slot) throws IOException {
         long pos = bitmapPos(nodeId, slot);
-       
+
         int stateByte = loadU8ByOffset(pos);
-        int stateValue = getStateValue(stateByte, slot%4);
-        
+        int stateValue = getStateValue(stateByte, slot % 4);
+
         return stateValue;
     }
-    
+
     private static int getStateValue(int data, int index) {
         int shift = 0;
-        switch(index){
+        switch (index) {
             case 0 -> shift = 6;
             case 1 -> shift = 4;
             case 2 -> shift = 2;
         }
         return (data >>> shift) & 0x3;
     }
-    
+
     private static int setStateValue(int data, int index, int state) {
         int shift = 0;
-        switch(index){
+        switch (index) {
             case 0 -> shift = 6;
             case 1 -> shift = 4;
             case 2 -> shift = 2;
@@ -2573,17 +3034,17 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         return data | ((state & 0x3) << shift);
     }
 
-//    private void storeHashBytes(byte[] bytes, int hashOffset, long value) {
-//        int n = Math.min(hashLen, bytes.length);
-//        for (int i = 0; i < n; i++) {
-//            bytes[i] = (byte) (value >> ((hashOffset + i) * 8));
-//        }
-//    }
+    // private void storeHashBytes(byte[] bytes, int hashOffset, long value) {
+    // int n = Math.min(hashLen, bytes.length);
+    // for (int i = 0; i < n; i++) {
+    // bytes[i] = (byte) (value >> ((hashOffset + i) * 8));
+    // }
+    // }
 
     private void writeState(long nodeId, int slot, int state) throws IOException {
         long pos = bitmapPos(nodeId, slot);
         int stateByte = loadU8ByOffset(pos);
-        byte stateValue = (byte) setStateValue(stateByte, slot%4, state);
+        byte stateValue = (byte) setStateValue(stateByte, slot % 4, state);
         storeByteOffset(pos, stateValue);
     }
 }
