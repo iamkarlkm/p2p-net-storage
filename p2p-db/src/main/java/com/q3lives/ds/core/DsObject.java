@@ -1,7 +1,5 @@
 package com.q3lives.ds.core;
 
-import com.q3lives.ds.fs.Ds128SuperInode;
-
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
@@ -12,8 +10,6 @@ import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.Charset;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -22,10 +18,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Lock;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+
+import com.q3lives.ds.fs.Ds128SuperInode;
+import com.q3lives.ds.header.HeaderTieredStore;
+import com.q3lives.ds.header.HeaderTieredStoreFactory;
 
 /**
  * 基于内存映射文件(Memory Mapped Files, MappedByteBuffer)的持久化数据结构基类。
@@ -267,6 +266,10 @@ public class DsObject {
 
     protected MappedByteBuffer headerBuffer;
 
+    protected HeaderTieredStore headerTier;
+
+    private boolean headerTierAttached = false;
+
     /**
      * 头信息操作锁：用于保护文件头部的并发修改
      */
@@ -329,10 +332,36 @@ public class DsObject {
         for (int i = 0; i < DATA_BUFFER_LOCK_STRIPES; i++) {
             dataBufferLocks[i] = new ReentrantReadWriteLock();
         }
-        // 初始化锁池
         for (int i = 0; i < DEFAULT_LOCK_POOL_SIZE; i++) {
-//        for(int i=0;i<5000;i++){
             idLockPool.add(new ReentrantLock());
+        }
+        this.headerTier = HeaderTieredStoreFactory.create(dataFile, dataFile == null ? "dsobj" : dataFile.getName());
+    }
+
+    protected final void ensureHeaderTierAttached() {
+        if (headerTierAttached || headerBuffer == null || headerTier == null) return;
+        try {
+            headerTier.attachBase(headerBuffer);
+            headerTierAttached = true;
+        } catch (IOException e) {
+            throw new IllegalStateException("attach header tier failed", e);
+        }
+    }
+
+    protected final void markHeaderFieldDirty(int offset, int len) {
+        ensureHeaderTierAttached();
+        if (headerTier != null) {
+            headerTier.markFieldDirty(offset, len);
+        }
+    }
+
+    protected final void markHeaderFullDirty() {
+        ensureHeaderTierAttached();
+        if (headerTier != null) {
+            headerTier.markFullDirty();
+        }
+        if (dirtyBuffers != null) {
+            dirtyBuffers.add(0L);
         }
     }
 

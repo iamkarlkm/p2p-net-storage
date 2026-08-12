@@ -22,6 +22,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import com.q3lives.ds.collections.DsHashSet;
 import com.q3lives.ds.collections.DsList;
 import com.q3lives.ds.fs.Ds128SuperInode;
+import com.q3lives.ds.header.HeaderTieredStore;
+import com.q3lives.ds.header.HeaderTieredStoreFactory;
 
 /**
  * 基于内存映射文件(Memory Mapped Files, MappedByteBuffer)的持久化数据结构基类。
@@ -194,17 +196,14 @@ public class DsMemory {
     protected ReentrantLock bufferLock = new ReentrantLock();
     
     protected ByteBuffer headerBuffer;
+
+    protected HeaderTieredStore headerTier;
+
+    private boolean headerTierAttached = false;
     
     public final int headerSize;
     protected final File dataFile;
 
-    /**
-     * 构造函数
-     *
-     * @param dataFile 数据文件对象
-     * @param headerSize
-     * @param dataUnitSize 数据单元大小（字节）
-     */
     public DsMemory(File dataFile,int headerSize, int dataUnitSize) {
         this.dataFile = dataFile;
         this.dataUnitSize = dataUnitSize;
@@ -213,13 +212,35 @@ public class DsMemory {
         for (int i = 0; i < DATA_BUFFER_LOCK_STRIPES; i++) {
             dataBufferLocks[i] = new ReentrantReadWriteLock();
         }
-        // 初始化锁池
         for (int i = 0; i < DEFAULT_LOCK_POOL_SIZE; i++) {
-//        for(int i=0;i<5000;i++){
             idLockPool.add(new ReentrantLock());
         }
-//        headerBuffer = alloc.heapBuffer(BLOCK_SIZE);
-//        datatBuffers.addComponent(headerBuffer);
+        this.headerTier = HeaderTieredStoreFactory.create(dataFile, dataFile == null ? "dsmem" : dataFile.getName());
+    }
+
+    protected final void ensureHeaderTierAttached() {
+        if (headerTierAttached || headerBuffer == null || headerTier == null) return;
+        try {
+            headerTier.attachBase(headerBuffer);
+            headerTierAttached = true;
+        } catch (IOException e) {
+            throw new IllegalStateException("attach header tier failed", e);
+        }
+    }
+
+    protected final void markHeaderFieldDirty(int offset, int len) {
+        ensureHeaderTierAttached();
+        if (headerTier != null) {
+            headerTier.markFieldDirty(offset, len);
+        }
+    }
+
+    protected final void markHeaderFullDirty() {
+        ensureHeaderTierAttached();
+        if (headerTier != null) {
+            headerTier.markFullDirty();
+        }
+        markDirty(0);
     }
 
     
