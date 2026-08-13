@@ -1,0 +1,384 @@
+package com.q3lives.ds.header;
+
+import java.io.Closeable;
+import java.io.File;
+import java.io.IOException;
+import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.util.BitSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
+
+public class SharedHeaderDeltaLog implements Closeable {
+
+    public static final int STORE_HEADER_MAX_BYTES = 512;
+
+    private final File tierDir;
+    private final String dayKey;
+    private final File logFile;
+    private final ReentrantLock writeLock = new ReentrantLock();
+    private RandomAccessFile raf;
+    private final ConcurrentHashMap<Long, StoreState> states = new ConcurrentHashMap<>();
+    private final AtomicLong pageSeq = new AtomicLong(0L);
+    private final byte[] zeroPage = new byte[SharedHeaderLogLayout.PAGE_SIZE];
+    private final StoreIdRegistry registry;
+
+    public SharedHeaderDeltaLog(File tierDir, String dayKey, StoreIdRegistry registry) throws IOException {
+        if (tierDir == null) throw new NullPointerException("tierDir");
+        if (registry == null) throw new NullPointerException("registry");
+        this.tierDir = tierDir;
+        if (!this.tierDir.exists()) this.tierDir.mkdirs();
+        this.dayKey = dayKey == null || dayKey.isEmpty() ? "today" : dayKey;
+        this.registry = registry;
+        this.logFile = new File(tierDir, "delta_headers_" + this.dayKey + ".log");
+        openOrInit();
+    }
+
+    public StoreIdRegistry getRegistry() { return registry; }
+
+    public File getLogFile() { return logFile; }
+
+    public long internStoreId(String relativePath) throws IOException {
+        return registry.intern(relativePath);
+    }
+
+    public Long findStoreIdIfReady(String relativePath) {
+        return registry.lookupIfRegistered(relativePath);
+    }
+
+    private void openOrInit() throws IOException {
+        raf = new RandomAccessFile(logFile, "rw");
+        if (raf.length() < SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE) {
+            raf.setLength(0);
+            byte[] header = new byte[SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE];
+            ByteBuffer bb = ByteBuffer.wrap(header);
+            bb.putInt(SharedHeaderLogLayout.LOG_MAGIC);
+            bb.putInt(SharedHeaderLogLayout.LOG_VERSION);
+            bb.putLong(System.currentTimeMillis());
+            bb.putLong(registry.nextAssignedStoreId());
+            bb.putLong(0L);
+            bb.putLong(0L);
+            raf.write(header);
+        } else {
+            raf.seek(0);
+            int magic = raf.readInt();
+            if (magic != SharedHeaderLogLayout.LOG_MAGIC) {
+                throw new IOException("Shared delta log corrupted: bad magic " + Integer.toHexString(magic));
+            }
+            replayAllPages();
+        }
+    }
+
+    private void replayAllPages() throws IOException {
+        long flen = raf.length();
+        long pos = SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE;
+        int ps = SharedHeaderLogLayout.PAGE_SIZE;
+        while (pos + ps <= flen) {
+            raf.seek(pos);
+            byte[] page = new byte[ps];
+            raf.readFully(page);
+            int mag = ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_MAGIC, 4).getInt();
+            if (mag != SharedHeaderLogLayout.SLOT_MAGIC) {
+                pos += ps;
+                continue;
+            }
+            int slotCount = ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_SLOT_COUNT, 4).getInt();
+            int sOff = SharedHeaderLogLayout.PAGE_HEADER_SIZE;
+            for (int s = 0; s < slotCount; s++) {
+                if (sOff + SharedHeaderLogLayout.SLOT_HEADER_SIZE > ps) break;
+                int smag = ByteBuffer.wrap(page, sOff, 4).getInt();
+                if (smag != SharedHeaderLogLayout.SLOT_MAGIC) break;
+                long sid = ByteBuffer.wrap(page, sOff + SharedHeaderLogLayout.OFF_SLOT_STORE_ID, 8).getLong();
+                int len = ByteBuffer.wrap(page, sOff + SharedHeaderLogLayout.OFF_SLOT_LEN, 2).getShort() & 0xFFFF;
+                int flags = ByteBuffer.wrap(page, sOff + SharedHeaderLogLayout.OFF_SLOT_FLAGS, 2).getShort() & 0xFFFF;
+                int crc16 = ByteBuffer.wrap(page, sOff + SharedHeaderLogLayout.OFF_SLOT_CRC16, 2).getShort() & 0xFFFF;
+                int totalSlot = SharedHeaderLogLayout.SLOT_HEADER_SIZE + ((flags & 1) != 0 ? STORE_HEADER_MAX_BYTES : STORE_HEADER_MAX_BYTES);
+                if (len < 0 || len > STORE_HEADER_MAX_BYTES) break;
+                if (sOff + totalSlot > ps) break;
+                int calcCrc = crc16(page, sOff + SharedHeaderLogLayout.SLOT_HEADER_SIZE, len);
+                if (calcCrc != crc16) {
+                    break;
+                }
+                StoreState st = states.computeIfAbsent(sid, k -> new StoreState());
+                st.dirtyBytes = new BitSet(STORE_HEADER_MAX_BYTES);
+                st.snapshot = new byte[STORE_HEADER_MAX_BYTES];
+                for (int i = 0; i < len; i++) {
+                    byte v = page[sOff + SharedHeaderLogLayout.SLOT_HEADER_SIZE + i];
+                    st.snapshot[i] = v;
+                    if (v != 0) st.dirtyBytes.set(i);
+                }
+                st.seq = Math.max(st.seq, sid);
+                sOff += totalSlot;
+            }
+            long seq = ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_SEQ, 8).getLong();
+            if (seq > pageSeq.get()) pageSeq.set(seq);
+            pos += ps;
+        }
+    }
+
+    public byte[] getReadSnapshot(long storeId) {
+        StoreState s = states.get(storeId);
+        if (s == null) return null;
+        synchronized (s) {
+            if (s.snapshot == null) return null;
+            byte[] out = new byte[STORE_HEADER_MAX_BYTES];
+            System.arraycopy(s.snapshot, 0, out, 0, STORE_HEADER_MAX_BYTES);
+            return out;
+        }
+    }
+
+    public BitSet getDirtyBitSet(long storeId) {
+        StoreState s = states.get(storeId);
+        if (s == null) return null;
+        synchronized (s) {
+            return s.dirtyBytes == null ? null : (BitSet) s.dirtyBytes.clone();
+        }
+    }
+
+    public void markAndAppendIfNeeded(long storeId, ByteBuffer base, int fieldOffset, int fieldLen) throws IOException {
+        if (base == null || fieldOffset < 0 || fieldLen <= 0) return;
+        if (fieldOffset + fieldLen > STORE_HEADER_MAX_BYTES) {
+            fieldLen = STORE_HEADER_MAX_BYTES - fieldOffset;
+            if (fieldLen <= 0) return;
+        }
+        StoreState st = states.computeIfAbsent(storeId, k -> new StoreState());
+        boolean needAppend;
+        synchronized (st) {
+            if (st.snapshot == null) {
+                st.snapshot = new byte[STORE_HEADER_MAX_BYTES];
+                st.dirtyBytes = new BitSet(STORE_HEADER_MAX_BYTES);
+            }
+            int changed = 0;
+            for (int i = fieldOffset, e = fieldOffset + fieldLen; i < e; i++) {
+                byte v = base.get(i);
+                if (st.snapshot[i] != v) {
+                    st.snapshot[i] = v;
+                    changed++;
+                }
+                if (v != 0 || st.dirtyBytes.get(i)) st.dirtyBytes.set(i);
+            }
+            st.pendingBytes += changed;
+            needAppend = !st.pagePending;
+            if (needAppend) st.pagePending = true;
+        }
+        if (needAppend) flushPendingStoreLocked(storeId);
+    }
+
+    public void markFullAndAppend(long storeId, ByteBuffer base) throws IOException {
+        if (base == null) return;
+        int len = Math.min(base.capacity(), STORE_HEADER_MAX_BYTES);
+        StoreState st = states.computeIfAbsent(storeId, k -> new StoreState());
+        synchronized (st) {
+            if (st.snapshot == null) {
+                st.snapshot = new byte[STORE_HEADER_MAX_BYTES];
+                st.dirtyBytes = new BitSet(STORE_HEADER_MAX_BYTES);
+            }
+            for (int i = 0; i < len; i++) {
+                byte v = base.get(i);
+                st.snapshot[i] = v;
+                if (v != 0) st.dirtyBytes.set(i);
+            }
+            st.pagePending = true;
+        }
+        flushPendingStoreLocked(storeId);
+    }
+
+    public void flushAll() throws IOException {
+        writeLock.lock();
+        try {
+            if (raf != null) raf.getChannel().force(true);
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    public int liveStoreCount() {
+        return states.size();
+    }
+
+    private void flushPendingStoreLocked(long storeId) throws IOException {
+        StoreState st = states.get(storeId);
+        if (st == null) return;
+        byte[] payload;
+        int actualLen;
+        synchronized (st) {
+            if (!st.pagePending || st.snapshot == null) return;
+            int end = STORE_HEADER_MAX_BYTES;
+            while (end > 0) {
+                if (st.snapshot[end - 1] != 0 || st.dirtyBytes.get(end - 1)) break;
+                end--;
+            }
+            actualLen = Math.min(STORE_HEADER_MAX_BYTES, end);
+            payload = new byte[STORE_HEADER_MAX_BYTES];
+            System.arraycopy(st.snapshot, 0, payload, 0, STORE_HEADER_MAX_BYTES);
+        }
+        writeLock.lock();
+        try {
+            ensureOpenLocked();
+            int ps = SharedHeaderLogLayout.PAGE_SIZE;
+            long flen = raf.length();
+            long pageStart;
+            boolean firstPage = false;
+            if (flen <= SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE) {
+                pageStart = SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE;
+                firstPage = true;
+            } else {
+                long delta = flen - SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE;
+                long remainder = delta % ps;
+                if (remainder == 0) {
+                    pageStart = flen;
+                    firstPage = true;
+                } else {
+                    pageStart = flen - remainder;
+                }
+            }
+            byte[] page;
+            int slotCount;
+            if (firstPage) {
+                page = new byte[ps];
+                System.arraycopy(zeroPage, 0, page, 0, ps);
+                slotCount = 0;
+                ByteBuffer ph = ByteBuffer.wrap(page, 0, SharedHeaderLogLayout.PAGE_HEADER_SIZE);
+                ph.putInt(SharedHeaderLogLayout.SLOT_MAGIC);
+                ph.putInt(0);
+                ph.putLong(pageSeq.incrementAndGet());
+                ph.putInt(0);
+                ph.putInt(0);
+            } else {
+                page = new byte[ps];
+                raf.seek(pageStart);
+                raf.readFully(page);
+                slotCount = ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_SLOT_COUNT, 4).getInt();
+                if (slotCount < 0) slotCount = 0;
+                if (slotCount > 256) slotCount = 0;
+            }
+            int sOff = SharedHeaderLogLayout.PAGE_HEADER_SIZE + slotCount * (SharedHeaderLogLayout.SLOT_HEADER_SIZE + STORE_HEADER_MAX_BYTES);
+            if (sOff + SharedHeaderLogLayout.SLOT_HEADER_SIZE + STORE_HEADER_MAX_BYTES > ps) {
+                raf.setLength(flen - (flen - pageStart));
+                pageStart = flen - (flen - pageStart);
+                if (pageStart < SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE) pageStart = SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE;
+                page = new byte[ps];
+                System.arraycopy(zeroPage, 0, page, 0, ps);
+                slotCount = 0;
+                ByteBuffer ph = ByteBuffer.wrap(page, 0, SharedHeaderLogLayout.PAGE_HEADER_SIZE);
+                ph.putInt(SharedHeaderLogLayout.SLOT_MAGIC);
+                ph.putInt(0);
+                ph.putLong(pageSeq.incrementAndGet());
+                ph.putInt(0);
+                ph.putInt(0);
+                sOff = SharedHeaderLogLayout.PAGE_HEADER_SIZE;
+            }
+            ByteBuffer sh = ByteBuffer.wrap(page, sOff, SharedHeaderLogLayout.SLOT_HEADER_SIZE + STORE_HEADER_MAX_BYTES);
+            sh.putInt(SharedHeaderLogLayout.SLOT_MAGIC);
+            sh.putLong(storeId);
+            sh.putLong(0L);
+            sh.putShort((short) (actualLen & 0xFFFF));
+            sh.putShort((short) 0);
+            int crc16 = crc16(payload, 0, STORE_HEADER_MAX_BYTES);
+            sh.putShort((short) (crc16 & 0xFFFF));
+            sh.putShort((short) 0);
+            sh.put(payload, 0, STORE_HEADER_MAX_BYTES);
+            slotCount++;
+            ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_SLOT_COUNT, 4).putInt(slotCount);
+            int pageCrc = crc32(page, 0, ps);
+            ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_CRC32, 4).putInt(pageCrc);
+            raf.seek(pageStart);
+            raf.write(page);
+            raf.getChannel().force(true);
+        } finally {
+            writeLock.unlock();
+            synchronized (st) {
+                st.pagePending = false;
+                st.pendingBytes = 0;
+            }
+        }
+    }
+
+    public void rollover(String newDayKey) throws IOException {
+        writeLock.lock();
+        try {
+            if (raf != null) {
+                try { raf.getChannel().force(true); } finally { raf.close(); }
+                raf = null;
+            }
+            states.clear();
+            if (newDayKey != null && !newDayKey.isEmpty()) {
+                File newFile = new File(tierDir, "delta_headers_" + newDayKey + ".log");
+                if (logFile.exists()) {
+                    if (!logFile.renameTo(newFile)) {
+                        java.io.FileInputStream in = new java.io.FileInputStream(logFile);
+                        try {
+                            java.io.FileOutputStream out = new java.io.FileOutputStream(newFile);
+                            try {
+                                byte[] buf = new byte[8192];
+                                int c;
+                                while ((c = in.read(buf)) > 0) out.write(buf, 0, c);
+                            } finally { out.close(); }
+                        } finally { in.close(); }
+                    }
+                }
+            }
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    private void ensureOpenLocked() throws IOException {
+        if (raf == null) {
+            if (!tierDir.exists()) tierDir.mkdirs();
+            raf = new RandomAccessFile(logFile, "rw");
+            if (raf.length() < SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE) {
+                byte[] header = new byte[SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE];
+                ByteBuffer bb = ByteBuffer.wrap(header);
+                bb.putInt(SharedHeaderLogLayout.LOG_MAGIC);
+                bb.putInt(SharedHeaderLogLayout.LOG_VERSION);
+                bb.putLong(System.currentTimeMillis());
+                bb.putLong(registry.nextAssignedStoreId());
+                bb.putLong(0L);
+                bb.putLong(0L);
+                raf.write(header);
+            }
+        }
+    }
+
+    @Override
+    public void close() throws IOException {
+        writeLock.lock();
+        try {
+            if (raf != null) {
+                try { raf.getChannel().force(true); } finally { raf.close(); }
+                raf = null;
+            }
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    static int crc16(byte[] arr, int off, int len) {
+        int crc = 0xFFFF;
+        for (int i = 0; i < len; i++) {
+            crc ^= (arr[off + i] & 0xFF) << 8;
+            for (int j = 0; j < 8; j++) {
+                if ((crc & 0x8000) != 0) crc = (crc << 1) ^ 0x1021;
+                else crc <<= 1;
+                crc &= 0xFFFF;
+            }
+        }
+        return crc & 0xFFFF;
+    }
+
+    static int crc32(byte[] arr, int off, int len) {
+        java.util.zip.CRC32 c = new java.util.zip.CRC32();
+        c.update(arr, off, len);
+        return (int) (c.getValue() & 0xFFFFFFFFL);
+    }
+
+    private static final class StoreState {
+        volatile long seq;
+        byte[] snapshot;
+        BitSet dirtyBytes;
+        volatile boolean pagePending;
+        volatile int pendingBytes;
+    }
+}

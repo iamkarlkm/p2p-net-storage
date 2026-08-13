@@ -1,6 +1,10 @@
 package com.q3lives.ds.database.config;
 
 import java.io.File;
+import java.io.IOException;
+
+import com.q3lives.ds.header.FileStoreIdRegistry;
+import com.q3lives.ds.header.StoreIdRegistry;
 
 public class DsDbConfig {
 
@@ -13,19 +17,26 @@ public class DsDbConfig {
     public static final String ENV_HEADER_TIER_MODE = "DSDB_HEADER_TIER_MODE";
     public static final String ENV_HEADER_TIER_ROOT = "DSDB_HEADER_TIER_ROOT";
     public static final String ENV_HEADER_MERGE_HOUR = "DSDB_HEADER_MERGE_HOUR";
+    public static final String ENV_HEADER_SHARED_LOG = "DSDB_HEADER_SHARED_LOG";
     public static final int DEFAULT_MERGE_HOUR = 3;
     public static final String TIER_SUB_DIR = "_tiers";
+    public static final String REGISTRY_SUB_DIR = "_id_registry";
 
     private static volatile DsDbConfig INSTANCE;
 
     private volatile HeaderTierMode headerTierMode;
     private volatile String tierRootDir;
     private volatile int mergeHourOfDay;
+    private volatile boolean sharedLogEnabled;
+
+    private final Object registryLock = new Object();
+    private volatile StoreIdRegistry storeIdRegistry;
 
     private DsDbConfig() {
         this.headerTierMode = resolveModeFromEnv();
         this.tierRootDir = resolveTierRootFromEnv();
         this.mergeHourOfDay = resolveMergeHourFromEnv();
+        this.sharedLogEnabled = resolveSharedLogFromEnv();
     }
 
     public static DsDbConfig getInstance() {
@@ -40,11 +51,20 @@ public class DsDbConfig {
     }
 
     public static void forceResetForTest(HeaderTierMode mode, String tierRootDir) {
+        forceResetForTest(mode, tierRootDir, false);
+    }
+
+    public static void forceResetForTest(HeaderTierMode mode, String tierRootDir, boolean sharedLog) {
         synchronized (DsDbConfig.class) {
             DsDbConfig cfg = new DsDbConfig();
             cfg.headerTierMode = mode == null ? HeaderTierMode.DIRECT : mode;
             cfg.tierRootDir = tierRootDir;
             cfg.mergeHourOfDay = DEFAULT_MERGE_HOUR;
+            cfg.sharedLogEnabled = sharedLog;
+            if (cfg.storeIdRegistry != null) {
+                try { cfg.storeIdRegistry.close(); } catch (IOException ignore) {}
+                cfg.storeIdRegistry = null;
+            }
             INSTANCE = cfg;
         }
     }
@@ -73,6 +93,44 @@ public class DsDbConfig {
         if (hour < 0) hour = 0;
         if (hour > 23) hour = 23;
         this.mergeHourOfDay = hour;
+    }
+
+    public boolean isSharedLogEnabled() {
+        return sharedLogEnabled;
+    }
+
+    public void setSharedLogEnabled(boolean v) {
+        this.sharedLogEnabled = v;
+    }
+
+    public StoreIdRegistry getOrCreateStoreIdRegistry(File tierDirOrNull) {
+        StoreIdRegistry r = storeIdRegistry;
+        if (r != null && r.isReady()) return r;
+        synchronized (registryLock) {
+            r = storeIdRegistry;
+            if (r != null && r.isReady()) return r;
+            try {
+                File dir;
+                if (tierDirOrNull != null) {
+                    dir = new File(tierDirOrNull.getParentFile(), REGISTRY_SUB_DIR);
+                } else if (tierRootDir != null && !tierRootDir.isEmpty()) {
+                    dir = new File(tierRootDir, REGISTRY_SUB_DIR);
+                } else {
+                    dir = new File(new File("."), REGISTRY_SUB_DIR);
+                }
+                if (!dir.exists()) dir.mkdirs();
+                r = new FileStoreIdRegistry(dir);
+                this.storeIdRegistry = r;
+                return r;
+            } catch (IOException e) {
+                throw new IllegalStateException("Failed to create StoreIdRegistry", e);
+            }
+        }
+    }
+
+    public StoreIdRegistry getStoreIdRegistryIfReady() {
+        StoreIdRegistry r = storeIdRegistry;
+        return (r != null && r.isReady()) ? r : null;
     }
 
     public String resolveTierDirFor(File dataFile) {
@@ -115,5 +173,13 @@ public class DsDbConfig {
         } catch (Exception ignore) {
             return DEFAULT_MERGE_HOUR;
         }
+    }
+
+    private static boolean resolveSharedLogFromEnv() {
+        String v = System.getProperty(ENV_HEADER_SHARED_LOG);
+        if (v == null || v.isEmpty()) v = System.getenv(ENV_HEADER_SHARED_LOG);
+        if (v == null || v.isEmpty()) return false;
+        String s = v.trim().toLowerCase();
+        return s.equals("1") || s.equals("true") || s.equals("yes") || s.equals("on");
     }
 }
