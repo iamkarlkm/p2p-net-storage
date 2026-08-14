@@ -19,6 +19,7 @@ buildNumber.properties
 *.py
 *.zip
 test_*
+*.log
 
 
 # brain:begin gitignore-session
@@ -29,3 +30,22 @@ test_*
 # brain:end gitignore-session
 
 repomeld_output.txt
+
+# --- p2p-dsdb header-tier runtime ---
+# 每个 DsMemory/DsDatabaseLocal 打开时在 tierDir 下自动生成：
+**/_id_registry/
+**/_tiers/
+**/*.hdr_tier
+**/*.hdr_tier.*
+delta_headers_*.log
+store_id.idx
+
+# 测试临时库
+target/test-db*/
+target/test-db-string*/
+target/delta-header-tier*/
+**/target/test-db*/
+**/target/test-db-string*/
+**/target/delta-header-tier*/
+target/surefire-reports/*.dump*
+target/surefire-reports/*.dumpstream

@@ -43,6 +43,15 @@ public class DailyMergeService implements Closeable {
         }
     }
 
+    public static void forceResetForTest() {
+        synchronized (LOCK) {
+            if (INSTANCE != null) {
+                try { INSTANCE.close(); } catch (IOException ignore) {}
+                INSTANCE = null;
+            }
+        }
+    }
+
     private final int mergeHourOfDay;
     private final Set<HeaderTieredStore> registered = ConcurrentHashMap.newKeySet();
     private final ScheduledExecutorService scheduler;
@@ -116,21 +125,75 @@ public class DailyMergeService implements Closeable {
         return runMergeCycle();
     }
 
+    public int forceRolloverAllNow() {
+        String dayKey = "manual-roll-" + System.currentTimeMillis();
+        int ok = 0;
+        for (HeaderTieredStore s : registered) {
+            try { s.forceRolloverNow(); ok++; } catch (Exception ignore) {}
+        }
+        return ok;
+    }
+
+    public int forceMergeAllNow() {
+        int prepared = 0;
+        int applied = 0;
+        for (HeaderTieredStore s : registered) {
+            try {
+                if (s.prepareMerge()) prepared++;
+            } catch (Exception ignore) {}
+        }
+        for (HeaderTieredStore s : registered) {
+            try {
+                s.mergeRunnable();
+            } catch (Exception ignore) {}
+        }
+        for (HeaderTieredStore s : registered) {
+            try {
+                if (s.applyMergedToBase()) applied++;
+            } catch (Exception ignore) {}
+        }
+        return applied;
+    }
+
     private int runMergeCycle() {
         int cycle = mergeCycle.incrementAndGet();
         String dayKey = LocalDate.now().toString();
-        int success = 0;
+        int prepared = 0;
+        int applied = 0;
         int failed = 0;
         for (HeaderTieredStore store : registered) {
             if (store == null) continue;
             try {
                 store.rollover(dayKey + "-c" + cycle);
-                success++;
             } catch (Exception e) {
                 failed++;
             }
         }
-        return success;
+        for (HeaderTieredStore store : registered) {
+            if (store == null) continue;
+            try {
+                if (store.prepareMerge()) prepared++;
+            } catch (Exception e) {
+                failed++;
+            }
+        }
+        for (HeaderTieredStore store : registered) {
+            if (store == null) continue;
+            try {
+                store.mergeRunnable();
+            } catch (Exception e) {
+                failed++;
+            }
+        }
+        for (HeaderTieredStore store : registered) {
+            if (store == null) continue;
+            try {
+                if (store.applyMergedToBase()) applied++;
+            } catch (Exception e) {
+                failed++;
+            }
+        }
+        return applied;
     }
 
     @Override

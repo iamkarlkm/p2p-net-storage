@@ -2411,6 +2411,15 @@ public class DsObject {
         // try {
         //syncOpLock.lock();
         dirtyBuffers.add(bufferIndex);
+        if (bufferIndex != null && bufferIndex.longValue() == 0L) {
+            try {
+                ensureHeaderTierAttached();
+                if (headerTier != null) {
+                    headerTier.markFullDirty();
+                }
+            } catch (Throwable ignore) {
+            }
+        }
         // } finally {
         //syncOpLock.unlock();
         // }

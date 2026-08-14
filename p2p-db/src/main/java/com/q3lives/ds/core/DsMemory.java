@@ -1051,6 +1051,15 @@ public class DsMemory {
 
     protected final void markDirty(int bufferIndex) {
         dirtyBufferIndices.add(bufferIndex);
+        if (bufferIndex == 0) {
+            try {
+                ensureHeaderTierAttached();
+                if (headerTier != null) {
+                    headerTier.markFullDirty();
+                }
+            } catch (Throwable ignore) {
+            }
+        }
     }
 
     public void setMaxCachedBlocks(int maxBlocks) {

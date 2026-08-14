@@ -36,6 +36,27 @@ public interface HeaderTieredStore extends Closeable {
         return true;
     }
 
+    default boolean prepareMerge() throws IOException {
+        return true;
+    }
+
+    default boolean applyMergedToBase() throws IOException {
+        return true;
+    }
+
+    default void cancelMerge() throws IOException {
+    }
+
+    default void forceRolloverNow() throws IOException {
+        rollover("manual-" + System.currentTimeMillis());
+    }
+
+    default void forceMergeNow() throws IOException {
+        if (!prepareMerge()) return;
+        mergeRunnable();
+        applyMergedToBase();
+    }
+
     default String debugName() {
         return getClass().getSimpleName();
     }

@@ -23,6 +23,7 @@ public class DsDbConfig {
     public static final String REGISTRY_SUB_DIR = "_id_registry";
 
     private static volatile DsDbConfig INSTANCE;
+    private static volatile int LAST_SIG = -1;
 
     private volatile HeaderTierMode headerTierMode;
     private volatile String tierRootDir;
@@ -30,7 +31,13 @@ public class DsDbConfig {
     private volatile boolean sharedLogEnabled;
 
     private final Object registryLock = new Object();
-    private volatile StoreIdRegistry storeIdRegistry;
+    private final java.util.concurrent.ConcurrentHashMap<String, StoreIdRegistry> registryByDir =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static int sig(HeaderTierMode m, boolean shared, int hour) {
+        int a = m == null ? 99 : m.ordinal();
+        return a * 1000 + (shared ? 1 : 0) * 100 + (hour & 0x1F);
+    }
 
     private DsDbConfig() {
         this.headerTierMode = resolveModeFromEnv();
@@ -44,6 +51,32 @@ public class DsDbConfig {
             synchronized (DsDbConfig.class) {
                 if (INSTANCE == null) {
                     INSTANCE = new DsDbConfig();
+                    LAST_SIG = sig(INSTANCE.headerTierMode, INSTANCE.sharedLogEnabled, INSTANCE.mergeHourOfDay);
+                }
+            }
+        } else {
+            HeaderTierMode m = resolveModeFromEnv();
+            int h = resolveMergeHourFromEnv();
+            boolean s = resolveSharedLogFromEnv();
+            int cur = sig(m, s, h);
+            if (cur != LAST_SIG) {
+                synchronized (DsDbConfig.class) {
+                    cur = sig(m, s, h);
+                    if (cur != LAST_SIG) {
+                        String oldTierRoot = INSTANCE == null ? null : INSTANCE.tierRootDir;
+                        String newTierRoot = resolveTierRootFromEnv();
+                        try { Class.forName("com.q3lives.ds.header.SharedLogFileDeltaHeaderTierStore")
+                                .getMethod("forceResetAllContextsForTest", String.class).invoke(null, oldTierRoot); } catch (Throwable ignore) {}
+                        try { Class.forName("com.q3lives.ds.header.DailyMergeService")
+                                .getMethod("forceResetForTest").invoke(null); } catch (Throwable ignore) {}
+                        DsDbConfig fresh = new DsDbConfig();
+                        fresh.headerTierMode = m;
+                        fresh.mergeHourOfDay = h;
+                        fresh.sharedLogEnabled = s;
+                        fresh.tierRootDir = newTierRoot;
+                        INSTANCE = fresh;
+                        LAST_SIG = cur;
+                    }
                 }
             }
         }
@@ -61,10 +94,14 @@ public class DsDbConfig {
             cfg.tierRootDir = tierRootDir;
             cfg.mergeHourOfDay = DEFAULT_MERGE_HOUR;
             cfg.sharedLogEnabled = sharedLog;
-            if (cfg.storeIdRegistry != null) {
-                try { cfg.storeIdRegistry.close(); } catch (IOException ignore) {}
-                cfg.storeIdRegistry = null;
+            for (StoreIdRegistry r : cfg.registryByDir.values()) {
+                try { r.close(); } catch (IOException ignore) {}
             }
+            cfg.registryByDir.clear();
+            try { Class.forName("com.q3lives.ds.header.SharedLogFileDeltaHeaderTierStore")
+                    .getMethod("forceResetAllContextsForTest", String.class).invoke(null, tierRootDir); } catch (Throwable ignore) {}
+            try { Class.forName("com.q3lives.ds.header.DailyMergeService")
+                    .getMethod("forceResetForTest").invoke(null); } catch (Throwable ignore) {}
             INSTANCE = cfg;
         }
     }
@@ -104,33 +141,37 @@ public class DsDbConfig {
     }
 
     public StoreIdRegistry getOrCreateStoreIdRegistry(File tierDirOrNull) {
-        StoreIdRegistry r = storeIdRegistry;
+        File dir;
+        if (tierDirOrNull != null) {
+            dir = new File(tierDirOrNull.getParentFile(), REGISTRY_SUB_DIR);
+        } else if (tierRootDir != null && !tierRootDir.isEmpty()) {
+            dir = new File(tierRootDir, REGISTRY_SUB_DIR);
+        } else {
+            dir = new File(new File("."), REGISTRY_SUB_DIR);
+        }
+        String key;
+        try { key = dir.getCanonicalPath(); } catch (IOException e) { key = dir.getAbsolutePath(); }
+        StoreIdRegistry r = registryByDir.get(key);
         if (r != null && r.isReady()) return r;
         synchronized (registryLock) {
-            r = storeIdRegistry;
+            r = registryByDir.get(key);
             if (r != null && r.isReady()) return r;
             try {
-                File dir;
-                if (tierDirOrNull != null) {
-                    dir = new File(tierDirOrNull.getParentFile(), REGISTRY_SUB_DIR);
-                } else if (tierRootDir != null && !tierRootDir.isEmpty()) {
-                    dir = new File(tierRootDir, REGISTRY_SUB_DIR);
-                } else {
-                    dir = new File(new File("."), REGISTRY_SUB_DIR);
-                }
                 if (!dir.exists()) dir.mkdirs();
                 r = new FileStoreIdRegistry(dir);
-                this.storeIdRegistry = r;
+                registryByDir.put(key, r);
                 return r;
             } catch (IOException e) {
-                throw new IllegalStateException("Failed to create StoreIdRegistry", e);
+                throw new IllegalStateException("Failed to create StoreIdRegistry at " + dir, e);
             }
         }
     }
 
     public StoreIdRegistry getStoreIdRegistryIfReady() {
-        StoreIdRegistry r = storeIdRegistry;
-        return (r != null && r.isReady()) ? r : null;
+        for (StoreIdRegistry r : registryByDir.values()) {
+            if (r != null && r.isReady()) return r;
+        }
+        return null;
     }
 
     public String resolveTierDirFor(File dataFile) {

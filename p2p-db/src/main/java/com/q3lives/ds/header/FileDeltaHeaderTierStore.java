@@ -30,6 +30,9 @@ public class FileDeltaHeaderTierStore implements HeaderTieredStore {
     private final BitSet dirtyBytes;
     private boolean anyDirty;
     private final byte[] cachedBlock;
+    private final BitSet mergingDirtyBytes;
+    private final byte[] mergingBlock;
+    private boolean mergingActive = false;
 
     public FileDeltaHeaderTierStore(String name, String tierDirPath) {
         this(name, 64 * 1024, tierDirPath);
@@ -42,6 +45,8 @@ public class FileDeltaHeaderTierStore implements HeaderTieredStore {
         this.tierDirPath = tierDirPath;
         this.dirtyBytes = new BitSet(blockSize);
         this.cachedBlock = new byte[blockSize];
+        this.mergingDirtyBytes = new BitSet(blockSize);
+        this.mergingBlock = new byte[blockSize];
     }
 
     private String safeName() {
@@ -64,10 +69,17 @@ public class FileDeltaHeaderTierStore implements HeaderTieredStore {
         if (baseHeaderBlock.capacity() != blockSize) {
             throw new IOException("header blockSize mismatch: expected=" + blockSize + " actual=" + baseHeaderBlock.capacity());
         }
+        dirtyBytes.clear();
+        mergingDirtyBytes.clear();
+        Arrays.fill(cachedBlock, (byte) 0);
+        Arrays.fill(mergingBlock, (byte) 0);
+        anyDirty = false;
+        mergingActive = false;
         this.base = baseHeaderBlock;
         ensureDeltaFileOpen();
         tryRecoverFromFile();
         state = TierState.IDLE;
+        try { DailyMergeService.getInstance().register(this); } catch (Throwable ignore) {}
     }
 
     private void ensureDeltaFileOpen() throws IOException {
@@ -159,7 +171,35 @@ public class FileDeltaHeaderTierStore implements HeaderTieredStore {
     @Override
     public synchronized ByteBuffer getReadBuffer() {
         if (base == null) throw new IllegalStateException("attachBase not called");
+        if (mergingActive) {
+            applyOverlaySkipToday(mergingBlock, mergingDirtyBytes, dirtyBytes);
+        }
         return base;
+    }
+
+    private void applyOverlay(byte[] src, BitSet mask) {
+        if (src == null || mask == null || mask.isEmpty() || base == null) return;
+        int next = -1;
+        while ((next = mask.nextSetBit(next + 1)) >= 0) {
+            int end = mask.nextClearBit(next);
+            base.put(next, src, next, end - next);
+            next = end - 1;
+            if (next >= blockSize - 1) break;
+        }
+    }
+
+    private void applyOverlaySkipToday(byte[] src, BitSet mask, BitSet todayCleanSkip) {
+        if (src == null || mask == null || mask.isEmpty() || base == null) return;
+        int next = -1;
+        while ((next = mask.nextSetBit(next + 1)) >= 0) {
+            int end = mask.nextClearBit(next);
+            for (int i = next; i < end; i++) {
+                if (todayCleanSkip != null && todayCleanSkip.get(i)) continue;
+                base.put(i, src[i]);
+            }
+            next = end - 1;
+            if (next >= blockSize - 1) break;
+        }
     }
 
     @Override
@@ -175,22 +215,32 @@ public class FileDeltaHeaderTierStore implements HeaderTieredStore {
     public synchronized void markFieldDirty(int offset, int len) {
         if (base == null || offset < 0 || len <= 0) return;
         int end = Math.min(blockSize, offset + len);
-        for (int i = offset; i < end; i++) {
-            if (!dirtyBytes.get(i)) {
-                dirtyBytes.set(i);
-                byte v = base.get(i);
-                cachedBlock[i] = v;
+        if (end <= offset) return;
+        dirtyBytes.set(offset, end);
+        try {
+            ByteBuffer src = base.duplicate();
+            src.position(offset);
+            src.limit(end);
+            src.get(cachedBlock, offset, end - offset);
+        } catch (Throwable ignore) {
+            for (int i = offset; i < end; i++) {
+                cachedBlock[i] = base.get(i);
             }
         }
-        if (!dirtyBytes.isEmpty()) anyDirty = true;
+        anyDirty = true;
     }
 
     @Override
     public synchronized void markFullDirty() {
         if (base == null) return;
-        for (int i = 0; i < blockSize; i++) {
-            if (!dirtyBytes.get(i)) {
-                dirtyBytes.set(i);
+        dirtyBytes.set(0, blockSize);
+        try {
+            ByteBuffer src = base.duplicate();
+            src.position(0);
+            src.limit(blockSize);
+            src.get(cachedBlock, 0, blockSize);
+        } catch (Throwable ignore) {
+            for (int i = 0; i < blockSize; i++) {
                 cachedBlock[i] = base.get(i);
             }
         }
@@ -217,7 +267,13 @@ public class FileDeltaHeaderTierStore implements HeaderTieredStore {
     public synchronized void rollover(String dayKey) throws IOException {
         if (base == null) return;
         writeDeltaFile();
-        if (deltaFile != null && deltaFile.exists() && anyDirty) {
+        boolean doCopy = deltaFile != null && deltaFile.exists() && anyDirty;
+        state = TierState.ROLLOVER_PREP;
+        if (doCopy) {
+            System.arraycopy(cachedBlock, 0, mergingBlock, 0, blockSize);
+            mergingDirtyBytes.clear();
+            mergingDirtyBytes.or(dirtyBytes);
+            mergingActive = true;
             String newName = safeName() + ".hdr_tier." + (dayKey == null ? String.valueOf(System.currentTimeMillis()) : dayKey);
             File target;
             if (deltaFile.getParentFile() == null) {
@@ -238,12 +294,56 @@ public class FileDeltaHeaderTierStore implements HeaderTieredStore {
         }
         if (deltaRaf == null) ensureDeltaFileOpen();
         initEmptyDeltaFile();
+        state = TierState.MERGING;
+    }
+
+    @Override
+    public synchronized boolean prepareMerge() throws IOException {
+        if (state == TierState.IDLE) {
+            if (!anyDirty) {
+                state = TierState.MERGE_SWAP_PENDING;
+                return false;
+            }
+            writeDeltaFile();
+            System.arraycopy(cachedBlock, 0, mergingBlock, 0, blockSize);
+            mergingDirtyBytes.clear();
+            mergingDirtyBytes.or(dirtyBytes);
+            mergingActive = true;
+            initEmptyDeltaFile();
+            state = TierState.MERGING;
+        }
+        return true;
+    }
+
+    @Override
+    public synchronized boolean applyMergedToBase() throws IOException {
+        if (state != TierState.MERGING && state != TierState.MERGE_SWAP_PENDING) return false;
+        try {
+            applyOverlaySkipToday(mergingBlock, mergingDirtyBytes, dirtyBytes);
+            if (base != null && (base instanceof java.nio.MappedByteBuffer)) {
+                try { ((java.nio.MappedByteBuffer) base).force(); } catch (Throwable ignore) {}
+            }
+            return true;
+        } finally {
+            mergingActive = false;
+            Arrays.fill(mergingBlock, (byte) 0);
+            mergingDirtyBytes.clear();
+            state = TierState.IDLE;
+        }
+    }
+
+    @Override
+    public synchronized void cancelMerge() throws IOException {
+        mergingActive = false;
+        Arrays.fill(mergingBlock, (byte) 0);
+        mergingDirtyBytes.clear();
         state = TierState.IDLE;
     }
 
     @Override
     public synchronized void close() throws IOException {
         try {
+            try { DailyMergeService.getInstance().unregister(this); } catch (Throwable ignore) {}
             if (deltaRaf != null) {
                 writeDeltaFile();
                 try {
@@ -256,6 +356,13 @@ public class FileDeltaHeaderTierStore implements HeaderTieredStore {
             }
         } finally {
             base = null;
+            dirtyBytes.clear();
+            mergingDirtyBytes.clear();
+            Arrays.fill(cachedBlock, (byte) 0);
+            Arrays.fill(mergingBlock, (byte) 0);
+            anyDirty = false;
+            mergingActive = false;
+            state = TierState.IDLE;
         }
     }
 

@@ -14,6 +14,15 @@ public class SharedHeaderDeltaLog implements Closeable {
 
     public static final int STORE_HEADER_MAX_BYTES = 512;
 
+    private static final long SESSION_HIGH;
+    private static final long SESSION_LOW;
+
+    static {
+        java.util.UUID u = java.util.UUID.randomUUID();
+        SESSION_HIGH = u.getMostSignificantBits();
+        SESSION_LOW = u.getLeastSignificantBits();
+    }
+
     private final File tierDir;
     private final String dayKey;
     private final File logFile;
@@ -49,16 +58,30 @@ public class SharedHeaderDeltaLog implements Closeable {
 
     private void openOrInit() throws IOException {
         raf = new RandomAccessFile(logFile, "rw");
-        if (raf.length() < SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE) {
+        boolean initFresh = raf.length() < SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE;
+        if (!initFresh) {
+            raf.seek(0);
+            int magic = raf.readInt();
+            if (magic != SharedHeaderLogLayout.LOG_MAGIC) {
+                initFresh = true;
+            } else {
+                raf.seek(SharedHeaderLogLayout.OFF_LOG_SESSION_HIGH);
+                long high = raf.readLong();
+                long low = raf.readLong();
+                if (high != SESSION_HIGH || low != SESSION_LOW) initFresh = true;
+            }
+        }
+        if (initFresh) {
             raf.setLength(0);
             byte[] header = new byte[SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE];
             ByteBuffer bb = ByteBuffer.wrap(header);
-            bb.putInt(SharedHeaderLogLayout.LOG_MAGIC);
-            bb.putInt(SharedHeaderLogLayout.LOG_VERSION);
-            bb.putLong(System.currentTimeMillis());
-            bb.putLong(registry.nextAssignedStoreId());
-            bb.putLong(0L);
-            bb.putLong(0L);
+            bb.putInt(SharedHeaderLogLayout.OFF_LOG_MAGIC, SharedHeaderLogLayout.LOG_MAGIC);
+            bb.putInt(SharedHeaderLogLayout.OFF_LOG_VERSION, SharedHeaderLogLayout.LOG_VERSION);
+            bb.putLong(SharedHeaderLogLayout.OFF_LOG_CREATE_EPOCH, System.currentTimeMillis());
+            bb.putLong(SharedHeaderLogLayout.OFF_LOG_NEXT_STORE_ID, registry.nextAssignedStoreId());
+            bb.putLong(SharedHeaderLogLayout.OFF_LOG_FLAGS, 0L);
+            bb.putLong(SharedHeaderLogLayout.OFF_LOG_SESSION_HIGH, SESSION_HIGH);
+            bb.putLong(SharedHeaderLogLayout.OFF_LOG_SESSION_LOW, SESSION_LOW);
             raf.write(header);
         } else {
             raf.seek(0);
@@ -83,32 +106,50 @@ public class SharedHeaderDeltaLog implements Closeable {
                 pos += ps;
                 continue;
             }
+            int pageCrcStored = ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_CRC32, 4).getInt();
+            int pageCrcCalc = crc32(page, 0, ps);
+            if (pageCrcCalc != pageCrcStored) {
+                pos += ps;
+                continue;
+            }
             int slotCount = ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_SLOT_COUNT, 4).getInt();
+            if (slotCount < 0 || slotCount > 256) {
+                pos += ps;
+                continue;
+            }
             int sOff = SharedHeaderLogLayout.PAGE_HEADER_SIZE;
             for (int s = 0; s < slotCount; s++) {
                 if (sOff + SharedHeaderLogLayout.SLOT_HEADER_SIZE > ps) break;
                 int smag = ByteBuffer.wrap(page, sOff, 4).getInt();
                 if (smag != SharedHeaderLogLayout.SLOT_MAGIC) break;
                 long sid = ByteBuffer.wrap(page, sOff + SharedHeaderLogLayout.OFF_SLOT_STORE_ID, 8).getLong();
+                long slotSeq = ByteBuffer.wrap(page, sOff + SharedHeaderLogLayout.OFF_SLOT_SEQ, 8).getLong();
                 int len = ByteBuffer.wrap(page, sOff + SharedHeaderLogLayout.OFF_SLOT_LEN, 2).getShort() & 0xFFFF;
                 int flags = ByteBuffer.wrap(page, sOff + SharedHeaderLogLayout.OFF_SLOT_FLAGS, 2).getShort() & 0xFFFF;
                 int crc16 = ByteBuffer.wrap(page, sOff + SharedHeaderLogLayout.OFF_SLOT_CRC16, 2).getShort() & 0xFFFF;
-                int totalSlot = SharedHeaderLogLayout.SLOT_HEADER_SIZE + ((flags & 1) != 0 ? STORE_HEADER_MAX_BYTES : STORE_HEADER_MAX_BYTES);
-                if (len < 0 || len > STORE_HEADER_MAX_BYTES) break;
+                int tier = flags & SharedHeaderLogLayout.SLOT_FLAG_TIER_MASK;
+                int payloadSize = SharedHeaderLogLayout.payloadSizeForTier(tier);
+                if (payloadSize <= 0) payloadSize = SharedHeaderLogLayout.SLOT_SIZE_XL;
+                if (len < 0 || len > payloadSize || payloadSize > STORE_HEADER_MAX_BYTES) break;
+                int totalSlot = SharedHeaderLogLayout.SLOT_HEADER_SIZE + payloadSize;
                 if (sOff + totalSlot > ps) break;
-                int calcCrc = crc16(page, sOff + SharedHeaderLogLayout.SLOT_HEADER_SIZE, len);
+                int calcCrc = crc16(page, sOff + SharedHeaderLogLayout.SLOT_HEADER_SIZE, payloadSize);
                 if (calcCrc != crc16) {
                     break;
                 }
                 StoreState st = states.computeIfAbsent(sid, k -> new StoreState());
-                st.dirtyBytes = new BitSet(STORE_HEADER_MAX_BYTES);
-                st.snapshot = new byte[STORE_HEADER_MAX_BYTES];
-                for (int i = 0; i < len; i++) {
-                    byte v = page[sOff + SharedHeaderLogLayout.SLOT_HEADER_SIZE + i];
-                    st.snapshot[i] = v;
-                    if (v != 0) st.dirtyBytes.set(i);
+                if (slotSeq >= st.seq) {
+                    byte[] snap = new byte[STORE_HEADER_MAX_BYTES];
+                    BitSet bs = new BitSet(STORE_HEADER_MAX_BYTES);
+                    for (int i = 0; i < payloadSize; i++) {
+                        byte v = page[sOff + SharedHeaderLogLayout.SLOT_HEADER_SIZE + i];
+                        snap[i] = v;
+                        bs.set(i);
+                    }
+                    st.snapshot = snap;
+                    st.dirtyBytes = bs;
+                    st.seq = slotSeq;
                 }
-                st.seq = Math.max(st.seq, sid);
                 sOff += totalSlot;
             }
             long seq = ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_SEQ, 8).getLong();
@@ -156,7 +197,7 @@ public class SharedHeaderDeltaLog implements Closeable {
                     st.snapshot[i] = v;
                     changed++;
                 }
-                if (v != 0 || st.dirtyBytes.get(i)) st.dirtyBytes.set(i);
+                st.dirtyBytes.set(i);
             }
             st.pendingBytes += changed;
             needAppend = !st.pagePending;
@@ -177,7 +218,7 @@ public class SharedHeaderDeltaLog implements Closeable {
             for (int i = 0; i < len; i++) {
                 byte v = base.get(i);
                 st.snapshot[i] = v;
-                if (v != 0) st.dirtyBytes.set(i);
+                st.dirtyBytes.set(i);
             }
             st.pagePending = true;
         }
@@ -201,17 +242,24 @@ public class SharedHeaderDeltaLog implements Closeable {
         StoreState st = states.get(storeId);
         if (st == null) return;
         byte[] payload;
-        int actualLen;
+        int slotPayload;
+        long writeSeq;
+        int slotTier;
         synchronized (st) {
             if (!st.pagePending || st.snapshot == null) return;
-            int end = STORE_HEADER_MAX_BYTES;
-            while (end > 0) {
-                if (st.snapshot[end - 1] != 0 || st.dirtyBytes.get(end - 1)) break;
-                end--;
+            int dirtyEnd = st.dirtyBytes.length();
+            int snapEnd = STORE_HEADER_MAX_BYTES;
+            while (snapEnd > 0 && st.snapshot[snapEnd - 1] == 0 && (snapEnd - 1) >= dirtyEnd) {
+                snapEnd--;
             }
-            actualLen = Math.min(STORE_HEADER_MAX_BYTES, end);
-            payload = new byte[STORE_HEADER_MAX_BYTES];
-            System.arraycopy(st.snapshot, 0, payload, 0, STORE_HEADER_MAX_BYTES);
+            int logicEnd = Math.max(dirtyEnd, snapEnd);
+            slotTier = SharedHeaderLogLayout.tierForDirtyEnd(logicEnd);
+            slotPayload = SharedHeaderLogLayout.payloadSizeForTier(slotTier);
+            payload = new byte[slotPayload];
+            int copyLen = Math.min(STORE_HEADER_MAX_BYTES, slotPayload);
+            System.arraycopy(st.snapshot, 0, payload, 0, copyLen);
+            st.seq = st.seq + 1;
+            writeSeq = st.seq;
         }
         writeLock.lock();
         try {
@@ -235,6 +283,8 @@ public class SharedHeaderDeltaLog implements Closeable {
             }
             byte[] page;
             int slotCount;
+            int perSlot = SharedHeaderLogLayout.SLOT_HEADER_SIZE + slotPayload;
+            int maxSlots = SharedHeaderLogLayout.maxSlotsForPage(slotPayload);
             if (firstPage) {
                 page = new byte[ps];
                 System.arraycopy(zeroPage, 0, page, 0, ps);
@@ -251,36 +301,46 @@ public class SharedHeaderDeltaLog implements Closeable {
                 raf.readFully(page);
                 slotCount = ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_SLOT_COUNT, 4).getInt();
                 if (slotCount < 0) slotCount = 0;
-                if (slotCount > 256) slotCount = 0;
+                boolean needNewPage = slotCount >= maxSlots;
+                int sOff = SharedHeaderLogLayout.PAGE_HEADER_SIZE + slotCount * perSlot;
+                if (sOff + perSlot > ps) needNewPage = true;
+                if (needNewPage) {
+                    long p1 = raf.length();
+                    long remainderAfter = (p1 - SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE) % ps;
+                    if (remainderAfter != 0) {
+                        raf.setLength(p1 + (ps - remainderAfter));
+                    }
+                    pageStart = raf.length();
+                    page = new byte[ps];
+                    System.arraycopy(zeroPage, 0, page, 0, ps);
+                    slotCount = 0;
+                    ByteBuffer ph = ByteBuffer.wrap(page, 0, SharedHeaderLogLayout.PAGE_HEADER_SIZE);
+                    ph.putInt(SharedHeaderLogLayout.SLOT_MAGIC);
+                    ph.putInt(0);
+                    ph.putLong(pageSeq.incrementAndGet());
+                    ph.putInt(0);
+                    ph.putInt(0);
+                    firstPage = true;
+                }
             }
-            int sOff = SharedHeaderLogLayout.PAGE_HEADER_SIZE + slotCount * (SharedHeaderLogLayout.SLOT_HEADER_SIZE + STORE_HEADER_MAX_BYTES);
-            if (sOff + SharedHeaderLogLayout.SLOT_HEADER_SIZE + STORE_HEADER_MAX_BYTES > ps) {
-                raf.setLength(flen - (flen - pageStart));
-                pageStart = flen - (flen - pageStart);
-                if (pageStart < SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE) pageStart = SharedHeaderLogLayout.LOG_FILE_HEADER_SIZE;
-                page = new byte[ps];
-                System.arraycopy(zeroPage, 0, page, 0, ps);
-                slotCount = 0;
-                ByteBuffer ph = ByteBuffer.wrap(page, 0, SharedHeaderLogLayout.PAGE_HEADER_SIZE);
-                ph.putInt(SharedHeaderLogLayout.SLOT_MAGIC);
-                ph.putInt(0);
-                ph.putLong(pageSeq.incrementAndGet());
-                ph.putInt(0);
-                ph.putInt(0);
-                sOff = SharedHeaderLogLayout.PAGE_HEADER_SIZE;
+            int sOff = SharedHeaderLogLayout.PAGE_HEADER_SIZE + slotCount * perSlot;
+            if (sOff + perSlot > ps) {
+                throw new IOException("page overflow: perSlot=" + perSlot + " sOff=" + sOff + " ps=" + ps);
             }
-            ByteBuffer sh = ByteBuffer.wrap(page, sOff, SharedHeaderLogLayout.SLOT_HEADER_SIZE + STORE_HEADER_MAX_BYTES);
+            int crc16 = crc16(payload, 0, slotPayload);
+            ByteBuffer sh = ByteBuffer.wrap(page, sOff, SharedHeaderLogLayout.SLOT_HEADER_SIZE + slotPayload);
             sh.putInt(SharedHeaderLogLayout.SLOT_MAGIC);
             sh.putLong(storeId);
-            sh.putLong(0L);
-            sh.putShort((short) (actualLen & 0xFFFF));
-            sh.putShort((short) 0);
-            int crc16 = crc16(payload, 0, STORE_HEADER_MAX_BYTES);
+            sh.putLong(writeSeq);
+            sh.putShort((short) (slotPayload & 0xFFFF));
+            short flags = (short) (slotTier & SharedHeaderLogLayout.SLOT_FLAG_TIER_MASK);
+            sh.putShort(flags);
             sh.putShort((short) (crc16 & 0xFFFF));
             sh.putShort((short) 0);
-            sh.put(payload, 0, STORE_HEADER_MAX_BYTES);
+            sh.put(payload, 0, slotPayload);
             slotCount++;
             ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_SLOT_COUNT, 4).putInt(slotCount);
+            ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_CRC32, 4).putInt(0);
             int pageCrc = crc32(page, 0, ps);
             ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_CRC32, 4).putInt(pageCrc);
             raf.seek(pageStart);

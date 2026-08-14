@@ -12,6 +12,7 @@ import com.q3lives.ds.database.config.DsDbConfig;
 public class SharedLogFileDeltaHeaderTierStore implements HeaderTieredStore {
 
     private static final ConcurrentHashMap<String, SharedLogContext> CONTEXTS = new ConcurrentHashMap<>();
+    private static final java.util.concurrent.atomic.AtomicLong STORE_INSTANCE_SALT = new java.util.concurrent.atomic.AtomicLong(0L);
 
     static final class SharedLogContext {
         final SharedHeaderDeltaLog log;
@@ -31,6 +32,8 @@ public class SharedLogFileDeltaHeaderTierStore implements HeaderTieredStore {
     private long storeId = -1L;
     private ByteBuffer base;
     private volatile boolean anyDirty = false;
+    private byte[] mergingSnapshot;
+    private BitSet mergingMask;
 
     public SharedLogFileDeltaHeaderTierStore(String name, File dataFile, String tierDirPath) throws IOException {
         this(name, dataFile, 64 * 1024, tierDirPath);
@@ -55,6 +58,10 @@ public class SharedLogFileDeltaHeaderTierStore implements HeaderTieredStore {
             rel = dataFile.getPath();
         }
         rel = safeRelative(rel);
+        long salt = STORE_INSTANCE_SALT.incrementAndGet();
+        if (salt > 1L) {
+            rel = rel + "#" + Long.toHexString(salt);
+        }
         this.relativePath = rel;
         this.tierDirPath = tierDirPath;
     }
@@ -107,6 +114,10 @@ public class SharedLogFileDeltaHeaderTierStore implements HeaderTieredStore {
         if (baseHeaderBlock.capacity() != blockSize) {
             throw new IOException("header blockSize mismatch: expected=" + blockSize + " actual=" + baseHeaderBlock.capacity());
         }
+        mergingSnapshot = null;
+        mergingMask = null;
+        anyDirty = false;
+        state = TierState.IDLE;
         this.base = baseHeaderBlock;
         SharedLogContext c = getOrCreateContext();
         this.storeId = c.log.internStoreId(relativePath);
@@ -122,11 +133,22 @@ public class SharedLogFileDeltaHeaderTierStore implements HeaderTieredStore {
             if (bs != null && !bs.isEmpty()) anyDirty = true;
         }
         state = TierState.IDLE;
+        try { DailyMergeService.getInstance().register(this); } catch (Throwable ignore) {}
     }
 
     @Override
     public synchronized ByteBuffer getReadBuffer() {
         if (base == null) throw new IllegalStateException("attachBase not called");
+        if (state == TierState.MERGING || state == TierState.MERGE_SWAP_PENDING) {
+            if (mergingSnapshot != null && mergingMask != null && !mergingMask.isEmpty()) {
+                int end = Math.min(blockSize, mergingSnapshot.length);
+                BitSet todayDirty = ctx == null ? null : ctx.log.getDirtyBitSet(storeId);
+                for (int i = mergingMask.nextSetBit(0); i >= 0 && i < end; i = mergingMask.nextSetBit(i + 1)) {
+                    if (todayDirty != null && todayDirty.get(i)) continue;
+                    base.put(i, mergingSnapshot[i]);
+                }
+            }
+        }
         return base;
     }
 
@@ -184,16 +206,73 @@ public class SharedLogFileDeltaHeaderTierStore implements HeaderTieredStore {
         if (ctx == null) return;
         try {
             ctx.log.flushAll();
+            if (ctx.log.liveStoreCount() > 0) {
+                mergingSnapshot = ctx.log.getReadSnapshot(storeId);
+                mergingMask = ctx.log.getDirtyBitSet(storeId);
+                state = TierState.MERGING;
+            } else {
+                mergingSnapshot = null;
+                mergingMask = null;
+                state = TierState.IDLE;
+            }
             ctx.log.rollover(dayKey);
-            state = TierState.IDLE;
             anyDirty = false;
         } finally {
         }
     }
 
     @Override
+    public synchronized boolean prepareMerge() throws IOException {
+        if (state == TierState.IDLE) {
+            if (ctx != null && anyDirty) {
+                ctx.log.flushAll();
+                mergingSnapshot = ctx.log.getReadSnapshot(storeId);
+                mergingMask = ctx.log.getDirtyBitSet(storeId);
+                state = TierState.MERGING;
+                return true;
+            }
+            mergingSnapshot = null;
+            mergingMask = null;
+            state = TierState.MERGE_SWAP_PENDING;
+            return false;
+        }
+        return state == TierState.MERGING;
+    }
+
+    @Override
+    public synchronized boolean applyMergedToBase() throws IOException {
+        if (state != TierState.MERGING && state != TierState.MERGE_SWAP_PENDING) return false;
+        try {
+            if (mergingSnapshot != null && mergingMask != null && base != null && !mergingMask.isEmpty()) {
+                int end = Math.min(blockSize, mergingSnapshot.length);
+                BitSet todayDirty = ctx == null ? null : ctx.log.getDirtyBitSet(storeId);
+                for (int i = mergingMask.nextSetBit(0); i >= 0 && i < end; i = mergingMask.nextSetBit(i + 1)) {
+                    if (todayDirty != null && todayDirty.get(i)) continue;
+                    base.put(i, mergingSnapshot[i]);
+                }
+                if (base instanceof java.nio.MappedByteBuffer) {
+                    try { ((java.nio.MappedByteBuffer) base).force(); } catch (Throwable ignore) {}
+                }
+            }
+            return true;
+        } finally {
+            mergingSnapshot = null;
+            mergingMask = null;
+            state = TierState.IDLE;
+        }
+    }
+
+    @Override
+    public synchronized void cancelMerge() throws IOException {
+        mergingSnapshot = null;
+        mergingMask = null;
+        state = TierState.IDLE;
+    }
+
+    @Override
     public synchronized void close() throws IOException {
         try {
+            try { DailyMergeService.getInstance().unregister(this); } catch (Throwable ignore) {}
             if (ctx != null) {
                 try { ctx.log.flushAll(); } finally {}
                 long remain = ctx.refCount.decrementAndGet();
@@ -211,11 +290,78 @@ public class SharedLogFileDeltaHeaderTierStore implements HeaderTieredStore {
             }
         } finally {
             base = null;
+            mergingSnapshot = null;
+            mergingMask = null;
+            anyDirty = false;
+            state = TierState.IDLE;
         }
     }
 
     @Override
     public String debugName() {
         return "SharedLogFileDelta[" + name + ", storeId=" + storeId + ", rel=" + relativePath + "]";
+    }
+
+    public static void forceResetAllContextsForTest() {
+        forceResetAllContextsForTest(null);
+    }
+
+    public static void forceResetAllContextsForTest(String tierRootDir) {
+        synchronized (CONTEXTS) {
+            for (SharedLogContext c : CONTEXTS.values()) {
+                try { c.log.close(); } catch (Throwable ignore) {}
+            }
+            CONTEXTS.clear();
+        }
+        if (tierRootDir != null) {
+            deleteTierRuntimeFilesRecursive(new File(tierRootDir));
+            File defDir = new File(tierRootDir, DsDbConfig.TIER_SUB_DIR);
+            if (defDir.exists()) deleteTierRuntimeFilesRecursive(defDir);
+        } else {
+            try { deleteTierRuntimeFilesRecursive(new File(DsDbConfig.TIER_SUB_DIR)); } catch (Throwable ignore) {}
+        }
+    }
+
+    private static void deleteTierRuntimeFilesRecursive(File dir) {
+        if (dir == null || !dir.exists()) return;
+        File[] arr = dir.listFiles();
+        if (arr == null) return;
+        for (File f : arr) {
+            String name = f.getName();
+            if (f.isDirectory()) {
+                if (name.equals(DsDbConfig.REGISTRY_SUB_DIR) || name.equals(DsDbConfig.TIER_SUB_DIR)) {
+                    deleteRecursively(f);
+                    f.delete();
+                } else {
+                    deleteTierRuntimeFilesRecursive(f);
+                }
+            } else {
+                if (name.endsWith(".hdr_tier") || name.startsWith("delta_headers_") && name.endsWith(".log")
+                        || name.equals("store_id.idx")) {
+                    deleteBestEffort(f);
+                }
+            }
+        }
+    }
+
+    private static void deleteRecursively(File f) {
+        if (f == null || !f.exists()) return;
+        if (f.isDirectory()) {
+            File[] arr = f.listFiles();
+            if (arr != null) {
+                for (File child : arr) deleteRecursively(child);
+            }
+        }
+        deleteBestEffort(f);
+    }
+
+    private static void deleteBestEffort(File f) {
+        for (int trial = 0; trial < 3; trial++) {
+            try {
+                if (f.delete()) return;
+                if (!f.exists()) return;
+            } catch (Throwable ignore) {}
+            try { Thread.sleep(10); } catch (Throwable ignore) { break; }
+        }
     }
 }
