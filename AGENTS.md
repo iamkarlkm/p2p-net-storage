@@ -1,6 +1,6 @@
 ---
 title: Project Agent Contract
-updated: "2026-07-26T01:55:14Z"
+updated: "2026-08-18T16:14:00Z"
 ---
 # Project Agent Contract
 
@@ -119,3 +119,6 @@ After `brain adopt` creates starter context, the AI agent must scan the repo bef
 ## Local Notes
 
 Add repo-specific notes here. `brain context refresh` preserves content outside managed blocks.
+
+- Invariant: `p2p-db` `GenericManager` query planner must always run `matchesAll(wrapper, entity)` on index-driven candidate sets, whether the candidate set comes from a single index, composite index leftmost prefix, or multi-index `HashSet.retainAll` intersection. Index scans are only used to narrow the candidate row-id set; final filtering authority remains with `matchesAll`.
+- Invariant: p2p-db durable context updates for index subsystem milestones must record the joint verification command that covers EqIndexStore, Range, ORM auto-maintain, Query Planner, MultiIndex intersect, Composite index, BatchPut, Binlog, and GenericManager tests.

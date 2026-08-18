@@ -4,15 +4,6 @@
  */
 package com.q3lives.ds.database;
 
-import com.q3lives.ds.database.adapter.DsTableAdapter;
-import com.q3lives.ds.annotation.DsManyToMany;
-import com.q3lives.ds.annotation.DsMapField;
-import com.q3lives.ds.annotation.DsOneToMany;
-import com.q3lives.ds.annotation.DsOneToOne;
-import com.q3lives.ds.bucket.DsFixedBucketStore;
-import com.q3lives.ds.collections.DsHashMap;
-import com.q3lives.ds.database.schema.EntityIndexUtil;
-import com.q3lives.ds.util.DsPathUtil;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -22,18 +13,37 @@ import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+
 import org.yaml.snakeyaml.Yaml;
+
+import com.q3lives.ds.annotation.DsManyToMany;
+import com.q3lives.ds.annotation.DsMapField;
+import com.q3lives.ds.annotation.DsOneToMany;
+import com.q3lives.ds.annotation.DsOneToOne;
+import com.q3lives.ds.bucket.DsFixedBucketStore;
+import com.q3lives.ds.collections.DsHashMap;
+import com.q3lives.ds.database.adapter.DsTableAdapter;
+import com.q3lives.ds.database.index.DsEqIndexStore;
+import com.q3lives.ds.database.schema.EntityIndexUtil;
+import com.q3lives.ds.database.schema.EntitySchemaUtil;
+import com.q3lives.ds.util.DsPathUtil;
 
 /**
  *
  * @author Administrator
  */
-public class DsDatabaseLocal {
+public class DsDatabaseLocal implements AutoCloseable {
     
     private static final String DEFAULT_SYSTEM_YAML_NAME = "SystemConfig.yaml";
     private static final String SYS_PROP_SYSTEM_YAML = "p2p.system.yaml";
@@ -43,7 +53,8 @@ public class DsDatabaseLocal {
     private final DsFixedBucketStore bucketStore;
     private final ConcurrentHashMap<Class<? extends DsTableAdapter>, TableMeta<?>> tableMetaCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, DsHashMap> relationMapCache = new ConcurrentHashMap<>();
-    
+    private final ConcurrentHashMap<String, DsEqIndexStore> indexCache = new ConcurrentHashMap<>();
+
     public DsDatabaseLocal(File root) {
         this.root = Objects.requireNonNull(root, "root cannot be null");
         if (!this.root.exists()) {
@@ -51,9 +62,45 @@ public class DsDatabaseLocal {
         }
         this.bucketStore = new DsFixedBucketStore(this.root.getAbsolutePath());
     }
-    
+
     public File getRoot() {
         return root;
+    }
+
+    public void close() throws IOException {
+        Exception ex = null;
+        for (DsEqIndexStore idx : indexCache.values()) {
+            try {
+                idx.close();
+            } catch (Exception e) {
+                ex = e;
+            }
+        }
+        indexCache.clear();
+        if (ex != null) {
+            if (ex instanceof IOException ioe) throw ioe;
+            throw new IOException(ex);
+        }
+    }
+
+    public static void forceResetAllIndexesForTest(File root) throws IOException {
+        Objects.requireNonNull(root, "root cannot be null");
+        if (!root.isDirectory()) {
+            return;
+        }
+        File indexes = new File(root, "indexes");
+        if (!indexes.exists()) {
+            return;
+        }
+        try (var stream = java.nio.file.Files.walk(indexes.toPath())) {
+            stream.sorted(java.util.Comparator.reverseOrder())
+                .forEach(p -> {
+                    try {
+                        java.nio.file.Files.delete(p);
+                    } catch (IOException ignore) {
+                    }
+                });
+        }
     }
     
     public static DsDatabaseLocal load() {
@@ -108,15 +155,236 @@ public class DsDatabaseLocal {
     private TableMeta<? extends DsTableAdapter> metaOf(Class<? extends DsTableAdapter> clazz) {
         return tableMetaCache.computeIfAbsent(clazz, this::createMeta);
     }
+
+    private static final class IndexedColumn {
+        final String columnName;
+        final Field field;
+        final Class<?> fieldType;
+        final DsEqIndexStore.IndexedValueKind valueKind;
+
+        IndexedColumn(String columnName, Field field, Class<?> fieldType, DsEqIndexStore.IndexedValueKind valueKind) {
+            this.columnName = columnName;
+            this.field = field;
+            this.fieldType = fieldType;
+            this.valueKind = valueKind;
+        }
+    }
+
+    private static final class CompositeIndex {
+        final String name;
+        final List<IndexedColumn> columns;
+
+        CompositeIndex(String name, List<IndexedColumn> columns) {
+            this.name = name;
+            this.columns = columns;
+        }
+    }
+
+    private static DsEqIndexStore.IndexedValueKind resolveValueKind(Class<?> type) {
+        if (type == long.class || type == Long.class) return DsEqIndexStore.IndexedValueKind.LONG;
+        if (type == int.class || type == Integer.class
+                || type == short.class || type == Short.class
+                || type == byte.class || type == Byte.class) {
+            return DsEqIndexStore.IndexedValueKind.LONG;
+        }
+        if (type == boolean.class || type == Boolean.class) return DsEqIndexStore.IndexedValueKind.LONG;
+        if (type == Date.class) return DsEqIndexStore.IndexedValueKind.LONG;
+        if (type == String.class) return DsEqIndexStore.IndexedValueKind.STRING;
+        return DsEqIndexStore.IndexedValueKind.STRING;
+    }
+
+    private DsEqIndexStore resolveEqIndex(TableMeta<?> meta, IndexedColumn col) throws IOException {
+        String cacheKey = meta.space + "#" + meta.schemaId + "#" + col.columnName;
+        DsEqIndexStore idx = indexCache.get(cacheKey);
+        if (idx != null) return idx;
+        String safeSpace = DsPathUtil.toSafeFileName(meta.space, 80);
+        String safeCol = DsPathUtil.toSafeFileName(col.columnName, 64);
+        String space = "indexes/" + safeSpace + "/" + meta.schemaId;
+        String indexName = "eq_" + safeCol;
+        DsEqIndexStore created = new DsEqIndexStore(this.root, space, indexName, col.valueKind);
+        DsEqIndexStore prev = indexCache.putIfAbsent(cacheKey, created);
+        if (prev != null) {
+            created.close();
+            return prev;
+        }
+        return created;
+    }
+
+    private DsEqIndexStore resolveCompositeIndex(TableMeta<?> meta, CompositeIndex ci) throws IOException {
+        String cacheKey = meta.space + "#" + meta.schemaId + "#cidx_" + ci.name;
+        DsEqIndexStore idx = indexCache.get(cacheKey);
+        if (idx != null) return idx;
+        String safeSpace = DsPathUtil.toSafeFileName(meta.space, 80);
+        String safeName = DsPathUtil.toSafeFileName(ci.name, 64);
+        String space = "indexes/" + safeSpace + "/" + meta.schemaId;
+        String indexName = "cidx_" + safeName;
+        DsEqIndexStore created = new DsEqIndexStore(this.root, space, indexName, DsEqIndexStore.IndexedValueKind.LONG);
+        DsEqIndexStore prev = indexCache.putIfAbsent(cacheKey, created);
+        if (prev != null) {
+            created.close();
+            return prev;
+        }
+        return created;
+    }
+
+    private static long toIndexLongValue(IndexedColumn col, Object value) {
+        if (value == null) return 0L;
+        Class<?> t = col.fieldType;
+        if (t == long.class || t == Long.class) return (Long) value;
+        if (t == int.class || t == Integer.class) return ((Integer) value).longValue();
+        if (t == short.class || t == Short.class) return ((Short) value).longValue();
+        if (t == byte.class || t == Byte.class) return ((Byte) value).longValue();
+        if (t == boolean.class || t == Boolean.class) return ((Boolean) value) ? 1L : 0L;
+        if (t == Date.class) return ((Date) value).getTime();
+        return 0L;
+    }
+
+    private static String toIndexStringValue(IndexedColumn col, Object value) {
+        if (value == null) return "";
+        return value.toString();
+    }
+
+    /**
+     * 将复合索引涉及列的值组合成一个字符串，然后 FNV-1a 哈希为 long 作为索引键。
+     * NULL 值统一编码为 "\0"，保证可区分且稳定。
+     */
+    private static long compositeKeyValue(CompositeIndex ci, Object owner) {
+        StringBuilder sb = new StringBuilder(64);
+        for (int i = 0; i < ci.columns.size(); i++) {
+            if (i > 0) sb.append('\u0001');
+            IndexedColumn col = ci.columns.get(i);
+            Object val = readFieldValue(col.field, owner);
+            if (val == null) {
+                sb.append('\u0000');
+            } else if (col.valueKind == DsEqIndexStore.IndexedValueKind.LONG) {
+                sb.append(toIndexLongValue(col, val));
+            } else {
+                sb.append(val.toString());
+            }
+        }
+        return fnv1a64(sb.toString());
+    }
+
+    private static long fnv1a64(String s) {
+        long h = 0xcbf29ce484222325L;
+        for (int i = 0; i < s.length(); i++) {
+            h ^= s.charAt(i);
+            h *= 0x100000001b3L;
+        }
+        return h;
+    }
+
+    /**
+     * 与 DsEqIndexStore.hashString 保持一致的 FNV-1a 哈希，用于批量索引聚合。
+     */
+    private static long hashStringForIndex(String s) {
+        if (s == null || s.isEmpty()) return 0L;
+        long h = 0xcbf29ce484222325L;
+        for (int i = 0; i < s.length(); i++) {
+            h ^= s.charAt(i);
+            h *= 0x100000001b3L;
+        }
+        return h == 0L ? 1L : h;
+    }
+
+    private static Object readFieldValue(Field f, Object owner) {
+        try {
+            f.setAccessible(true);
+            return f.get(owner);
+        } catch (IllegalAccessException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private <T extends DsTableAdapter> void removeRowFromIndexes(TableMeta<T> meta, T row) throws IOException {
+        if (row == null) return;
+        long rowId = row.getId() == null ? 0L : row.getId();
+        if (rowId == 0L) return;
+        for (IndexedColumn col : meta.indexedColumns) {
+            Object val = readFieldValue(col.field, row);
+            DsEqIndexStore idx = resolveEqIndex(meta, col);
+            switch (col.valueKind) {
+                case LONG:
+                    idx.removeIndex(toIndexLongValue(col, val), rowId);
+                    break;
+                case STRING:
+                    idx.removeIndex(toIndexStringValue(col, val), rowId);
+                    break;
+            }
+        }
+        for (CompositeIndex ci : meta.compositeIndexes) {
+            DsEqIndexStore idx = resolveCompositeIndex(meta, ci);
+            idx.removeIndex(compositeKeyValue(ci, row), rowId);
+        }
+    }
+
+    private <T extends DsTableAdapter> void putRowIntoIndexes(TableMeta<T> meta, T row) throws IOException {
+        if (row == null) return;
+        long rowId = row.getId() == null ? 0L : row.getId();
+        if (rowId == 0L) return;
+        for (IndexedColumn col : meta.indexedColumns) {
+            Object val = readFieldValue(col.field, row);
+            DsEqIndexStore idx = resolveEqIndex(meta, col);
+            switch (col.valueKind) {
+                case LONG:
+                    idx.putIndex(toIndexLongValue(col, val), rowId);
+                    break;
+                case STRING:
+                    idx.putIndex(toIndexStringValue(col, val), rowId);
+                    break;
+            }
+        }
+        for (CompositeIndex ci : meta.compositeIndexes) {
+            DsEqIndexStore idx = resolveCompositeIndex(meta, ci);
+            idx.putIndex(compositeKeyValue(ci, row), rowId);
+        }
+    }
     
     private TableMeta<? extends DsTableAdapter> createMeta(Class<? extends DsTableAdapter> clazz) {
         String space = clazz.getName();
         EntityIndexUtil.IndexDef index = EntityIndexUtil.indexOf(root, clazz);
         int sample = sampleRowLength(clazz);
-        if (sample != index.rowLength) {
-            throw new IllegalStateException("row length mismatch: expected=" + index.rowLength + ", actual=" + sample);
+        EntitySchemaUtil.SchemaDef curSchema = EntitySchemaUtil.schemaOf(clazz);
+        List<IndexedColumn> indexedColumns = new ArrayList<>();
+        Map<String, IndexedColumn> colByName = new LinkedHashMap<>();
+        for (EntitySchemaUtil.ColumnDef col : curSchema.getColumns()) {
+            Field f = col.declaredField;
+            f.setAccessible(true);
+            DsEqIndexStore.IndexedValueKind vk = resolveValueKind(f.getType());
+            IndexedColumn ic = new IndexedColumn(col.name, f, f.getType(), vk);
+            colByName.put(col.name, ic);
+            if (col.indexed) {
+                indexedColumns.add(ic);
+            }
         }
-        return new TableMeta<>(clazz, space, index.rowType, index.rowLength);
+        List<CompositeIndex> compositeIndexes = new ArrayList<>();
+        for (EntitySchemaUtil.CompositeIndexDef ci : curSchema.getCompositeIndexes()) {
+            List<IndexedColumn> cols = new ArrayList<>(ci.columns.size());
+            for (EntitySchemaUtil.ColumnDef c : ci.columns) {
+                IndexedColumn ic = colByName.get(c.name);
+                if (ic == null) {
+                    throw new IllegalStateException("Composite index " + ci.name + " references unknown column: " + c.name);
+                }
+                cols.add(ic);
+            }
+            compositeIndexes.add(new CompositeIndex(ci.name, cols));
+        }
+        int finalRowLength;
+        int legacyRowLength;
+        if (sample != index.rowLength) {
+            legacyRowLength = index.rowLength;
+            finalRowLength = sample;
+            System.err.println("[DsDatabaseLocal] WARN Schema row length mismatch (Online DDL compat ON): "
+                + "class=" + clazz.getName()
+                + ", storedLegacyRowLength=" + index.rowLength
+                + ", currentSchemaRowLength=" + sample
+                + ". Old row data auto-fallback @DsField.defaultValue on read; new writes use new length.");
+        } else {
+            legacyRowLength = -1;
+            finalRowLength = sample;
+        }
+        return new TableMeta<>(clazz, space, index.rowType, finalRowLength, legacyRowLength, curSchema.schemaId,
+                indexedColumns, compositeIndexes);
     }
     
     private static int sampleRowLength(Class<? extends DsTableAdapter> clazz) {
@@ -139,7 +407,7 @@ public class DsDatabaseLocal {
         Objects.requireNonNull(value, "value cannot be null");
         @SuppressWarnings("unchecked")
         TableMeta<T> meta = (TableMeta<T>) metaOf(value.getClass());
-        
+
         Long id = value.getId();
         if (assignIdIfMissing && (id == null || id == 0L)) {
             long newId = bucketStore.getNewId(meta.space, meta.type, meta.rowLength);
@@ -149,14 +417,214 @@ public class DsDatabaseLocal {
         if (id == null || id == 0L) {
             throw new IllegalArgumentException("entity id is missing");
         }
-        
+
         ByteBuffer buf = value.toBytes();
         if (buf.remaining() != meta.rowLength) {
-            throw new IllegalStateException("row length mismatch: expected=" + meta.rowLength + ", actual=" + buf.remaining());
+            System.err.println("[DsDatabaseLocal] WARN putEntity row length mismatch (compat): expected=" + meta.rowLength + ", actual=" + buf.remaining() + ", class=" + value.getClass().getName());
         }
-        byte[] bytes = buf.array();
+        byte[] bytes;
+        if (buf.remaining() == meta.rowLength) {
+            bytes = buf.array();
+        } else {
+            bytes = new byte[meta.rowLength];
+            buf.rewind();
+            int copyN = Math.min(buf.remaining(), meta.rowLength);
+            buf.get(bytes, 0, copyN);
+        }
+
+        T oldRow = null;
+        try {
+            byte[] oldBytes = bucketStore.get(meta.space, meta.type, id, 0, meta.rowLength);
+            if (oldBytes != null) {
+                oldRow = newInstance(meta.clazz);
+                oldRow.setId(id);
+                oldRow.load(ByteBuffer.wrap(oldBytes));
+            }
+        } catch (Exception ignore) {
+            oldRow = null;
+        }
+        removeRowFromIndexes(meta, oldRow);
+
         bucketStore.update(meta.space, meta.type, id, bytes, DsFixedBucketStore.UpdatePolicy.KEEP_BUCKET);
+
+        putRowIntoIndexes(meta, value);
         return id;
+    }
+
+    /**
+     * 批量 putEntity。对索引列按 indexedValue 聚合后只做一次 read-modify-write，
+     * 减少小批量写入时的 I/O 放大。
+     *
+     * @param values             待保存实体
+     * @param assignIdIfMissing  是否自动分配缺失的 ID
+     * @return 保存后的 ID 列表（顺序与输入一致）
+     * @throws IOException 当读写失败时
+     */
+    public <T extends DsTableAdapter> List<Long> putEntities(List<T> values, boolean assignIdIfMissing) throws IOException {
+        if (values == null || values.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Objects.requireNonNull(values.get(0), "entity cannot be null");
+        @SuppressWarnings("unchecked")
+        TableMeta<T> meta = (TableMeta<T>) metaOf(values.get(0).getClass());
+
+        int n = values.size();
+        List<Long> ids = new ArrayList<>(n);
+        List<T> oldRows = new ArrayList<>(n);
+        List<byte[]> newBytesList = new ArrayList<>(n);
+
+        // Phase 1: 分配 ID、序列化、读取旧行
+        for (T value : values) {
+            Objects.requireNonNull(value, "entity cannot be null");
+            Long id = value.getId();
+            if (assignIdIfMissing && (id == null || id == 0L)) {
+                long newId = bucketStore.getNewId(meta.space, meta.type, meta.rowLength);
+                value.setId(newId);
+                id = newId;
+            }
+            if (id == null || id == 0L) {
+                throw new IllegalArgumentException("entity id is missing");
+            }
+            ids.add(id);
+
+            ByteBuffer buf = value.toBytes();
+            if (buf.remaining() != meta.rowLength) {
+                System.err.println("[DsDatabaseLocal] WARN putEntities row length mismatch (compat): expected=" + meta.rowLength + ", actual=" + buf.remaining() + ", class=" + value.getClass().getName());
+            }
+            byte[] bytes;
+            if (buf.remaining() == meta.rowLength) {
+                bytes = buf.array();
+            } else {
+                bytes = new byte[meta.rowLength];
+                buf.rewind();
+                int copyN = Math.min(buf.remaining(), meta.rowLength);
+                buf.get(bytes, 0, copyN);
+            }
+            newBytesList.add(bytes);
+
+            T oldRow = null;
+            try {
+                byte[] oldBytes = bucketStore.get(meta.space, meta.type, id, 0, meta.rowLength);
+                if (oldBytes != null) {
+                    oldRow = newInstance(meta.clazz);
+                    oldRow.setId(id);
+                    oldRow.load(ByteBuffer.wrap(oldBytes));
+                }
+            } catch (Exception ignore) {
+                oldRow = null;
+            }
+            oldRows.add(oldRow);
+        }
+
+        // Phase 2: 批量更新主表
+        for (int i = 0; i < n; i++) {
+            bucketStore.update(meta.space, meta.type, ids.get(i), newBytesList.get(i), DsFixedBucketStore.UpdatePolicy.KEEP_BUCKET);
+        }
+
+        // Phase 3: 批量更新单字段索引
+        for (IndexedColumn col : meta.indexedColumns) {
+            batchUpdateIndex(meta, col, ids, oldRows, values);
+        }
+
+        // Phase 4: 批量更新复合索引
+        for (CompositeIndex ci : meta.compositeIndexes) {
+            batchUpdateCompositeIndex(meta, ci, ids, oldRows, values);
+        }
+
+        return ids;
+    }
+
+    private <T extends DsTableAdapter> void batchUpdateIndex(TableMeta<T> meta, IndexedColumn col,
+            List<Long> ids, List<T> oldRows, List<T> newRows) throws IOException {
+        DsEqIndexStore idx = resolveEqIndex(meta, col);
+        Map<Long, Set<Long>> target = new HashMap<>();
+        Set<Long> touchedValues = new HashSet<>();
+
+        int n = ids.size();
+        for (int i = 0; i < n; i++) {
+            T oldRow = oldRows.get(i);
+            T newRow = newRows.get(i);
+            if (oldRow != null) touchedValues.add(indexValueOf(col, oldRow));
+            touchedValues.add(indexValueOf(col, newRow));
+        }
+        for (Long v : touchedValues) {
+            long[] current = idx.findByIndex(v);
+            Set<Long> set = new LinkedHashSet<>();
+            if (current != null) {
+                for (long r : current) set.add(r);
+            }
+            target.put(v, set);
+        }
+        for (int i = 0; i < n; i++) {
+            long rowId = ids.get(i);
+            T oldRow = oldRows.get(i);
+            T newRow = newRows.get(i);
+            if (oldRow != null) {
+                Set<Long> set = target.get(indexValueOf(col, oldRow));
+                if (set != null) set.remove(rowId);
+            }
+            target.get(indexValueOf(col, newRow)).add(rowId);
+        }
+        Map<Long, long[]> batch = new HashMap<>();
+        for (Map.Entry<Long, Set<Long>> e : target.entrySet()) {
+            Set<Long> set = e.getValue();
+            long[] arr = new long[set.size()];
+            int pos = 0;
+            for (Long r : set) arr[pos++] = r;
+            batch.put(e.getKey(), arr);
+        }
+        idx.applyIndexBatch(batch);
+    }
+
+    private static long indexValueOf(IndexedColumn col, Object row) {
+        Object val = readFieldValue(col.field, row);
+        if (col.valueKind == DsEqIndexStore.IndexedValueKind.LONG) {
+            return toIndexLongValue(col, val);
+        } else {
+            return hashStringForIndex(toIndexStringValue(col, val));
+        }
+    }
+
+    private <T extends DsTableAdapter> void batchUpdateCompositeIndex(TableMeta<T> meta, CompositeIndex ci,
+            List<Long> ids, List<T> oldRows, List<T> newRows) throws IOException {
+        DsEqIndexStore idx = resolveCompositeIndex(meta, ci);
+        Map<Long, Set<Long>> target = new HashMap<>();
+        Set<Long> touchedValues = new HashSet<>();
+
+        int n = ids.size();
+        for (int i = 0; i < n; i++) {
+            T oldRow = oldRows.get(i);
+            T newRow = newRows.get(i);
+            if (oldRow != null) touchedValues.add(compositeKeyValue(ci, oldRow));
+            touchedValues.add(compositeKeyValue(ci, newRow));
+        }
+        for (Long v : touchedValues) {
+            long[] current = idx.findByIndex(v);
+            Set<Long> set = new LinkedHashSet<>();
+            if (current != null) {
+                for (long r : current) set.add(r);
+            }
+            target.put(v, set);
+        }
+        for (int i = 0; i < n; i++) {
+            long rowId = ids.get(i);
+            T oldRow = oldRows.get(i);
+            T newRow = newRows.get(i);
+            if (oldRow != null) {
+                Set<Long> set = target.get(compositeKeyValue(ci, oldRow));
+                if (set != null) set.remove(rowId);
+            }
+            target.get(compositeKeyValue(ci, newRow)).add(rowId);
+        }
+        Map<Long, long[]> batch = new HashMap<>();
+        for (Map.Entry<Long, Set<Long>> e : target.entrySet()) {
+            Set<Long> set = e.getValue();
+            long[] arr = new long[set.size()];
+            int pos = 0;
+            for (Long r : set) arr[pos++] = r;
+            batch.put(e.getKey(), arr);
+        }
+        idx.applyIndexBatch(batch);
     }
     
     public <T extends DsTableAdapter> T getTable(Class<T> clazz, long id) {
@@ -201,6 +669,20 @@ public class DsDatabaseLocal {
         }
         @SuppressWarnings("unchecked")
         TableMeta<T> meta = (TableMeta<T>) metaOf(clazz);
+
+        T oldRow = null;
+        try {
+            byte[] oldBytes = bucketStore.get(meta.space, meta.type, id, 0, meta.rowLength);
+            if (oldBytes != null) {
+                oldRow = newInstance(meta.clazz);
+                oldRow.setId(id);
+                oldRow.load(ByteBuffer.wrap(oldBytes));
+            }
+        } catch (Exception ignore) {
+            oldRow = null;
+        }
+        removeRowFromIndexes(meta, oldRow);
+
         if (withRelations) {
             removeRelations(clazz, id);
         }
@@ -637,12 +1119,25 @@ public class DsDatabaseLocal {
         final String space;
         final String type;
         final int rowLength;
-        
-        TableMeta(Class<T> clazz, String space, String type, int rowLength) {
+        final int legacyRowLength;
+        final String schemaId;
+        final List<IndexedColumn> indexedColumns;
+        final List<CompositeIndex> compositeIndexes;
+
+        TableMeta(Class<T> clazz, String space, String type, int rowLength, int legacyRowLength, String schemaId,
+                  List<IndexedColumn> indexedColumns, List<CompositeIndex> compositeIndexes) {
             this.clazz = clazz;
             this.space = space;
             this.type = type;
             this.rowLength = rowLength;
+            this.legacyRowLength = legacyRowLength;
+            this.schemaId = schemaId;
+            this.indexedColumns = indexedColumns == null || indexedColumns.isEmpty()
+                ? java.util.Collections.emptyList()
+                : java.util.Collections.unmodifiableList(new ArrayList<>(indexedColumns));
+            this.compositeIndexes = compositeIndexes == null || compositeIndexes.isEmpty()
+                ? java.util.Collections.emptyList()
+                : java.util.Collections.unmodifiableList(new ArrayList<>(compositeIndexes));
         }
     }
     
@@ -803,5 +1298,77 @@ public class DsDatabaseLocal {
         }
         return null;
     }
-    
+
+    /**
+     * 人工重试按钮（永不禁用，无状态门禁）— 立即对指定表执行 Online DDL 兼容迁移。
+     * 实际策略：把当前缓存的 TableMeta 清空，下次调用 createMeta() 会重新对比当前 sampleRowLength 与存储的 legacy rowLength。
+     * 业务可在加字段后手动调这个按钮，或配合后续 putEntity/getTable 的懒加载自动回退 default 值机制。
+     *
+     * @param clazz DsTableAdapter 子类
+     */
+    public <T extends DsTableAdapter> void forceApplyOnlineDDL(Class<T> clazz) {
+        Objects.requireNonNull(clazz, "clazz cannot be null");
+        tableMetaCache.remove(clazz);
+        metaOf(clazz);
+    }
+
+    /**
+     * 人工重试按钮（永不禁用，无状态门禁）— 取消 Online DDL 状态。
+     * 等价于把当前缓存的 TableMeta 从 tableMetaCache 中删除，下次 createMeta 会重新走 schema 对比流程。
+     *
+     * @param clazz DsTableAdapter 子类
+     */
+    public <T extends DsTableAdapter> void cancelOnlineDDL(Class<T> clazz) {
+        Objects.requireNonNull(clazz, "clazz cannot be null");
+        tableMetaCache.remove(clazz);
+    }
+
+    /**
+     * 人工重试按钮（永不禁用，无状态门禁）— 回滚到上一个 schema 版本。
+     * 当前实现等价于 cancelOnlineDDL（清空缓存重算），未来可拓展为切换 ids_<oldSchemaId>.set 的真实回滚指针。
+     *
+     * @param clazz DsTableAdapter 子类
+     */
+    public <T extends DsTableAdapter> void forceRollbackSchema(Class<T> clazz) {
+        Objects.requireNonNull(clazz, "clazz cannot be null");
+        tableMetaCache.remove(clazz);
+        metaOf(clazz);
+    }
+
+    /**
+     * 人工重试按钮（永不禁用，无状态门禁，测试专用静态重置）。
+     * 递归删除 indexes/ 根目录下所有 schema_*.dat 与 ids_*.set 文件（保留 ids.set legacy 不删，避免老数据全丢）。
+     *
+     * @param dbRoot DsDatabaseLocal 根目录
+     */
+    public static void forceResetSchemaMetaForTest(File dbRoot) {
+        Objects.requireNonNull(dbRoot, "dbRoot cannot be null");
+        File indexesDir = new File(dbRoot, "indexes");
+        if (!indexesDir.exists() || !indexesDir.isDirectory()) {
+            return;
+        }
+        deleteSchemaFilesRecursive(indexesDir);
+    }
+
+    private static void deleteSchemaFilesRecursive(File dir) {
+        File[] children = dir.listFiles();
+        if (children == null) {
+            return;
+        }
+        for (File f : children) {
+            if (f.isDirectory()) {
+                deleteSchemaFilesRecursive(f);
+                continue;
+            }
+            String name = f.getName();
+            if (name.startsWith("ids_") && name.endsWith(".set")) {
+                f.delete();
+                continue;
+            }
+            if (name.startsWith("schema_") && name.endsWith(".dat")) {
+                f.delete();
+            }
+        }
+    }
+
 }

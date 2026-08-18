@@ -2,13 +2,34 @@
 package com.q3lives.ds.database.integration;
 
 
+import java.io.IOException;
+import java.io.Serializable;
+import java.lang.reflect.Field;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
 import com.q3lives.ds.annotation.DsField;
 import com.q3lives.ds.annotation.query.OrderByProp;
 import com.q3lives.ds.collections.DsHashSet;
 import com.q3lives.ds.database.DsDatabaseLocal;
 import com.q3lives.ds.database.adapter.DsTableAdapter;
+import com.q3lives.ds.database.index.DsEqIndexStore;
 import com.q3lives.ds.database.schema.EntityIndexUtil;
+import com.q3lives.ds.database.schema.EntitySchemaUtil;
 import com.q3lives.ds.util.DateUtil;
+import com.q3lives.ds.util.DsPathUtil;
 import com.q3lives.ds.util.MyBeanUtils;
 import com.q3lives.ds.util.MyDsDatabaseUtil;
 import com.q3lives.ds.util.OrderWrapper;
@@ -17,28 +38,6 @@ import com.spatial4j.core.context.SpatialContext;
 import com.spatial4j.core.distance.DistanceUtils;
 import com.spatial4j.core.io.GeohashUtils;
 import com.spatial4j.core.shape.Rectangle;
-import java.io.File;
-import java.io.IOException;
-import java.io.Serializable;
-import java.lang.reflect.Field;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.SQLException;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Comparator;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.logging.Level;
-import java.util.logging.Logger;
-import org.apache.commons.collections.CollectionUtils;
 
 /**
  * 所有DAO接口的基类
@@ -58,6 +57,33 @@ public class GenericManager<T extends DsTableAdapter>{
     private volatile Map<String, Field> fieldsMap;
     private volatile Map<String, Field> col2FieldMap;
     private volatile List<Field> persistentFields;
+    private volatile Map<String, IndexedColInfo> indexedColInfo;
+    private volatile List<CompositeIndexInfo> compositeIndexInfo;
+    private volatile String schemaId;
+    private volatile boolean hasIndexedColumns;
+    private volatile boolean hasCompositeIndexes;
+
+    private static final class IndexedColInfo {
+        final String columnName;
+        final Field field;
+        final Class<?> fieldType;
+        final DsEqIndexStore.IndexedValueKind valueKind;
+        IndexedColInfo(String columnName, Field field, Class<?> fieldType, DsEqIndexStore.IndexedValueKind valueKind) {
+            this.columnName = columnName;
+            this.field = field;
+            this.fieldType = fieldType;
+            this.valueKind = valueKind;
+        }
+    }
+
+    private static final class CompositeIndexInfo {
+        final String name;
+        final List<IndexedColInfo> columns;
+        CompositeIndexInfo(String name, List<IndexedColInfo> columns) {
+            this.name = name;
+            this.columns = columns;
+        }
+    }
     
     public GenericManager() {
         this.db = DsDatabaseLocal.load();
@@ -84,11 +110,13 @@ public class GenericManager<T extends DsTableAdapter>{
     }
 
     private void ensureInit() {
-        if (idSet != null && field2ColMap != null && fieldsMap != null && col2FieldMap != null && persistentFields != null) {
+        if (idSet != null && field2ColMap != null && fieldsMap != null && col2FieldMap != null
+                && persistentFields != null && indexedColInfo != null && compositeIndexInfo != null) {
             return;
         }
         synchronized (initLock) {
-            if (idSet != null && field2ColMap != null && fieldsMap != null && col2FieldMap != null && persistentFields != null) {
+            if (idSet != null && field2ColMap != null && fieldsMap != null && col2FieldMap != null
+                    && persistentFields != null && indexedColInfo != null && compositeIndexInfo != null) {
                 return;
             }
             if (persistentClass == null) {
@@ -97,7 +125,47 @@ public class GenericManager<T extends DsTableAdapter>{
             EntityIndexUtil.IndexDef index = EntityIndexUtil.indexOf(db.getRoot(), persistentClass);
             idSet = new DsHashSet(index.idsFile);
             initFieldCaches();
+            EntitySchemaUtil.SchemaDef curSchema = EntitySchemaUtil.schemaOf(persistentClass);
+            this.schemaId = curSchema.schemaId;
+            Map<String, IndexedColInfo> idxCol = new LinkedHashMap<>();
+            for (EntitySchemaUtil.ColumnDef col : curSchema.getColumns()) {
+                Field f = col.declaredField;
+                f.setAccessible(true);
+                if (col.indexed) {
+                    idxCol.put(col.name, new IndexedColInfo(col.name, f, f.getType(), resolveIndexedValueKind(f.getType())));
+                }
+            }
+            this.indexedColInfo = idxCol.isEmpty() ? Collections.emptyMap() : idxCol;
+            this.hasIndexedColumns = !this.indexedColInfo.isEmpty();
+
+            List<CompositeIndexInfo> cidx = new ArrayList<>();
+            for (EntitySchemaUtil.CompositeIndexDef ci : curSchema.getCompositeIndexes()) {
+                List<IndexedColInfo> cols = new ArrayList<>(ci.columns.size());
+                for (EntitySchemaUtil.ColumnDef c : ci.columns) {
+                    IndexedColInfo info = idxCol.get(c.name);
+                    if (info == null) {
+                        Field f = c.declaredField;
+                        f.setAccessible(true);
+                        info = new IndexedColInfo(c.name, f, f.getType(), resolveIndexedValueKind(f.getType()));
+                    }
+                    cols.add(info);
+                }
+                cidx.add(new CompositeIndexInfo(ci.name, cols));
+            }
+            this.compositeIndexInfo = cidx.isEmpty() ? Collections.emptyList() : cidx;
+            this.hasCompositeIndexes = !this.compositeIndexInfo.isEmpty();
         }
+    }
+    
+    private static DsEqIndexStore.IndexedValueKind resolveIndexedValueKind(Class<?> type) {
+        if (type == String.class) return DsEqIndexStore.IndexedValueKind.STRING;
+        if (type == Long.class || type == long.class || type == Integer.class || type == int.class
+                || type == Short.class || type == short.class || type == Byte.class || type == byte.class
+                || type == Boolean.class || type == boolean.class || type == Date.class
+                || type == java.sql.Date.class || type == LocalDate.class || type == LocalDateTime.class) {
+            return DsEqIndexStore.IndexedValueKind.LONG;
+        }
+        return null;
     }
     
     private void initFieldCaches() {
@@ -1511,10 +1579,10 @@ try {
         return persistentFields;
     }
 
-    private int count(QueryWrapper<T> queryWrapper) {
+    private int countByWrapper(QueryWrapper<T> queryWrapper) {
         ensureInit();
         int c = 0;
-        for (Long id : idSet) {
+        for (Long id : candidateIdsForQuery(queryWrapper)) {
             T e = db.getTable(persistentClass, id);
             if (matchesAll(queryWrapper, e)) {
                 c++;
@@ -1523,9 +1591,9 @@ try {
         return c;
     }
 
-      private T getOne(QueryWrapper<T> queryWrapper) {
+    private T getOneByWrapper(QueryWrapper<T> queryWrapper) {
         ensureInit();
-        for (Long id : idSet) {
+        for (Long id : candidateIdsForQuery(queryWrapper)) {
             T e = db.getTable(persistentClass, id);
             if (matchesAll(queryWrapper, e)) {
                 return e;
@@ -1575,6 +1643,32 @@ try {
         @SuppressWarnings("unchecked")
         QueryWrapper<T> w = (QueryWrapper<T>) wrapper;
         return sliceEntities(w, start, end);
+    }
+
+    public QueryWrapper<T> buildQueryWrapper() {
+        ensureInit();
+        return new QueryWrapper<>();
+    }
+
+    @SuppressWarnings("unchecked")
+    public List<T> findList(QueryWrapper wrapper) {
+        ensureInit();
+        QueryWrapper<T> w = (QueryWrapper<T>) wrapper;
+        return listEntities(w);
+    }
+
+    @SuppressWarnings("unchecked")
+    public T getOne(QueryWrapper wrapper) {
+        ensureInit();
+        QueryWrapper<T> w = (QueryWrapper<T>) wrapper;
+        return getOneByWrapper(w);
+    }
+
+    @SuppressWarnings("unchecked")
+    public int count(QueryWrapper wrapper) {
+        ensureInit();
+        QueryWrapper<T> w = (QueryWrapper<T>) wrapper;
+        return countByWrapper(w);
     }
 
     public QueryWrapper buildQueryWrapper(OrderWrapper ow, String props, String string) {
@@ -1652,6 +1746,159 @@ try {
         return sb.toString();
     }
 
+    private DsEqIndexStore openIndexStore(IndexedColInfo col) throws IOException {
+        String safeSpace = DsPathUtil.toSafeFileName(persistentClass.getName(), 80);
+        String safeCol = DsPathUtil.toSafeFileName(col.columnName, 64);
+        String space = "indexes/" + safeSpace + "/" + schemaId;
+        String indexName = "eq_" + safeCol;
+        return new DsEqIndexStore(db.getRoot(), space, indexName, col.valueKind);
+    }
+
+    private DsEqIndexStore openCompositeIndexStore(CompositeIndexInfo ci) throws IOException {
+        String safeSpace = DsPathUtil.toSafeFileName(persistentClass.getName(), 80);
+        String safeName = DsPathUtil.toSafeFileName(ci.name, 64);
+        String space = "indexes/" + safeSpace + "/" + schemaId;
+        String indexName = "cidx_" + safeName;
+        return new DsEqIndexStore(db.getRoot(), space, indexName, DsEqIndexStore.IndexedValueKind.LONG);
+    }
+
+    private long toIndexLongValue(Object val, IndexedColInfo col) {
+        if (val == null) return 0L;
+        Class<?> ft = col.fieldType;
+        Object v = coerce(val, ft);
+        if (v == null) return 0L;
+        if (v instanceof Long l) return l;
+        if (v instanceof Integer i) return i.longValue();
+        if (v instanceof Short s) return s.longValue();
+        if (v instanceof Byte b) return b.longValue();
+        if (v instanceof Boolean bo) return bo ? 1L : 0L;
+        if (v instanceof Date d) return d.getTime();
+        if (v instanceof LocalDate ld) return ld.toEpochDay();
+        if (v instanceof LocalDateTime ldt) return ldt.toEpochSecond(java.time.ZoneOffset.UTC);
+        return 0L;
+    }
+
+    private String toIndexStringValue(Object val) {
+        if (val == null) return null;
+        Object s = coerce(val, String.class);
+        return s == null ? null : String.valueOf(s);
+    }
+
+    private long compositeKeyValue(CompositeIndexInfo ci, QueryWrapper<T> wrapper) {
+        StringBuilder sb = new StringBuilder(64);
+        for (int i = 0; i < ci.columns.size(); i++) {
+            if (i > 0) sb.append('\u0001');
+            IndexedColInfo col = ci.columns.get(i);
+            Object val = null;
+            for (QueryWrapper.Criterion c : wrapper.criteria()) {
+                if (c.op == QueryWrapper.Op.EQ && c.col.equals(col.columnName)) {
+                    val = c.a;
+                    break;
+                }
+            }
+            if (val == null) {
+                sb.append('\u0000');
+            } else if (col.valueKind == DsEqIndexStore.IndexedValueKind.LONG) {
+                sb.append(toIndexLongValue(val, col));
+            } else {
+                sb.append(toIndexStringValue(val));
+            }
+        }
+        return fnv1a64(sb.toString());
+    }
+
+    private static long fnv1a64(String s) {
+        long h = 0xcbf29ce484222325L;
+        for (int i = 0; i < s.length(); i++) {
+            h ^= s.charAt(i);
+            h *= 0x100000001b3L;
+        }
+        return h;
+    }
+
+    private QueryWrapper.Criterion pickBestIndexedCriterion(QueryWrapper<T> wrapper) {
+        List<QueryWrapper.Criterion> usable = collectIndexableCriteria(wrapper);
+        QueryWrapper.Criterion eqLong = null, eqString = null, rangeLong = null;
+        for (QueryWrapper.Criterion c : usable) {
+            IndexedColInfo info = indexedColInfo.get(c.col);
+            switch (c.op) {
+                case EQ:
+                    if (info.valueKind == DsEqIndexStore.IndexedValueKind.LONG && eqLong == null) eqLong = c;
+                    else if (info.valueKind == DsEqIndexStore.IndexedValueKind.STRING && eqString == null) eqString = c;
+                    break;
+                default:
+                    if (rangeLong == null) rangeLong = c;
+                    break;
+            }
+        }
+        if (eqLong != null) return eqLong;
+        if (eqString != null) return eqString;
+        return rangeLong;
+    }
+
+    private long[] candidateRowIdsFromIndex(QueryWrapper.Criterion best) throws IOException {
+        IndexedColInfo info = indexedColInfo.get(best.col);
+        if (info == null) return null;
+        try (DsEqIndexStore idx = openIndexStore(info)) {
+            switch (best.op) {
+                case EQ:
+                    if (info.valueKind == DsEqIndexStore.IndexedValueKind.LONG) {
+                        return idx.findByIndex(toIndexLongValue(best.a, info));
+                    } else {
+                        return idx.findByIndex(toIndexStringValue(best.a));
+                    }
+                case GT:
+                    return idx.findByGt(toIndexLongValue(best.a, info));
+                case GE:
+                    return idx.findByGte(toIndexLongValue(best.a, info));
+                case LT:
+                    return idx.findByLt(toIndexLongValue(best.a, info));
+                case LE:
+                    return idx.findByLte(toIndexLongValue(best.a, info));
+                case BETWEEN:
+                    return idx.findByBetween(toIndexLongValue(best.a, info), toIndexLongValue(best.b, info));
+                default:
+                    return null;
+            }
+        }
+    }
+
+    private java.util.Set<Long> rowIdSetFromIndex(QueryWrapper.Criterion c) throws IOException {
+        long[] ids = candidateRowIdsFromIndex(c);
+        if (ids == null || ids.length == 0) return Collections.emptySet();
+        java.util.HashSet<Long> set = new java.util.HashSet<>(Math.max(4, ids.length));
+        for (long id : ids) {
+            if (id != DsEqIndexStore.NOT_FOUND) set.add(id);
+        }
+        return set;
+    }
+
+    private List<QueryWrapper.Criterion> collectIndexableCriteria(QueryWrapper<T> wrapper) {
+        if (!hasIndexedColumns || wrapper == null || wrapper.criteria() == null || wrapper.criteria().isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<QueryWrapper.Criterion> out = new ArrayList<>(4);
+        for (QueryWrapper.Criterion c : wrapper.criteria()) {
+            IndexedColInfo info = indexedColInfo.get(c.col);
+            if (info == null || info.valueKind == null) continue;
+            switch (c.op) {
+                case EQ:
+                    out.add(c);
+                    break;
+                case GT: case GE: case LT: case LE: case BETWEEN:
+                    if (info.valueKind == DsEqIndexStore.IndexedValueKind.LONG) out.add(c);
+                    break;
+                default: break;
+            }
+        }
+        return out;
+    }
+
+    private Iterator<Long> primaryIdIterator() {
+        if (idSet == null) return java.util.Collections.emptyIterator();
+        return idSet.iterator();
+    }
+
     private void applyOrders(QueryWrapper<T> wrapper, OrderByProp[] orders) {
         if (orders == null || orders.length == 0) {
             return;
@@ -1727,7 +1974,7 @@ try {
 
     private List<T> listEntities(QueryWrapper<T> wrapper) {
         List<T> out = new ArrayList<>();
-        for (Long id : idSet) {
+        for (Long id : candidateIdsForQuery(wrapper)) {
             T e = db.getTable(persistentClass, id);
             if (!matchesAll(wrapper, e)) {
                 continue;
@@ -1736,6 +1983,88 @@ try {
         }
         sort(out, wrapper);
         return out;
+    }
+
+    private Iterable<Long> candidateIdsForQuery(QueryWrapper<T> wrapper) {
+        // 优先使用复合索引最左前缀
+        if (hasCompositeIndexes) {
+            try {
+                CompositeIndexInfo bestCi = null;
+                int bestPrefix = 0;
+                for (CompositeIndexInfo ci : compositeIndexInfo) {
+                    int prefix = longestEqPrefix(ci, wrapper);
+                    if (prefix > bestPrefix) {
+                        bestPrefix = prefix;
+                        bestCi = ci;
+                    }
+                }
+                if (bestCi != null) {
+                    CompositeIndexInfo use = bestCi;
+                    int prefixLen = bestPrefix;
+                    try (DsEqIndexStore idx = openCompositeIndexStore(use)) {
+                        long key = compositeKeyValue(use, wrapper);
+                        long[] ids = idx.findByIndex(key);
+                        if (ids != null && ids.length > 0) {
+                            List<Long> list = new ArrayList<>(ids.length);
+                            for (long id : ids) {
+                                if (id != DsEqIndexStore.NOT_FOUND) list.add(id);
+                            }
+                            if (!list.isEmpty()) return list;
+                        }
+                    }
+                }
+            } catch (IOException | RuntimeException ignored) {
+            }
+        }
+
+        List<QueryWrapper.Criterion> usable = collectIndexableCriteria(wrapper);
+        if (!usable.isEmpty()) {
+            try {
+                List<java.util.Set<Long>> sets = new ArrayList<>(usable.size());
+                for (QueryWrapper.Criterion c : usable) {
+                    java.util.Set<Long> s = rowIdSetFromIndex(c);
+                    if (s == null || s.isEmpty()) {
+                        return Collections.emptyList();
+                    }
+                    sets.add(s);
+                }
+                if (!sets.isEmpty()) {
+                    sets.sort(Comparator.comparingInt(java.util.Set::size));
+                    java.util.Set<Long> driver = sets.get(0);
+                    for (int i = 1; i < sets.size(); i++) {
+                        driver.retainAll(sets.get(i));
+                        if (driver.isEmpty()) break;
+                    }
+                    if (!driver.isEmpty()) return new ArrayList<>(driver);
+                }
+            } catch (IOException | RuntimeException ignored) {
+            }
+        }
+        List<Long> all = new ArrayList<>();
+        Iterator<Long> it = primaryIdIterator();
+        while (it.hasNext()) {
+            Long id = it.next();
+            if (id != null && id != 0L) {
+                all.add(id);
+            }
+        }
+        return all;
+    }
+
+    private int longestEqPrefix(CompositeIndexInfo ci, QueryWrapper<T> wrapper) {
+        int matched = 0;
+        for (IndexedColInfo col : ci.columns) {
+            boolean found = false;
+            for (QueryWrapper.Criterion c : wrapper.criteria()) {
+                if (c.op == QueryWrapper.Op.EQ && c.col.equals(col.columnName)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) break;
+            matched++;
+        }
+        return matched;
     }
 
     private boolean matchesAll(QueryWrapper<T> wrapper, T entity) {

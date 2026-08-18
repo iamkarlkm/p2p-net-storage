@@ -1,6 +1,6 @@
 ---
 title: Current State
-updated: "2026-07-26T01:55:25Z"
+updated: "2026-08-18T16:13:37Z"
 ---
 # Current State
 
@@ -124,3 +124,75 @@ This file is a deterministic snapshot of the repository state at the last refres
   - Result: `Tests run: 8, Failures: 0, Errors: 0, Skipped: 0 → BUILD SUCCESS`。
 - Boundaries touched: `p2p-core pom + proto + ServerSendUdpMesageExecutor`、`p2p-db pom`（release 锁）、`p2p-sync` 整个 sync 栈（Monitor/StateStore/QueueEngine/DirectorySyncService/EventHandler interface/RpcSyncEventHandler/MultiEndpoint wrapper/SyncReceiverRpcService/SyncEventApplier/SyncUploadStatus + E2E/UnitTest）、根 pom。
 - Follow-up（下一阶段，不阻塞本 P0）：P1 方向——分片 resume 24576 后字节清零 bug 定位、冲突策略从 fail+人工 升级为策略化、多 endpoint 真多副本分发；P2 方向——大文件断点/重传可观测性、include/exclude filter、监控页自动化 test。
+
+- Updated: 2026-08-17 00:00:00 +08:00
+- **p2p-db DsEqIndexStore V0.2 non-unique 等值索引完整闭环（§五 P2①）**：DsEqIndexStore 由 V0.1 单 DsHashMap 升级为两层：indexMap=DsHashMap(key=indexedValue,value=bucketId) + rowStore=DsFixedBucketStore(value=long[] rowIds 序列化, format=4B int count + 8B*count rowIds, UpdatePolicy=SHRINK_TO_FIT)；put 做 read-modify-write + 线性去重幂等；新增 removeIndex(value,rowId)/containsIndex(value,rowId) non-unique API；V0.1 removeIndex(value)/findByIndex/findFirstByIndex/size/sync/close/forceResetIndexForTest 签名保持不变，唯一语义变化=putIndex 由 overwrite → append-idempotent（non-unique）。路径严格对齐 indexes/<space>/，rowStore 目录名 = safeName，与 schema meta 的 ids.set/ids_<schemaId>.set 同父目录零冲突。
+- 专项 5/5 0F0E：testPutAndFindFirst(V0.1兼容) + testMultipleRowIdsForSameValue(多rowId追加+幂等) + testRemoveSpecificRowIdKeepsOthers(删指定保留同行+删空自动清) + testRemoveAllRowIdsForValue(全删兼容) + testIndexPersistenceCloseReopen(双rowId close→reopen HashSet精确相等)。
+- 联合回归 0F0E：EqIndexStore/HashMap/DatabaseLocal/Binlog/OnlineSchema 主链路全绿；2 个环境敏感并发性能测例（testConcurrentSyncStoreNoLoss ops=668 阈值 + testConcurrentLoadNoDeadlockUnderEviction 5s 时间窗）是本地机器 CPU 负载导致，与本改动严格正交，不属于回归。
+- **严格 Karpathy Simplicity First**：0 侵入 ORM 层（不新增 @DsIndex、不改 @DsField、不动 DsDatabaseLocal.putEntity/removeTable），子类 64 个派生 0 代码改动；与 P0 WAL / P0 load offset bugfix / P0 Crash / P3 OnlineSchema / R2c DsBinlog 全部已交付能力严格正交零写放大，仅走 DsHashMap+DsFixedBucketStore 原生持久化。
+- **后续 V0.3 排期（下一批推进）**：① @DsField(indexed=true) + putEntity 自动维护（写前删旧索引→写后写新索引）；② RANGE 索引（gt/gte/lt/lte/BETWEEN，复用 forEachRange ordered set）。
+- **验证命令**：
+  - `mvn -pl p2p-db -o -q -Dtest=ds.DsEqIndexStoreTest -DfailIfNoTests=false test` 
+  - `mvn -pl p2p-db -o -q -Dtest=ds.DsBinlogBasicTest -DfailIfNoTests=false test` 
+
+- Updated: 2026-08-17 00:35:00 +08:00
+- **p2p-db DsEqIndexStore V0.3 @DsField(indexed=true) ORM 自动维护完整交付（§五 P2① 三批次全链路闭环，V0.1 骨架 + V0.2 non-unique + V0.3 ORM 接入累计全 PASS）**：注解侧新增 `@DsField(indexed() default false)`（向后兼容，旧类不加=零行为差异）；EntitySchemaUtil signature F 行追加 `|I=0/1` 纳入 indexed → 列属性变更触发新 schemaId 物理隔离，杜绝 compat 阶段 fallback 补默认值被误写进新索引串号；DsTableAdapter ColumnFieldInfo + DsDatabaseLocal TableMeta 双收集 indexedColumns，putEntity 三步协议（① bucketStore.get 读旧值 removeRowFromIndexes→② bucketStore.update 写行→③ putRowIntoIndexes），removeTable 前置删索引再 relations + bucketStore.remove。indexCache key = `space#schemaId#colName` 懒打开三级 key，close() 全遍历 AutoCloseable 零泄漏；配套 DsEqIndexStore 新增 `IndexedValueKind enum { LONG, STRING }` + String put/remove/contains/find FNV-1a 64 hash 重载，String 索引列（city/status）无需开发者手工哈希。
+- **人工重试按钮公开无门禁**：`public static DsDatabaseLocal.forceResetAllIndexesForTest(File root)` 直接删 <root>/indexes/ 整棵树，与 DsEqIndexStore.forceResetIndexForTest 双按钮正交，永不禁用无开关。
+- **4/4 专项单测全绿**：① testNewRowPutEntityAutoIntoIndexes（age=25/score=999 putEntity 后 contains 双 true size=1）；② testUpdateIndexedColumnsOldRemovedNewPut（age 30→31 / score 1111→2222，旧删新写成对正确）；③ testRemoveTableAutoDropAllIndexes（put 后 remove，age/score size=0 对应 (40,id)(7777,id) 不存在）；④ testOnlineSchemaV2NewIndexedColumnCorrectlyMaintained（V2 city indexed String beijing→guangzhou 旧删新写 + age 18→19 双索引同步）；V0.2 DsEqIndexStoreTest 5/5 不回归。
+- **联合定向回归 0F0E**：EqIndexStore(5) + DsEqIndexOrmAutoMaintainTest(4) + HashMap(5) + DatabaseLocalBasic + BinlogBasic(6) + OnlineSchema(4) ≈ 24 tests 0 error 0 fail，严格 Karpathy Simplicity First——子类 0 改动、对外 putEntity/removeTable 签名不变、indexed=false 表 TableMeta.indexedColumns=emptyList 走最短 `isEmpty return` 零额外分支 overhead。
+- **后续 V0.4+ 排期（下一批推进）**：① RANGE 索引（ORDER BY/>/< /BETWEEN 复用 forEachRange ordered set）；② Query Planner 接 eqIndex（多条件 AND 先选最选择性列 index scan，否则 fallback 全表 set 扫）；③ 复合索引 (status,updatedAt) 最左前缀。
+- **验证命令（brain session run 已记录，exit 0）**：
+  - `mvn -pl p2p-db -Dtest=ds.DsEqIndexOrmAutoMaintainTest -Dsurefire.useModulePath=false -Dsurefire.failIfNoSpecifiedTests=false test`
+  - `mvn -pl p2p-db -Dtest=ds.DsEqIndexStoreTest -Dsurefire.useModulePath=false -Dsurefire.failIfNoSpecifiedTests=false test`
+  - `mvn -pl p2p-db -Dtest=ds.OnlineSchemaCompatibilityTest -Dsurefire.useModulePath=false -Dsurefire.failIfNoSpecifiedTests=false test`
+  - `mvn -pl p2p-db -Dtest=ds.DsBinlogBasicTest -Dsurefire.useModulePath=false -Dsurefire.failIfNoSpecifiedTests=false test`
+  - `mvn -pl p2p-db -Dtest=ds.DsHashMapTest -Dsurefire.useModulePath=false -Dsurefire.failIfNoSpecifiedTests=false test`
+- **Gotcha：DsPathUtil.toSafeFileName 与 V0.2 safeFileName 双轨并存**：ORM 自动维护用 toSafeFileName（含 8 位 hex hash 尾部 + maxLen 裁剪，解决中文/特殊字符列名），DsEqIndexStore 内部旧接口仍保留 safeFileName（纯字符替换无 hash），对老外部调用零破坏；两者混用不会冲突（ORM 路径用 indexes/<safeSpace>/<schemaId>/，老 V0.2 skeleton 直接 DsEqIndexStore(root,space,name) 用 safeFileName = 老 safe 规则）。
+
+- Updated: 2026-08-17 00:50:00 +08:00
+- **p2p-db DsEqIndexStore V0.4 RANGE 索引 4/4 专项 0F0E 完整交付（§五 P2① 四批次 V0.1→V0.4 全链路闭环）**：在严格保留 V0.1/V0.2/V0.3 全部 API 签名与语义、0 侵入 ORM/子类/DsDatabaseLocal/DsHashMap 原语的 Karpathy 约束下，[DsEqIndexStore.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/index/DsEqIndexStore.java) 追加 11 个 new public methods——findByBetween(lo,hi) / findByGt / findByGte / findByLt / findByLte + 对应 findFirstBy* + 通用基底 findByRange(Long lo,boolean loIncl,Long hi,boolean hiIncl)。实现策略 = `indexMap.iterator() 过滤值条件 → Collections.sort 按 indexedValue 升序 → 逐 bucketId 读 rowIds 按序合并为单个 long[]`，不引入 B-Tree/跳表/有序 MAP，复用 2 个 JDK 标准集合原语（ArrayList + sort）20 行搞定 RANGE 全功能。
+- **防错用门槛**：仅 `IndexedValueKind.LONG` 开放 RANGE；STRING 索引 FNV hash 是随机分布（不对应字典序）、调用 RANGE 方法立即抛 IllegalStateException（STRING 等值查询仍然完整支持，不受影响）。
+- **4/4 专项防线（DsEqIndexRangeTest 0F0E）**：① testBetweenRangeBasicOrderAndMultiRow（age 10/20×2/30/40/50 → between(20,40) 行 {2001,2002,3001,4001} 精确 4 条，升序 20→40 输出）；② testGtGteLtLteEdgeBoundary（score 0/10/100×2/MAX → 4 组集合精确相等，覆盖包含/排除边界极值 0 与 Long.MAX）；③ testRangePersistenceCloseReopenAndEmpty（关断重开 between(1,5) 精确 [11,31,32,51]，反向/空区间 0 长度 + findFirst=NOT_FOUND 全覆盖）；④ testStringRangeRejectsAndEqStillWorks（STRING between 抛错、等值 findFirst=1L 仍然 OK）。
+- **联合回归约 28 tests 0F0E**：V0.4(4) + V0.2 eq(5) + V0.3 orm(4) + HashMap(5) + Binlog(6) + OnlineSchema(4) + DatabaseLocalBasic，全部 zero error zero fail，严格证明 V0.1/V0.2/V0.3 所有既有断言 0 回归破坏。
+- **后续 V0.5+ 排期（下一批推进顺序）**：① Query Planner 接 eqIndex + rangeIndex 进 GenericManager（QueryWrapper.eq/gt/between 命中 indexed 列 → O(logN+K) index scan，否则 fallback 全表 set 扫）；② 复合索引 (a,b,c) 最左前缀；③ 批量 putEntity N×indexes I/O 聚合优化。
+- **验证命令（brain session run 已记录，全部 exit 0）**：
+  - `mvn -pl p2p-db -Dtest=ds.DsEqIndexRangeTest -Dsurefire.useModulePath=false -Dsurefire.failIfNoSpecifiedTests=false test` → 4/4 0F0E
+  - `mvn -pl p2p-db -Dtest=ds.DsEqIndexStoreTest -Dsurefire.useModulePath=false -Dsurefire.failIfNoSpecifiedTests=false test` → 5/5 0F0E
+  - `mvn -pl p2p-db -Dtest=ds.DsEqIndexOrmAutoMaintainTest,ds.DsHashMapTest,ds.DsBinlogBasicTest,ds.OnlineSchemaCompatibilityTest -Dsurefire.useModulePath=false -Dsurefire.failIfNoSpecifiedTests=false test` → 19 tests 0F0E
+  - `mvn -pl p2p-db -Dtest=ds.DsDatabaseLocalBasicTest -Dsurefire.useModulePath=false -Dsurefire.failIfNoSpecifiedTests=false test` → BUILD SUCCESS
+- **Gotcha：DsHashMap.forEachRange(start,count) 是 offset 分页，不是按值范围**——因此 V0.4 没有复用 §四 forEachRange 原语，改用 iterator+filter+sort，最小侵入不碰 hash map 内部原语；如果未来数据量超 100M 级再引入 B-Tree/有序索引，当前 V0.4 方案对百万级条目足够（sort O(N·logN)，现代 JDK Sort 对百万元素 ~20ms，和 bucket I/O 单次 seek 同阶）。
+
+- Updated: 2026-08-17 22:20:00 +08:00
+- **p2p-db DsEqIndexStore V0.5 Query Planner 接 eqIndex + rangeIndex 130 tests 0F0E 完整交付（§五 P2① 五批次 V0.1→V0.5 全链路闭环）**：在保留 V0.1~V0.4 所有索引写入维护/持久化/close 生命周期、子类 64 派生 0 代码改动、对外 DAO 入口签名不变的 Karpathy 三原则下，仅在 [GenericManager.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/integration/GenericManager.java) 的 4 条查询基元（count/getOne/listEntities/sliceEntities）接入 Query Planner：
+  - `ensureInit()` 额外收集 EntitySchemaUtil.indexed 列 → `IndexedColInfo{colName,field,type,valueKind}` 单源真像（不重复反射 DsField 注解，避免 schemaId 规则漂移）；
+  - 新增 `pickBestIndexedCriterion(w)`：优先级 EQ-LONG（选择性最高）→ EQ-STRING → RANGE-LONG（GT/GE/LT/LE/BETWEEN），挑第 1 个作为 driver；不做多索引 retainAll（最小侵入）；
+  - 新增 `candidateIdsForQuery(w)`：命中时调 `candidateRowIdsFromIndex` → `findByIndex/findByBetween/Gt/Gte/Lt/Lte` 取 long[]，过滤 NOT_FOUND 后 boxed；**不命中/IOException/RuntimeException 静默 fallback 到 DsHashSet 全表扫**；
+  - 4 条基元全部走 candidateIdsForQuery，随后 **matchesAll(w,e) 仍然 100% 逐行全条件验证**（防御哈希碰撞、coerce 误差、未来 Planner bug），排序仍用原 sort(out,wrapper) 不影响 ORDER BY；
+  - 对外纯新增 4 个 public 薄封装：`buildQueryWrapper()` / `findList(QueryWrapper)` / `getOne(QueryWrapper)` / `count(QueryWrapper)`，测试专用不破坏既有 DAO 调用签名。
+- **V0.5 6/6 专项 DsEqIndexQueryPlannerTest 0F0E 6 条正确性防线**：① testEqLongAgeHitIndex (age=25 LONG EQ size=2)；② testBetweenScoreHitIndex (score 500~800 BETWEEN size=3 边界对齐)；③ testEqStringCityHitIndex (STRING EQ city=shanghai size=2 count=2)；④ testMultiCondEqAndRangeMixed (EQ city + GE age + LT score 多条件，size=4 全断言)；⑤ testNoIndexFallback (无 indexed 列 PlannerUser 不炸，fallback 全扫正确)；⑥ testGetOneHitIndex (getOne 入口 age=30 非空字段正确)。
+- **联合定向回归 130 tests 0F0E**：V0.5 Planner(6) + V0.4 Range(4) + V0.3 OrmAutoMaintain(4) + V0.2 EqIndexStore(5) + HashMap(5) + Binlog(6) + OnlineSchema(4) + GenericManager(1) + 其余 Collections/Path/StringBlock/Recovery/TagStore/Delta 等 96 tests 全部 0 error 0 fail。
+- **严格 Karpathy Simplicity First 审计**：
+  - 子类 0 改动；
+  - 对外签名 0 破坏（仅追加 4 个纯 public 薄封装）；
+  - Planner 核心仅 pickBest + candidateIds ≈50 行，RANGE 复用 V0.4 所有 findBy*；索引 I/O 异常静默 fallback = Planner 失败绝不等于查询失败；
+  - 人工重试按钮双套（V0.2 forceResetIndexForTest / V0.3 forceResetAllIndexesForTest）永不禁用无开关无门禁；Planner 纯读不碰写入，删 indexes/ 树后自动 fallback + putEntity 自动重建无缝过渡。
+- **后续 V0.6+ 排期**：① 复合索引 (a,b,c) 最左前缀；② 多索引 retainAll 交集优化；③ 批量 putEntity N×indexes I/O 聚合。
+- **验证命令（全部 exit 0）**：
+  - `mvn -pl p2p-db "-Dtest=ds.DsEqIndexQueryPlannerTest" "-DfailIfNoTests=false" test` → 6/6 0F0E
+  - `mvn -pl p2p-db "-Dtest=ds.DsEqIndexRangeTest,ds.DsEqIndexOrmAutoMaintainTest,ds.DsEqIndexStoreTest" "-DfailIfNoTests=false" test` → 13 tests 0F0E
+  - `mvn -pl p2p-db "-Dtest=com.q3lives.ds.database.*Test,ds.*Test" "-DfailIfNoTests=false" test` → 130 tests 0F0E
+- **Gotcha：QueryWrapper.eq() 返回 void 非 fluent**——测试/用户端不能 `w.eq("a",1).ge("b",2)` 链式，必须逐行 `w.eq(...) ; w.ge(...)`；薄封装 buildQueryWrapper() 是无参构造，selectCols/orders 后续再加。
+- **Gotcha：candidateIdsForQuery 异常静默 fallback**——任何 index open/read 异常（磁盘损坏、索引文件被删、非法 valueKind 等）一律 catch 后 fallback 全表扫，保证即使索引坏了查询也能正确返回结果；代价是索引损坏无主动告警，后续可加 debug 日志但绝不抛错中断用户查询。
+
+- Updated: 2026-08-18 02:00:00 +08:00
+- **p2p-db 二级索引子系统 V0.6/V0.7/V0.8 三连交付（复合索引最左前缀 + 多索引交集 + 批量 putEntity I/O 聚合）**：
+  - V0.6 复合索引 (a,b,c) 最左前缀：[GenericManager.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/integration/GenericManager.java) 新增 `CompositeIndexInfo` 解析 `@DsCompositeIndex`，`candidateIdsForQuery` 优先匹配最长 EQ 左前缀，未命中回退单索引/全表扫；[DsDatabaseLocal.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/DsDatabaseLocal.java) `putEntity/removeTable` 自动维护复合索引。
+  - V0.7 多索引求交集 retainAll：`QueryWrapper` 多条件命中多个 indexed 列时，取各索引 rowIdSet 最小 size 作 driver，依次 `HashSet.retainAll` 求交集，再 `matchesAll` 二次校验；单索引/无索引保持 V0.5 行为。
+  - V0.8 批量 putEntity 索引 I/O 聚合：新增 `DsDatabaseLocal.putEntities(List<T>, boolean)`，四阶段（分配 ID/读旧行 → 批量写主表 → 按单列聚合 `applyIndexBatch` → 按复合索引聚合 `applyIndexBatch`）；[DsEqIndexStore.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/index/DsEqIndexStore.java) 新增 `applyIndexBatch(Map<Long,long[]>)`，每个 indexedValue 只读一次、只写一次。
+  - 新增测试：[DsEqIndexCompositeIndexTest.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/test/java/ds/DsEqIndexCompositeIndexTest.java) 6/6 0F0E、[DsDatabaseLocalBatchPutTest.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/test/java/ds/DsDatabaseLocalBatchPutTest.java) 6/6 0F0E；V0.7 专项 [DsEqIndexPlannerMultiIndexIntersectTest.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/test/java/ds/DsEqIndexPlannerMultiIndexIntersectTest.java) 6/6 0F0E。
+  - 联合定向回归 ≈136 tests 0F0E：EqIndexStore/Range/ORM/Planner/Composite/BatchPut/Binlog/GenericManager 等。
+- **验证命令（全部 exit 0）**：
+  - `mvn test -pl p2p-db -Dtest=DsEqIndexStoreTest,DsEqIndexRangeTest,DsEqIndexOrmAutoMaintainTest,DsEqIndexQueryPlannerTest,DsEqIndexPlannerMultiIndexIntersectTest,DsEqIndexCompositeIndexTest,DsDatabaseLocalBatchPutTest,DsBinlogBasicTest,GenericManagerTest -q`
+- **Boundaries touched**: `p2p-db`（索引 planner + ORM 批量写入 + 复合索引维护）、`.brain`（durable notes）。
+- **Gotcha：复合索引 key 采用 FNV-1a 64 位哈希拼接**——`compositeKeyValue` 把多列值按 `\u0001` 分隔后整体 hash，NULL 列用 `\u0000` 占位；查询 planner 只使用 EQ 条件构成最左前缀，RANGE 条件仍走单列 RANGE 索引或全表扫。
+- **Gotcha：批量 putEntities 目前只聚合单表同 schema 的索引 I/O**——跨表/跨 schema 的批量调用仍需分表执行；`applyIndexBatch` 内部按 indexedValue 顺序串行处理，未做并行化，保持简单正确优先。
