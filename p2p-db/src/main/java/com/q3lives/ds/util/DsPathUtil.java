@@ -138,11 +138,55 @@ public final class DsPathUtil {
                 throw new IllegalArgumentException(what + " contains empty segment");
             }
             validateSegment(seg, what + " segment");
-            if (i > 0) {
-                sb.append('/');
-            }
+            if (i > 0) sb.append('/');
             sb.append(seg);
         }
         return sb.toString();
+    }
+
+    /**
+     * 将任意字符串转成文件名/目录名安全的短名（保留字母数字下划线减号点；其余按 UTF-8 bytes 做 short SHA-256 尾缀）。
+     *
+     * <p>目标：保证列名（@DsField.name 可能含中文/特殊字符）可用作 DsEqIndexStore 目录名，
+     * 又在安全集合内保持可读。输出长度不超过 {@code maxLen}（按 chars 计），超长时头部截断，
+     * 保证尾部 8 位 hex 校验位不丢。</p>
+     */
+    public static String toSafeFileName(String name, int maxLen) {
+        if (name == null || name.isEmpty()) {
+            return "empty";
+        }
+        StringBuilder safe = new StringBuilder(name.length());
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.') {
+                safe.append(c);
+            } else {
+                safe.append('_');
+            }
+        }
+        String s = safe.length() == 0 ? "_" : safe.toString();
+        String hash8 = shortSha8(name);
+        if (s.length() + 1 + hash8.length() > maxLen) {
+            int keep = Math.max(1, maxLen - 1 - hash8.length());
+            s = s.substring(0, keep);
+        }
+        return s + "_" + hash8;
+    }
+
+    private static String shortSha8(String s) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder out = new StringBuilder(8);
+            for (int i = 0; i < 4; i++) {
+                int v = digest[i] & 0xFF;
+                out.append(Character.forDigit(v >>> 4, 16));
+                out.append(Character.forDigit(v & 0x0F, 16));
+            }
+            return out.toString();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 }

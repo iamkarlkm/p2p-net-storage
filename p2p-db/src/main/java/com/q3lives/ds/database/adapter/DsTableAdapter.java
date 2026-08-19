@@ -26,13 +26,13 @@ import java.util.concurrent.ConcurrentHashMap;
  * @version 1.0
  */
 public abstract class DsTableAdapter implements DsTableByteBufferSerializable {
-    
+
     // 映射缓存，避免重复反射
     private static final Map<Class<?>, FieldMapping> MAPPING_CACHE = new ConcurrentHashMap<>();
-    
+
     // 实体ID
     private Long id;
-    
+
     // 字段映射信息
     private FieldMapping fieldMapping;
     
@@ -85,29 +85,90 @@ public abstract class DsTableAdapter implements DsTableByteBufferSerializable {
     }
     
     /**
-     * 从ByteBuffer反序列化
+     * 从ByteBuffer反序列化（Schema兼容模式：字节数不匹配自动fallback default值）
+     * - data.remaining() == expectedTotalSize: 全列正常读
+     * - data.remaining() <  expectedTotalSize: 前面列正常读，读到字节耗尽为止，后面列自动@DsField.defaultValue补全或类型0/NULL
+     * - data.remaining() >  expectedTotalSize: 全列正常读后，尾部多余字节直接skip丢弃
      */
     @Override
     public void load(ByteBuffer data) {
         try {
             data.rewind();
-            
-            // 读取ID
+            int expectedTotal = calculateTotalSize();
+            int actualRemaining = data.remaining();
+
             this.id = data.getLong();
-            
-            // 按顺序读取复合列存储字段
+
             for (CompositeFieldInfo compositeInfo : fieldMapping.compositeFields) {
-                readCompositeField(data, compositeInfo);
+                if (data.remaining() >= compositeInfo.length) {
+                    readCompositeField(data, compositeInfo);
+                } else {
+                    Field field = compositeInfo.field;
+                    field.setAccessible(true);
+                    Object zeroVal = convertFromLong(0L, field.getType());
+                    field.set(this, zeroVal);
+                }
             }
-            
-            // 按顺序读取普通列存储字段
+
             for (ColumnFieldInfo columnInfo : fieldMapping.columnFields) {
-                readColumnField(data, columnInfo);
+                if (data.remaining() >= columnInfo.length) {
+                    readColumnField(data, columnInfo);
+                } else {
+                    Field field = columnInfo.field;
+                    field.setAccessible(true);
+                    Object def = parseDefaultValueForType(columnInfo.defaultValue, field.getType(), columnInfo.length, columnInfo.precision, columnInfo.scale);
+                    field.set(this, def);
+                }
             }
-            
+
+            if (data.remaining() > 0) {
+                data.position(data.position() + data.remaining());
+            }
+
         } catch (Exception e) {
-            throw new SerializationException("反序列化失败: " + e.getMessage(), e);
+            throw new SerializationException("反序列化失败(兼容模式): " + e.getMessage(), e);
         }
+    }
+
+    private static Object parseDefaultValueForType(String defaultValue, Class<?> type, int length, int precision, int scale) {
+        boolean hasDef = defaultValue != null && !defaultValue.isEmpty();
+        try {
+            if (type == byte.class || type == Byte.class) {
+                return hasDef ? Byte.parseByte(defaultValue) : (byte) 0;
+            } else if (type == short.class || type == Short.class) {
+                return hasDef ? Short.parseShort(defaultValue) : (short) 0;
+            } else if (type == int.class || type == Integer.class) {
+                return hasDef ? Integer.parseInt(defaultValue) : 0;
+            } else if (type == long.class || type == Long.class) {
+                return hasDef ? Long.parseLong(defaultValue) : 0L;
+            } else if (type == float.class || type == Float.class) {
+                return hasDef ? Float.parseFloat(defaultValue) : 0.0f;
+            } else if (type == double.class || type == Double.class) {
+                return hasDef ? Double.parseDouble(defaultValue) : 0.0;
+            } else if (type == boolean.class || type == Boolean.class) {
+                return hasDef ? Boolean.parseBoolean(defaultValue) : false;
+            } else if (type == char.class || type == Character.class) {
+                return hasDef && !defaultValue.isEmpty() ? defaultValue.charAt(0) : '\0';
+            } else if (type == String.class) {
+                return hasDef ? defaultValue : null;
+            } else if (type == Date.class) {
+                if (!hasDef) return null;
+                long ts = Long.parseLong(defaultValue);
+                return ts == 0L ? null : new Date(ts);
+            } else if (type == BigDecimal.class) {
+                if (!hasDef) return null;
+                BigDecimal bd = new BigDecimal(defaultValue);
+                return bd.setScale(scale, BigDecimal.ROUND_HALF_UP);
+            }
+        } catch (NumberFormatException ignore) {
+            if (type.isPrimitive()) {
+                if (type == boolean.class) return false;
+                if (type == char.class) return '\0';
+                return (byte) 0;
+            }
+            return null;
+        }
+        return null;
     }
     
     /**
@@ -449,6 +510,8 @@ public abstract class DsTableAdapter implements DsTableByteBufferSerializable {
                 info.length = annotation.length();
                 info.precision = annotation.precision();
                 info.scale = annotation.scale();
+                info.defaultValue = annotation.defaultValue();
+                info.indexed = annotation.indexed();
                 mapping.columnFields.add(info);
             }
         }
@@ -519,6 +582,8 @@ public abstract class DsTableAdapter implements DsTableByteBufferSerializable {
         int length;
         int precision;
         int scale;
+        String defaultValue;
+        boolean indexed;
     }
     
     /**

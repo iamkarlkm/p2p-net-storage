@@ -11,13 +11,16 @@ import java.util.BitSet;
 public class FileDeltaHeaderTierStore implements HeaderTieredStore {
 
     public static final int MAGIC = 0x48445254; // "HDRT"
-    public static final int HEADER_SIZE = 40;
+    public static final int VERSION = 2;
+    public static final int HEADER_SIZE = 64;
     public static final int OFF_MAGIC = 0;
     public static final int OFF_VERSION = 4;
     public static final int OFF_BLOCK_SIZE = 8;
     public static final int OFF_FLAGS = 16;
     public static final int OFF_DIRTY_BITSET_BYTES = 24;
     public static final int OFF_USER_RESERVED = 32;
+    public static final int OFF_HEADER_CRC32 = 48;
+    public static final int OFF_BLOCK_CRC32 = 52;
 
     private final String name;
     private final int blockSize;
@@ -33,6 +36,28 @@ public class FileDeltaHeaderTierStore implements HeaderTieredStore {
     private final BitSet mergingDirtyBytes;
     private final byte[] mergingBlock;
     private boolean mergingActive = false;
+
+    private static final int[] CRC32_TABLE = buildCrc32Table();
+
+    private static int[] buildCrc32Table() {
+        int[] table = new int[256];
+        for (int i = 0; i < 256; i++) {
+            int c = i;
+            for (int j = 0; j < 8; j++) {
+                c = (c & 1) != 0 ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+            }
+            table[i] = c;
+        }
+        return table;
+    }
+
+    private static int crc32(byte[] b, int off, int len) {
+        int c = 0xFFFFFFFF;
+        for (int i = off, end = off + len; i < end; i++) {
+            c = CRC32_TABLE[(c ^ (b[i] & 0xFF)) & 0xFF] ^ (c >>> 8);
+        }
+        return c ^ 0xFFFFFFFF;
+    }
 
     public FileDeltaHeaderTierStore(String name, String tierDirPath) {
         this(name, 64 * 1024, tierDirPath);
@@ -77,7 +102,8 @@ public class FileDeltaHeaderTierStore implements HeaderTieredStore {
         mergingActive = false;
         this.base = baseHeaderBlock;
         ensureDeltaFileOpen();
-        tryRecoverFromFile();
+        boolean recovered = tryRecoverFromFile();
+        if (!recovered) recovered = tryRecoverFromYesterdayFile();
         state = TierState.IDLE;
         try { DailyMergeService.getInstance().register(this); } catch (Throwable ignore) {}
     }
@@ -110,35 +136,54 @@ public class FileDeltaHeaderTierStore implements HeaderTieredStore {
         this.deltaChannel = deltaRaf.getChannel();
     }
 
-    private void tryRecoverFromFile() throws IOException {
+    private boolean tryRecoverFromFile() throws IOException {
         long flen = deltaRaf.length();
         if (flen < HEADER_SIZE + blockSize) {
             initEmptyDeltaFile();
-            return;
+            return false;
         }
+        byte[] head = new byte[HEADER_SIZE];
         deltaRaf.seek(0);
-        int magic = deltaRaf.readInt();
+        deltaRaf.readFully(head);
+        ByteBuffer hb = ByteBuffer.wrap(head);
+        int magic = hb.getInt(OFF_MAGIC);
         if (magic != MAGIC) {
             initEmptyDeltaFile();
-            return;
+            return false;
         }
-        deltaRaf.seek(OFF_BLOCK_SIZE);
-        int bs = deltaRaf.readInt();
-        if (bs != blockSize) {
+        int ver = hb.getInt(OFF_VERSION);
+        if (ver < VERSION) {
+            migrateLegacyV1();
+            return true;
+        }
+        int storedHeadCrc = hb.getInt(OFF_HEADER_CRC32);
+        int calcHeadCrc = crc32(head, 0, OFF_HEADER_CRC32);
+        int storedBlockCrc = hb.getInt(OFF_BLOCK_CRC32);
+        int bs = hb.getInt(OFF_BLOCK_SIZE);
+        if (storedHeadCrc != calcHeadCrc || bs != blockSize) {
             initEmptyDeltaFile();
-            return;
+            return false;
         }
-        deltaRaf.seek(OFF_DIRTY_BITSET_BYTES);
-        int dirtyBytesLen = deltaRaf.readInt();
+        int dirtyBytesLen = hb.getInt(OFF_DIRTY_BITSET_BYTES);
         if (dirtyBytesLen <= 0 || dirtyBytesLen > blockSize) {
             initEmptyDeltaFile();
-            return;
+            return false;
+        }
+        if (flen < HEADER_SIZE + dirtyBytesLen + blockSize) {
+            initEmptyDeltaFile();
+            return false;
         }
         byte[] dirtyArr = new byte[dirtyBytesLen];
         deltaRaf.readFully(dirtyArr);
         BitSet loaded = BitSet.valueOf(dirtyArr);
-        deltaRaf.seek(HEADER_SIZE);
-        deltaRaf.readFully(cachedBlock);
+        byte[] block = new byte[blockSize];
+        deltaRaf.readFully(block);
+        int calcBlockCrc = crc32(block, 0, blockSize);
+        if (calcBlockCrc != storedBlockCrc) {
+            initEmptyDeltaFile();
+            return false;
+        }
+        System.arraycopy(block, 0, cachedBlock, 0, blockSize);
         dirtyBytes.clear();
         dirtyBytes.or(loaded);
         anyDirty = !dirtyBytes.isEmpty();
@@ -151,21 +196,131 @@ public class FileDeltaHeaderTierStore implements HeaderTieredStore {
                 if (next >= blockSize - 1) break;
             }
         }
+        return true;
+    }
+
+    private void migrateLegacyV1() throws IOException {
+        long flen = deltaRaf.length();
+        int v1Head = 40;
+        if (flen < v1Head + blockSize) {
+            initEmptyDeltaFile();
+            return;
+        }
+        deltaRaf.seek(0);
+        int magic = deltaRaf.readInt();
+        if (magic != MAGIC) { initEmptyDeltaFile(); return; }
+        int bs = deltaRaf.readInt();
+        if (bs != blockSize) { initEmptyDeltaFile(); return; }
+        deltaRaf.skipBytes(8);
+        int dirtyBytesLen = deltaRaf.readInt();
+        if (dirtyBytesLen <= 0 || dirtyBytesLen > blockSize) { initEmptyDeltaFile(); return; }
+        byte[] dirtyArr = new byte[dirtyBytesLen];
+        deltaRaf.readFully(dirtyArr);
+        byte[] block = new byte[blockSize];
+        deltaRaf.readFully(block);
+        BitSet loaded = BitSet.valueOf(dirtyArr);
+        writeDeltaFileInternal(loaded, block);
+        dirtyBytes.clear();
+        dirtyBytes.or(loaded);
+        anyDirty = !dirtyBytes.isEmpty();
+        System.arraycopy(block, 0, cachedBlock, 0, blockSize);
+        if (anyDirty) {
+            int next = -1;
+            while ((next = dirtyBytes.nextSetBit(next + 1)) >= 0) {
+                int end = dirtyBytes.nextClearBit(next);
+                base.put(next, cachedBlock, next, end - next);
+                next = end - 1;
+                if (next >= blockSize - 1) break;
+            }
+        }
+    }
+
+    private boolean tryRecoverFromYesterdayFile() throws IOException {
+        if (deltaFile == null) return false;
+        File parent = deltaFile.getParentFile();
+        String baseName = safeName() + ".hdr_tier";
+        File[] candidates = parent == null ? new File(".").listFiles() : parent.listFiles();
+        if (candidates == null || candidates.length == 0) return false;
+        File best = null;
+        long bestMod = -1L;
+        for (File c : candidates) {
+            String n = c.getName();
+            if (!n.startsWith(baseName + ".")) continue;
+            if (n.endsWith(".tmp")) continue;
+            long lm = c.lastModified();
+            if (lm > bestMod) { bestMod = lm; best = c; }
+        }
+        if (best == null || !best.exists()) return false;
+        try (RandomAccessFile yraf = new RandomAccessFile(best, "r")) {
+            long ylen = yraf.length();
+            if (ylen < HEADER_SIZE + blockSize) return false;
+            byte[] yhead = new byte[HEADER_SIZE];
+            yraf.seek(0);
+            yraf.readFully(yhead);
+            ByteBuffer hb = ByteBuffer.wrap(yhead);
+            if (hb.getInt(OFF_MAGIC) != MAGIC) return false;
+            int ver = hb.getInt(OFF_VERSION);
+            if (ver < VERSION) return false;
+            int headCrc = hb.getInt(OFF_HEADER_CRC32);
+            if (headCrc != crc32(yhead, 0, OFF_HEADER_CRC32)) return false;
+            if (hb.getInt(OFF_BLOCK_SIZE) != blockSize) return false;
+            int dblen = hb.getInt(OFF_DIRTY_BITSET_BYTES);
+            if (dblen <= 0 || dblen > blockSize) return false;
+            if (ylen < HEADER_SIZE + dblen + blockSize) return false;
+            byte[] dirtyArr = new byte[dblen];
+            yraf.readFully(dirtyArr);
+            BitSet loaded = BitSet.valueOf(dirtyArr);
+            byte[] block = new byte[blockSize];
+            yraf.readFully(block);
+            int calcBlockCrc = crc32(block, 0, blockSize);
+            if (calcBlockCrc != hb.getInt(OFF_BLOCK_CRC32)) return false;
+            System.arraycopy(block, 0, cachedBlock, 0, blockSize);
+            dirtyBytes.clear();
+            dirtyBytes.or(loaded);
+            anyDirty = !dirtyBytes.isEmpty();
+            if (anyDirty) {
+                int next = -1;
+                while ((next = dirtyBytes.nextSetBit(next + 1)) >= 0) {
+                    int end = dirtyBytes.nextClearBit(next);
+                    base.put(next, cachedBlock, next, end - next);
+                    next = end - 1;
+                    if (next >= blockSize - 1) break;
+                }
+            }
+            return true;
+        }
     }
 
     private void initEmptyDeltaFile() throws IOException {
-        deltaRaf.setLength(0);
-        deltaRaf.writeInt(MAGIC);
-        deltaRaf.writeInt(1);
-        deltaRaf.writeLong(blockSize);
-        deltaRaf.writeLong(0L);
-        deltaRaf.writeLong(0L);
-        deltaRaf.writeLong(0L);
-        deltaRaf.write(new byte[HEADER_SIZE - (int) deltaRaf.getFilePointer()]);
+        byte[] zeros = new byte[blockSize];
         Arrays.fill(cachedBlock, (byte) 0);
-        deltaRaf.write(cachedBlock);
+        writeDeltaFileInternal(new BitSet(blockSize), zeros);
         dirtyBytes.clear();
         anyDirty = false;
+    }
+
+    private void writeDeltaFileInternal(BitSet bs, byte[] block) throws IOException {
+        deltaRaf.setLength(0);
+        byte[] head = new byte[HEADER_SIZE];
+        ByteBuffer hb = ByteBuffer.wrap(head);
+        hb.putInt(OFF_MAGIC, MAGIC);
+        hb.putInt(OFF_VERSION, VERSION);
+        hb.putInt(OFF_BLOCK_SIZE, blockSize);
+        hb.putLong(OFF_FLAGS, 0L);
+        byte[] dirtyArr = bs.toByteArray();
+        hb.putInt(OFF_DIRTY_BITSET_BYTES, dirtyArr.length);
+        hb.putLong(OFF_USER_RESERVED, 0L);
+        int blockCrc = crc32(block, 0, blockSize);
+        hb.putInt(OFF_BLOCK_CRC32, blockCrc);
+        int headCrc = crc32(head, 0, OFF_HEADER_CRC32);
+        hb.putInt(OFF_HEADER_CRC32, headCrc);
+        deltaRaf.write(head);
+        deltaRaf.write(dirtyArr);
+        if (dirtyArr.length < (HEADER_SIZE - HEADER_SIZE)) {}
+        byte[] tailPad = new byte[Math.max(0, HEADER_SIZE - head.length - dirtyArr.length)];
+        deltaRaf.write(tailPad);
+        deltaRaf.write(block);
+        deltaRaf.getChannel().force(true);
     }
 
     @Override
@@ -382,25 +537,12 @@ public class FileDeltaHeaderTierStore implements HeaderTieredStore {
 
     private void writeDeltaFile() throws IOException {
         if (deltaRaf == null) ensureDeltaFileOpen();
-        deltaRaf.seek(0);
-        deltaRaf.writeInt(MAGIC);
-        deltaRaf.writeInt(1);
-        deltaRaf.writeLong(blockSize);
-        deltaRaf.writeLong(0L);
-        deltaRaf.writeLong(0L);
-        byte[] dirtyArr = dirtyBytes.toByteArray();
-        deltaRaf.writeInt(dirtyArr.length);
-        int pad1 = 8 - (dirtyArr.length % 8);
-        if (pad1 != 8) deltaRaf.write(new byte[pad1]);
-        deltaRaf.writeLong(0L);
-        long written = deltaRaf.getFilePointer();
-        long skip = HEADER_SIZE - written;
-        if (skip > 0) deltaRaf.write(new byte[(int) skip]);
-        deltaRaf.seek(HEADER_SIZE);
-        deltaRaf.write(cachedBlock);
-        try {
-            if (deltaChannel != null) deltaChannel.force(true);
-        } catch (IOException ignore) {
+        int pos = 0;
+        for (int i = 0; i < blockSize; i++) {
+            byte v = base.get(i);
+            if (cachedBlock[i] != v) anyDirty = true;
+            cachedBlock[i] = v;
         }
+        writeDeltaFileInternal(dirtyBytes, cachedBlock);
     }
 }

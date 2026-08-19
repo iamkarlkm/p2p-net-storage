@@ -70,6 +70,7 @@ public class DsMemory {
      * 默认块尺寸 64KB -> 对应单个 MappedByteBuffer 的大小
      */
     protected static final int BLOCK_SIZE = 64 * 1024;
+    public static final int BLOCK_SIZE_REFLECT = BLOCK_SIZE;
     /**
      * 用于初始化新块的零字节数组
      */
@@ -92,6 +93,8 @@ public class DsMemory {
     protected final AtomicLong evictionSuccess = new AtomicLong(0);
     protected final AtomicLong evictionBytes = new AtomicLong(0);
     protected final AtomicLong evictionDirtyCount = new AtomicLong(0);
+    protected final int[] evictCandIdxs = new int[EVICT_CANDIDATE_SLOT];
+    protected final long[] evictCandAccess = new long[EVICT_CANDIDATE_SLOT];
 
     public static final class CacheStats {
         private final int maxCachedBlocks;
@@ -137,12 +140,20 @@ public class DsMemory {
      * 数据缓冲区缓存池：Key为块索引(bufferIndex)，Value为映射的内存缓冲区。
      * 被淘汰的槽会被置为 null（保持绝对 bufferIndex 不变，避免索引错位）。
      */
-    //protected List<ByteBuf>  datatBuffers = new ArrayList(8192);
-    protected List<ByteBuffer> dataBuffers = new ArrayList(8192);
-    
-    protected List<byte[]>  dataBytes = new ArrayList(8192);
+    // 2026-08-17 row6 优化：将 ArrayList -> volatile Object[] 快照，
+    // 读路径 fast path 0 lock，仅扩容/覆盖写时 bufferLock 内复制引用覆盖 bufSnap/byteSnap，
+    // 写成本约等于 CopyOnWriteArrayList 但无泛型 boxing + 无内部 ReentrantLock
+    protected volatile Object[] bufSnap = new Object[1024];
+    protected volatile Object[] byteSnap = new Object[1024];
 
-   
+    /**
+     * 保留 dataBuffers/dataBytes 老字段引用（接口兼容：eviction/外部调试仍可按 List 风格访问）
+     * 语义：等价于 Arrays.asList(bufSnap/byteSnap)，内部真实存储走 volatile snapshot；
+     * 写入统一走 applyBuf/ByteSnap 保证 bufSnap/byteSnap 与 List 内容同步（bufferLock 内写入）
+     */
+    protected List<ByteBuffer> dataBuffers = new java.util.concurrent.CopyOnWriteArrayList<>();
+    protected List<byte[]> dataBytes = new java.util.concurrent.CopyOnWriteArrayList<>();
+
     /**
      * 数据缓冲区锁：用于控制对特定缓冲区的并发访问
      */
@@ -203,6 +214,7 @@ public class DsMemory {
     
     public final int headerSize;
     protected final File dataFile;
+    protected DsWAL wal;
 
     public DsMemory(File dataFile,int headerSize, int dataUnitSize) {
         this.dataFile = dataFile;
@@ -216,6 +228,9 @@ public class DsMemory {
             idLockPool.add(new ReentrantLock());
         }
         this.headerTier = HeaderTieredStoreFactory.create(dataFile, dataFile == null ? "dsmem" : dataFile.getName());
+        if (this.dataFile != null) {
+            this.wal = new DsWAL(this.dataFile);
+        }
     }
 
     protected final void ensureHeaderTierAttached() {
@@ -287,7 +302,9 @@ public class DsMemory {
      * @ IO异常
      */
     public void writeLong(long id, int offset, long value)  {
-        loadBufferWithOffsetFromId(id).putLong( value);
+        runWithBufferLocks(() -> {
+            loadBufferWithOffsetFromId(id, offset).putLong(value);
+        });
     }
 
     /**
@@ -298,7 +315,9 @@ public class DsMemory {
      * @ IO异常
      */
     public void writeLong(long id, long value)  {
-        loadBufferWithOffsetFromId(id).putLong( value);
+        runWithBufferLocks(() -> {
+            loadBufferWithOffsetFromId(id).putLong(value);
+        });
     }
 
     /**
@@ -309,7 +328,9 @@ public class DsMemory {
      * @ IO异常
      */
     protected void storeLongOffset(long position, long value)  {
-        loadBufferWithOffset(position).putLong(value);
+        runWithBufferLocks(() -> {
+            loadBufferWithOffset(position).putLong(value);
+        });
     }
 
     /**
@@ -323,40 +344,42 @@ public class DsMemory {
         if (values == null || values.length == 0) {
             return;
         }
-        int bufferIndex = bufferIndexFromPosition(position);
-        ByteBuffer buf = loadBuffer(bufferIndex);
-        buf.position(bufferOffsetFromPosition(position));
-        int j = 0;
+        runWithBufferLocks(() -> {
+            int bufferIndex = bufferIndexFromPosition(position);
+            ByteBuffer buf = loadBuffer(bufferIndex);
+            buf.position(bufferOffsetFromPosition(position));
+            int j = 0;
 
-        int firstChunkElems = Math.min(values.length, buf.remaining() / LONG_SIZE);
-        for (int i = 0; i < firstChunkElems; i++) {
-            buf.putLong(values[j]);
-            j++;
-        }
-        if (j >= values.length) {
-            markDirty(bufferIndex);
-            return;
-        }
-        markDirty(bufferIndex);
-
-        if (buf.remaining() > 0 && buf.remaining() < LONG_SIZE) {
-            throw new RuntimeException("unaligned long write at position=" + position + " remainder=" + buf.remaining());
-        }
-
-        while (j < values.length) {
-            bufferIndex++;
-            buf = loadBuffer(bufferIndex);
-            buf.position(0);
-            int chunkElems = Math.min(values.length - j, buf.remaining() / LONG_SIZE);
-            for (int i = 0; i < chunkElems; i++) {
+            int firstChunkElems = Math.min(values.length, buf.remaining() / LONG_SIZE);
+            for (int i = 0; i < firstChunkElems; i++) {
                 buf.putLong(values[j]);
                 j++;
             }
-            markDirty(bufferIndex);
             if (j >= values.length) {
+                markDirty(bufferIndex);
                 return;
             }
-        }
+            markDirty(bufferIndex);
+
+            if (buf.remaining() > 0 && buf.remaining() < LONG_SIZE) {
+                throw new RuntimeException("unaligned long write at position=" + position + " remainder=" + buf.remaining());
+            }
+
+            while (j < values.length) {
+                bufferIndex++;
+                buf = loadBuffer(bufferIndex);
+                buf.position(0);
+                int chunkElems = Math.min(values.length - j, buf.remaining() / LONG_SIZE);
+                for (int i = 0; i < chunkElems; i++) {
+                    buf.putLong(values[j]);
+                    j++;
+                }
+                markDirty(bufferIndex);
+                if (j >= values.length) {
+                    return;
+                }
+            }
+        });
     }
 
     /**
@@ -370,37 +393,39 @@ public class DsMemory {
         if (values == null || values.length == 0) {
             return;
         }
-        int bufferIndex = bufferIndexFromPosition(position);
-        ByteBuffer buf = loadBuffer(bufferIndex);
-        buf.position(bufferOffsetFromPosition(position));
-        int j = 0;
+        runWithBufferLocks(() -> {
+            int bufferIndex = bufferIndexFromPosition(position);
+            ByteBuffer buf = loadBuffer(bufferIndex);
+            buf.position(bufferOffsetFromPosition(position));
+            int j = 0;
 
-        int firstChunkElems = Math.min(values.length, buf.remaining() / LONG_SIZE);
-        for (int i = 0; i < firstChunkElems; i++) {
-            values[j] = buf.getLong();
-            j++;
-        }
-        if (j >= values.length) {
-            return;
-        }
-
-        if (buf.remaining() > 0 && buf.remaining() < LONG_SIZE) {
-            throw new RuntimeException("unaligned long read at position=" + position + " remainder=" + buf.remaining());
-        }
-
-        while (j < values.length) {
-            bufferIndex++;
-            buf = loadBuffer(bufferIndex);
-            buf.position(0);
-            int chunkElems = Math.min(values.length - j, buf.remaining() / LONG_SIZE);
-            for (int i = 0; i < chunkElems; i++) {
+            int firstChunkElems = Math.min(values.length, buf.remaining() / LONG_SIZE);
+            for (int i = 0; i < firstChunkElems; i++) {
                 values[j] = buf.getLong();
                 j++;
             }
             if (j >= values.length) {
                 return;
             }
-        }
+
+            if (buf.remaining() > 0 && buf.remaining() < LONG_SIZE) {
+                throw new RuntimeException("unaligned long read at position=" + position + " remainder=" + buf.remaining());
+            }
+
+            while (j < values.length) {
+                bufferIndex++;
+                buf = loadBuffer(bufferIndex);
+                buf.position(0);
+                int chunkElems = Math.min(values.length - j, buf.remaining() / LONG_SIZE);
+                for (int i = 0; i < chunkElems; i++) {
+                    values[j] = buf.getLong();
+                    j++;
+                }
+                if (j >= values.length) {
+                    return;
+                }
+            }
+        });
     }
 
     /**
@@ -412,7 +437,7 @@ public class DsMemory {
      * @ IO异常
      */
     public long readLong(long id, int offset)  {
-         return loadBufferWithOffsetFromId(id,offset).getLong();
+         return runWithBufferLocksGet(() -> loadBufferWithOffsetFromId(id,offset).getLong());
 
     }
 
@@ -424,7 +449,7 @@ public class DsMemory {
      * @ IO异常
      */
     public long readLong(long id)  {
-        return loadBufferWithOffsetFromId(id).getLong();
+        return runWithBufferLocksGet(() -> loadBufferWithOffsetFromId(id).getLong());
     }
 
     /**
@@ -434,7 +459,7 @@ public class DsMemory {
      * @return 值
      */
     protected long loadLongOffset(long position) {
-        return loadBufferWithOffset(position).getLong();
+        return runWithBufferLocksGet(() -> loadBufferWithOffset(position).getLong());
     }
 
     /**
@@ -445,7 +470,7 @@ public class DsMemory {
      * @ IO异常
      */
     protected short loadShortOffset(long position)  {
-        return loadBufferWithOffset(position).getShort();
+        return runWithBufferLocksGet(() -> loadBufferWithOffset(position).getShort());
 
     }
 
@@ -457,7 +482,7 @@ public class DsMemory {
      * @ IO异常
      */
     protected int loadU16ByOffset(long position)  {
-        return loadBufferWithOffset(position).getShort() & 0xFFFF;
+        return runWithBufferLocksGet(() -> loadBufferWithOffset(position).getShort() & 0xFFFF);
 
     }
 
@@ -469,7 +494,7 @@ public class DsMemory {
      * @ IO异常
      */
     protected long loadU32ByOffset(long position)  {
-        return loadBufferWithOffset(position).getInt() & 0xFFFFFFFFL;
+        return runWithBufferLocksGet(() -> loadBufferWithOffset(position).getInt() & 0xFFFFFFFFL);
     }
 
     /**
@@ -480,16 +505,18 @@ public class DsMemory {
      * @ IO异常
      */
     protected int loadU8ByOffset(long position)  {
-        return loadBufferWithOffset(position).get() & 0xFF;
+        return runWithBufferLocksGet(() -> loadBufferWithOffset(position).get() & 0xFF);
 
     }
 
     protected void loadBytesOffset(long position, byte[] dest, int destOffset, int length)  {
-        loadBufferWithOffset(position).get( dest, destOffset, length);
+        runWithBufferLocks(() -> {
+            loadBufferWithOffset(position).get( dest, destOffset, length);
+        });
     }
 
     protected ReentrantReadWriteLock getDataBufferLock(long bufferIndex) {
-        int idx = (int) (bufferIndex & (DATA_BUFFER_LOCK_STRIPES - 1));
+        int idx = (int) ((bufferIndex ^ (bufferIndex >>> 7) ^ (bufferIndex >>> 13)) & (DATA_BUFFER_LOCK_STRIPES - 1));
         return dataBufferLocks[idx];
     }
 
@@ -524,12 +551,15 @@ public class DsMemory {
     }
 
     protected void unlockBufferForRead(int bufferIndex) {
+        releaseAllBufferLocks();
     }
 
 
 
     protected void loadBytesOffset(long position, byte[] dest)  {
-        loadBytesOffset(position, dest, 0, dest.length);
+        runWithBufferLocks(() -> {
+            loadBytesOffset(position, dest, 0, dest.length);
+        });
     }
 
     /**
@@ -541,7 +571,9 @@ public class DsMemory {
      * @ IO异常
      */
     public void writeInt(long id, int offset, int value)  {
-        loadBufferWithOffsetFromId(id,offset).putInt( value);
+        runWithBufferLocks(() -> {
+            loadBufferWithOffsetFromId(id,offset).putInt(value);
+        });
     }
 
     /**
@@ -566,7 +598,7 @@ public class DsMemory {
      * @ IO异常
      */
     public short readShort(long id, int offset)  {
-        return loadBufferWithOffsetFromId(id,offset).getShort();
+        return runWithBufferLocksGet(() -> loadBufferWithOffsetFromId(id,offset).getShort());
 
     }
 
@@ -592,7 +624,7 @@ public class DsMemory {
      * @ IO异常
      */
     public int readInt(long id, int offset)  {
-        return loadBufferWithOffsetFromId(id,offset).getInt();
+        return runWithBufferLocksGet(() -> loadBufferWithOffsetFromId(id,offset).getInt());
     }
 
     /**
@@ -603,7 +635,9 @@ public class DsMemory {
      * @ IO异常
      */
     protected void storeShortOffset(long position, short value)  {
-        loadBufferWithOffset(position).putShort( value);
+        runWithBufferLocks(() -> {
+            loadBufferWithOffset(position).putShort(value);
+        });
     }
 
     /**
@@ -614,7 +648,9 @@ public class DsMemory {
      * @ IO异常
      */
     protected void storeIntOffset(long position, int value)  {
-        loadBufferWithOffset(position).putInt( value);
+        runWithBufferLocks(() -> {
+            loadBufferWithOffset(position).putInt(value);
+        });
     }
 
     /**
@@ -625,7 +661,9 @@ public class DsMemory {
      * @ IO异常
      */
     protected void storeByteOffset(long position, byte value)  {
-        loadBufferWithOffset(position).put(value);
+        runWithBufferLocks(() -> {
+            loadBufferWithOffset(position).put(value);
+        });
     }
 
     /**
@@ -639,40 +677,42 @@ public class DsMemory {
         if (values == null || values.length == 0) {
             return;
         }
-        int bufferIndex = bufferIndexFromPosition(position);
-        ByteBuffer buf = loadBuffer(bufferIndex);
-        buf.position(bufferOffsetFromPosition(position));
-        int j = 0;
+        runWithBufferLocks(() -> {
+            int bufferIndex = bufferIndexFromPosition(position);
+            ByteBuffer buf = loadBuffer(bufferIndex);
+            buf.position(bufferOffsetFromPosition(position));
+            int j = 0;
 
-        int firstChunkElems = Math.min(values.length, buf.remaining() / INT_SIZE);
-        for (int i = 0; i < firstChunkElems; i++) {
-            buf.putInt(values[j]);
-            j++;
-        }
-        if (j >= values.length) {
-            markDirty(bufferIndex);
-            return;
-        }
-        markDirty(bufferIndex);
-
-        if (buf.remaining() > 0 && buf.remaining() < INT_SIZE) {
-            throw new RuntimeException("unaligned int write at position=" + position + " remainder=" + buf.remaining());
-        }
-
-        while (j < values.length) {
-            bufferIndex++;
-            buf = loadBuffer(bufferIndex);
-            buf.position(0);
-            int chunkElems = Math.min(values.length - j, buf.remaining() / INT_SIZE);
-            for (int i = 0; i < chunkElems; i++) {
+            int firstChunkElems = Math.min(values.length, buf.remaining() / INT_SIZE);
+            for (int i = 0; i < firstChunkElems; i++) {
                 buf.putInt(values[j]);
                 j++;
             }
-            markDirty(bufferIndex);
             if (j >= values.length) {
+                markDirty(bufferIndex);
                 return;
             }
-        }
+            markDirty(bufferIndex);
+
+            if (buf.remaining() > 0 && buf.remaining() < INT_SIZE) {
+                throw new RuntimeException("unaligned int write at position=" + position + " remainder=" + buf.remaining());
+            }
+
+            while (j < values.length) {
+                bufferIndex++;
+                buf = loadBuffer(bufferIndex);
+                buf.position(0);
+                int chunkElems = Math.min(values.length - j, buf.remaining() / INT_SIZE);
+                for (int i = 0; i < chunkElems; i++) {
+                    buf.putInt(values[j]);
+                    j++;
+                }
+                markDirty(bufferIndex);
+                if (j >= values.length) {
+                    return;
+                }
+            }
+        });
     }
 
     /**
@@ -686,37 +726,39 @@ public class DsMemory {
         if (values == null || values.length == 0) {
             return;
         }
-        int bufferIndex = bufferIndexFromPosition(position);
-        ByteBuffer buf = loadBuffer(bufferIndex);
-        buf.position(bufferOffsetFromPosition(position));
-        int j = 0;
+        runWithBufferLocks(() -> {
+            int bufferIndex = bufferIndexFromPosition(position);
+            ByteBuffer buf = loadBuffer(bufferIndex);
+            buf.position(bufferOffsetFromPosition(position));
+            int j = 0;
 
-        int firstChunkElems = Math.min(values.length, buf.remaining() / INT_SIZE);
-        for (int i = 0; i < firstChunkElems; i++) {
-            values[j] = buf.getInt();
-            j++;
-        }
-        if (j >= values.length) {
-            return;
-        }
-
-        if (buf.remaining() > 0 && buf.remaining() < INT_SIZE) {
-            throw new RuntimeException("unaligned int read at position=" + position + " remainder=" + buf.remaining());
-        }
-
-        while (j < values.length) {
-            bufferIndex++;
-            buf = loadBuffer(bufferIndex);
-            buf.position(0);
-            int chunkElems = Math.min(values.length - j, buf.remaining() / INT_SIZE);
-            for (int i = 0; i < chunkElems; i++) {
+            int firstChunkElems = Math.min(values.length, buf.remaining() / INT_SIZE);
+            for (int i = 0; i < firstChunkElems; i++) {
                 values[j] = buf.getInt();
                 j++;
             }
             if (j >= values.length) {
                 return;
             }
-        }
+
+            if (buf.remaining() > 0 && buf.remaining() < INT_SIZE) {
+                throw new RuntimeException("unaligned int read at position=" + position + " remainder=" + buf.remaining());
+            }
+
+            while (j < values.length) {
+                bufferIndex++;
+                buf = loadBuffer(bufferIndex);
+                buf.position(0);
+                int chunkElems = Math.min(values.length - j, buf.remaining() / INT_SIZE);
+                for (int i = 0; i < chunkElems; i++) {
+                    values[j] = buf.getInt();
+                    j++;
+                }
+                if (j >= values.length) {
+                    return;
+                }
+            }
+        });
     }
 
     /**
@@ -727,9 +769,11 @@ public class DsMemory {
      * @ IO异常
      */
     protected int loadIntOffset(long position)  {
-        int bufferIndex = bufferIndexFromPosition(position);
-        ByteBuffer buf = loadBuffer(bufferIndex);
-        return buf.getInt((int) position);
+        return runWithBufferLocksGet(() -> {
+            int bufferIndex = bufferIndexFromPosition(position);
+            ByteBuffer buf = loadBuffer(bufferIndex);
+            return buf.getInt(bufferOffsetFromPosition(position));
+        });
     }
 
     /**
@@ -740,9 +784,11 @@ public class DsMemory {
      * 
      */
     public void writeShort(long id, int offset, short value)  {
-        int bufferIndex = bufferIndexFromId(id,offset);
-        ByteBuffer buf = loadBuffer(bufferIndex);
-        buf.putShort(bufferPositionFromId(id), value);
+        runWithBufferLocks(() -> {
+            int bufferIndex = bufferIndexFromId(id,offset);
+            ByteBuffer buf = loadBuffer(bufferIndex);
+            buf.putShort(bufferPositionFromId(id), value);
+        });
     }
 
     /**
@@ -752,9 +798,11 @@ public class DsMemory {
      * @param value
      */
     public void writeFloat(long id, int offset, float value)  {
-        int bufferIndex = bufferIndexFromId(id,offset);
-        ByteBuffer buf = loadBuffer(bufferIndex);
-        buf.putFloat(bufferPositionFromId(id), value);
+        runWithBufferLocks(() -> {
+            int bufferIndex = bufferIndexFromId(id,offset);
+            ByteBuffer buf = loadBuffer(bufferIndex);
+            buf.putFloat(bufferPositionFromId(id), value);
+        });
     }
 
     /**
@@ -766,9 +814,11 @@ public class DsMemory {
      * 
      */
     public float readFloat(long id, int offset)  {
-        int bufferIndex = bufferIndexFromId(id,offset);
-        ByteBuffer buf = loadBuffer(bufferIndex);
-        return buf.getFloat(bufferPositionFromId(id));
+        return runWithBufferLocksGet(() -> {
+            int bufferIndex = bufferIndexFromId(id,offset);
+            ByteBuffer buf = loadBuffer(bufferIndex);
+            return buf.getFloat(bufferPositionFromId(id));
+        });
     }
 
     /**
@@ -780,9 +830,11 @@ public class DsMemory {
      * 
      */
     public void writeDouble(long id, int offset, double value)  {
-        int bufferIndex = bufferIndexFromId(id,offset);
-        ByteBuffer buf = loadBuffer(bufferIndex);
-        buf.putDouble(bufferPositionFromId(id), value);
+        runWithBufferLocks(() -> {
+            int bufferIndex = bufferIndexFromId(id,offset);
+            ByteBuffer buf = loadBuffer(bufferIndex);
+            buf.putDouble(bufferPositionFromId(id), value);
+        });
     }
 
     /**
@@ -794,9 +846,11 @@ public class DsMemory {
      * 
      */
     public double readDouble(long id, int offset) {
-        int bufferIndex = bufferIndexFromId(id,offset);
-        ByteBuffer buf = loadBuffer(bufferIndex);
-        return buf.getDouble(bufferPositionFromId(id));
+        return runWithBufferLocksGet(() -> {
+            int bufferIndex = bufferIndexFromId(id,offset);
+            ByteBuffer buf = loadBuffer(bufferIndex);
+            return buf.getDouble(bufferPositionFromId(id));
+        });
 
     }
 
@@ -809,9 +863,11 @@ public class DsMemory {
      * 
      */
     public void writeByte(long id, int offset, byte value)  {
-        int bufferIndex = bufferIndexFromId(id,offset);
-        ByteBuffer buf = loadBuffer(bufferIndex);
-        buf.put(bufferPositionFromId(id), value);
+        runWithBufferLocks(() -> {
+            int bufferIndex = bufferIndexFromId(id,offset);
+            ByteBuffer buf = loadBuffer(bufferIndex);
+            buf.put(bufferPositionFromId(id), value);
+        });
     }
 
     /**
@@ -823,9 +879,11 @@ public class DsMemory {
      * 
      */
     public byte readByte(long id, int offset)  {
-       int bufferIndex = bufferIndexFromId(id,offset);
-        ByteBuffer buf = loadBuffer(bufferIndex);
-        return buf.get(bufferPositionFromId(id));
+        return runWithBufferLocksGet(() -> {
+            int bufferIndex = bufferIndexFromId(id,offset);
+            ByteBuffer buf = loadBuffer(bufferIndex);
+            return buf.get(bufferPositionFromId(id));
+        });
     }
 
     /**
@@ -868,30 +926,34 @@ public class DsMemory {
      * 
      */
     public void readBytes(long id, int offset, byte[] out, int offsetOut, int count)  {
-        int bufferIndex = bufferIndexFromId(id,offset);
-        ByteBuffer buf = loadBuffer(bufferIndex);
-        if(buf.remaining()>count){
-            buf.get(bufferPositionFromId(id), out, offsetOut, count);
-        }else{//跨页读
-            int rest = count - buf.remaining();
-            for(int i = buf.remaining();i>=LONG_SIZE;i=i-LONG_SIZE){
-                buf.get(bufferPositionFromId(id), out, offsetOut, buf.remaining());
+        try {
+            long position = (long) id * dataUnitSize + headerSize + offset;
+            int bufferIndex = bufferIndexFromPosition(position);
+            ByteBuffer buf = loadBuffer(bufferIndex);
+            int bufPos = bufferOffsetFromPosition(position);
+            int remaining = count;
+            int curOut = offsetOut;
+
+            int firstChunk = Math.min(remaining, BLOCK_SIZE - bufPos);
+            buf.position(bufPos);
+            buf.get(out, curOut, firstChunk);
+            remaining -= firstChunk;
+            curOut += firstChunk;
+            if (remaining <= 0) {
+                return;
             }
-            offsetOut += buf.remaining();
-            int pages = rest/BLOCK_SIZE ;
-            for(int page = 0;page<pages;page++){
+
+            while (remaining > 0) {
                 bufferIndex++;
                 buf = loadBuffer(bufferIndex);
-                buf.get(bufferPositionFromId(id), out, offsetOut, BLOCK_SIZE);
-                    rest -= BLOCK_SIZE;
-                    offsetOut += BLOCK_SIZE;
-                    if(rest<=0) return;
+                buf.position(0);
+                int chunk = Math.min(remaining, BLOCK_SIZE);
+                buf.get(out, curOut, chunk);
+                remaining -= chunk;
+                curOut += chunk;
             }
-            if(rest>0){
-                bufferIndex++;
-                buf = loadBuffer(bufferIndex);
-                buf.get(bufferPositionFromId(id), out, offsetOut, rest);
-            }
+        } finally {
+            releaseAllBufferLocks();
         }
     }
 
@@ -940,9 +1002,37 @@ public class DsMemory {
      * 
      */
     public void writeBytes(long id, int offset, byte[] value, int offsetIn, int count)  {
-        int bufferIndex = bufferIndexFromId(id,offset);
-        ByteBuffer buf = loadBuffer(bufferIndex);
-        buf.get(bufferPositionFromId(id), value, offsetIn, count);
+        try {
+            long position = (long) id * dataUnitSize + headerSize + offset;
+            int bufferIndex = bufferIndexFromPosition(position);
+            ByteBuffer buf = loadBuffer(bufferIndex);
+            int bufPos = bufferOffsetFromPosition(position);
+            int remaining = count;
+            int curIn = offsetIn;
+
+            int firstChunk = Math.min(remaining, BLOCK_SIZE - bufPos);
+            buf.position(bufPos);
+            buf.put(value, curIn, firstChunk);
+            markDirty(bufferIndex);
+            remaining -= firstChunk;
+            curIn += firstChunk;
+            if (remaining <= 0) {
+                return;
+            }
+
+            while (remaining > 0) {
+                bufferIndex++;
+                buf = loadBuffer(bufferIndex);
+                buf.position(0);
+                int chunk = Math.min(remaining, BLOCK_SIZE);
+                buf.put(value, curIn, chunk);
+                markDirty(bufferIndex);
+                remaining -= chunk;
+                curIn += chunk;
+            }
+        } finally {
+            releaseAllBufferLocks();
+        }
     }
 
     /**
@@ -991,43 +1081,86 @@ public class DsMemory {
      * @param bufferIndex 块索引 (0-based)
      * @return 映射的 ByteBuffer（位置未设置，使用方需自行 position）
      */
+    private static final ThreadLocal<java.util.ArrayDeque<ReentrantReadWriteLock.ReadLock>> TL_READ_HELD = ThreadLocal.withInitial(java.util.ArrayDeque::new);
+    private static final ThreadLocal<java.util.ArrayDeque<Object[]>> TL_SNAP_HELD = ThreadLocal.withInitial(java.util.ArrayDeque::new);
+    private static final ThreadLocal<java.util.ArrayDeque<ByteBuffer>> TL_BUF_HELD = ThreadLocal.withInitial(java.util.ArrayDeque::new);
+    private static final ThreadLocal<java.util.ArrayDeque<Integer>> TL_IDX_HELD = ThreadLocal.withInitial(java.util.ArrayDeque::new);
+
+    private static final void pushReadHold(ReentrantReadWriteLock stripe, Object[] snap, ByteBuffer buf, int idx) {
+        ReentrantReadWriteLock.ReadLock rl = stripe.readLock();
+        TL_READ_HELD.get().addLast(rl);
+        TL_SNAP_HELD.get().addLast(snap);
+        TL_BUF_HELD.get().addLast(buf);
+        TL_IDX_HELD.get().addLast(idx);
+    }
+
+    static final void releaseAllBufferLocks() {
+        java.util.ArrayDeque<ReentrantReadWriteLock.ReadLock> rs = TL_READ_HELD.get();
+        while (!rs.isEmpty()) rs.pollLast().unlock();
+        TL_SNAP_HELD.get().clear();
+        TL_BUF_HELD.get().clear();
+        TL_IDX_HELD.get().clear();
+    }
+
     protected ByteBuffer loadBuffer(long bufferIndex)  {
         int idx = (int) bufferIndex;
+        Object[] bs = bufSnap;
+        if (idx >= 0 && idx < bs.length) {
+            Object o = bs[idx];
+            if (o != null) {
+                ByteBuffer buf = (ByteBuffer) o;
+                ReentrantReadWriteLock stripe = getDataBufferLock((long) idx);
+                boolean hit = false;
+                stripe.readLock().lock();
+                try {
+                    Object[] curBs = bufSnap;
+                    if (curBs == bs || (idx < curBs.length && curBs[idx] == buf)) {
+                        touchBuffer(idx);
+                        pushReadHold(stripe, curBs, buf, idx);
+                        hit = true;
+                        return buf.duplicate();
+                    }
+                } finally {
+                    if (!hit) {
+                        stripe.readLock().unlock();
+                    }
+                }
+            }
+        }
         bufferLock.lock();
         try {
             ByteBuffer buf = null;
             boolean allocatedNew = false;
-            if (idx < dataBuffers.size()) {
-                buf = dataBuffers.get(idx);
+            if (idx < bufSnap.length) {
+                buf = (ByteBuffer) bufSnap[idx];
             }
             if (buf == null) {
                 ensureCapacity(1, idx);
                 byte[] data;
-                if (idx < dataBytes.size()) {
-                    data = dataBytes.get(idx);
+                if (idx < byteSnap.length) {
+                    data = (byte[]) byteSnap[idx];
                     if (data == null) {
                         data = readBlockFromFile(idx);
-                        dataBytes.set(idx, data);
+                        applyByteSnap(idx, data);
                         buf = ByteBuffer.wrap(data);
-                        dataBuffers.set(idx, buf);
+                        applyBufSnap(idx, buf);
                         allocatedNew = true;
                     } else {
-                        buf = dataBuffers.get(idx);
+                        if (idx < bufSnap.length) {
+                            buf = (ByteBuffer) bufSnap[idx];
+                        }
                         if (buf == null) {
                             buf = ByteBuffer.wrap(data);
-                            dataBuffers.set(idx, buf);
+                            applyBufSnap(idx, buf);
                             allocatedNew = true;
                         }
                     }
                 } else {
-                    while (dataBytes.size() <= idx) {
-                        dataBytes.add(null);
-                        dataBuffers.add(null);
-                    }
+                    growSnapTo(idx + 1);
                     data = readBlockFromFile(idx);
-                    dataBytes.set(idx, data);
+                    applyByteSnap(idx, data);
                     buf = ByteBuffer.wrap(data);
-                    dataBuffers.set(idx, buf);
+                    applyBufSnap(idx, buf);
                     allocatedNew = true;
                 }
                 if (allocatedNew) {
@@ -1039,10 +1172,55 @@ public class DsMemory {
                 }
             }
             touchBuffer(idx);
-            return buf;
+            ReentrantReadWriteLock stripe = getDataBufferLock((long) idx);
+            stripe.readLock().lock();
+            pushReadHold(stripe, bufSnap, buf, idx);
+            return buf.duplicate();
         } finally {
             bufferLock.unlock();
         }
+    }
+
+    private final void growSnapTo(int minCap) {
+        int bLen = bufSnap.length;
+        if (minCap <= bLen && minCap <= byteSnap.length) return;
+        int newCap = Math.max(minCap, bLen < 16 ? 16 : (bLen * 3) / 2 + 1);
+        Object[] nb = new Object[newCap];
+        Object[] ny = new Object[newCap];
+        Object[] ob = bufSnap;
+        Object[] oy = byteSnap;
+        int cpb = Math.min(ob.length, newCap);
+        int cpy = Math.min(oy.length, newCap);
+        System.arraycopy(ob, 0, nb, 0, cpb);
+        System.arraycopy(oy, 0, ny, 0, cpy);
+        while (dataBuffers.size() < newCap) dataBuffers.add(null);
+        while (dataBytes.size() < newCap) dataBytes.add(null);
+        for (int i = 0; i < cpb; i++) if (ob[i] != null) dataBuffers.set(i, (ByteBuffer) ob[i]);
+        for (int i = 0; i < cpy; i++) if (oy[i] != null) dataBytes.set(i, (byte[]) oy[i]);
+        this.bufSnap = nb;
+        this.byteSnap = ny;
+    }
+
+    private final void ensureListCapAtLeast(List<?> list, int minCap) {
+        while (list.size() < minCap) list.add(null);
+    }
+
+    private final void applyBufSnap(int idx, ByteBuffer v) {
+        growSnapTo(idx + 1);
+        ensureListCapAtLeast(dataBuffers, idx + 1);
+        Object[] nb = bufSnap.clone();
+        nb[idx] = v;
+        bufSnap = nb;
+        dataBuffers.set(idx, v);
+    }
+
+    private final void applyByteSnap(int idx, byte[] v) {
+        growSnapTo(idx + 1);
+        ensureListCapAtLeast(dataBytes, idx + 1);
+        Object[] ny = byteSnap.clone();
+        ny[idx] = v;
+        byteSnap = ny;
+        dataBytes.set(idx, v);
     }
 
     protected final void touchBuffer(int bufferIndex) {
@@ -1141,53 +1319,109 @@ public class DsMemory {
 
     private boolean evictOne(int avoidBufferIndex) {
         evictionAttempts.incrementAndGet();
-        Integer[] cand = new Integer[EVICT_CANDIDATE_SLOT];
-        long[] candAccess = new long[EVICT_CANDIDATE_SLOT];
+        int[] candIdxs = evictCandIdxs;
+        long[] candAccess = evictCandAccess;
+        int slot = EVICT_CANDIDATE_SLOT;
+
+        Object[] keys = bufferLastAccessNanos.keySet().toArray();
+        int total = keys.length;
+        if (total == 0) {
+            return false;
+        }
+        int sampleMax = Math.min(slot, total);
+
         int n = 0;
-        for (Map.Entry<Integer, Long> e : bufferLastAccessNanos.entrySet()) {
-            int idx = e.getKey();
-            if (idx == avoidBufferIndex) {
-                continue;
-            }
-            long access = e.getValue();
-            if (n < EVICT_CANDIDATE_SLOT) {
+        if (total <= slot) {
+            for (int i = 0; i < total; i++) {
+                Object k = keys[i];
+                if (k == null) continue;
+                int idx = ((Integer) k).intValue();
+                if (idx == avoidBufferIndex) continue;
+                Long v = bufferLastAccessNanos.get(k);
+                if (v == null) continue;
+                long access = v.longValue();
                 int j = n;
                 while (j > 0 && candAccess[j - 1] > access) {
-                    cand[j] = cand[j - 1];
+                    candIdxs[j] = candIdxs[j - 1];
                     candAccess[j] = candAccess[j - 1];
                     j--;
                 }
-                cand[j] = idx;
+                candIdxs[j] = idx;
                 candAccess[j] = access;
                 n++;
-            } else if (access < candAccess[EVICT_CANDIDATE_SLOT - 1]) {
-                int j = EVICT_CANDIDATE_SLOT - 1;
+            }
+        } else {
+            int picked = 0;
+            long rngState = (long) System.nanoTime() ^ ((long) avoidBufferIndex << 32L);
+            boolean[] used = null;
+            if (total <= slot * 8) {
+                used = new boolean[total];
+            }
+            int tries = 0;
+            int maxTries = sampleMax * 4;
+            while (picked < sampleMax && tries < maxTries) {
+                tries++;
+                rngState ^= (rngState << 21);
+                rngState ^= (rngState >>> 35);
+                rngState ^= (rngState << 4);
+                int pos = (int) ((rngState & Long.MAX_VALUE) % total);
+                if (used != null) {
+                    if (used[pos]) continue;
+                    used[pos] = true;
+                }
+                Object k = keys[pos];
+                if (k == null) continue;
+                int idx = ((Integer) k).intValue();
+                if (idx == avoidBufferIndex) continue;
+                Long v = bufferLastAccessNanos.get(k);
+                if (v == null) continue;
+                long access = v.longValue();
+                boolean dup = false;
+                for (int kk = 0; kk < picked; kk++) if (candIdxs[kk] == idx) { dup = true; break; }
+                if (dup) continue;
+                int j = n;
                 while (j > 0 && candAccess[j - 1] > access) {
-                    cand[j] = cand[j - 1];
+                    candIdxs[j] = candIdxs[j - 1];
                     candAccess[j] = candAccess[j - 1];
                     j--;
                 }
-                cand[j] = idx;
+                candIdxs[j] = idx;
                 candAccess[j] = access;
+                n++;
+                picked++;
+            }
+            if (n == 0) {
+                for (int i = 0; i < total; i++) {
+                    Object k = keys[i];
+                    if (k == null) continue;
+                    int idx = ((Integer) k).intValue();
+                    if (idx == avoidBufferIndex) continue;
+                    Long v = bufferLastAccessNanos.get(k);
+                    if (v == null) continue;
+                    long access = v.longValue();
+                    candIdxs[0] = idx;
+                    candAccess[0] = access;
+                    n = 1;
+                    break;
+                }
             }
         }
 
+        if (n == 0) return false;
+
         for (int i = 0; i < n; i++) {
-            Integer victim = cand[i];
-            if (victim == null) {
-                continue;
-            }
+            int victim = candIdxs[i];
             ReentrantReadWriteLock stripe = getDataBufferLock((long) victim);
             stripe.writeLock().lock();
             try {
                 bufferLock.lock();
                 try {
-                    if (victim >= dataBuffers.size()) {
+                    if (victim >= bufSnap.length) {
                         bufferLastAccessNanos.remove(victim);
                         continue;
                     }
-                    byte[] victimBytes = dataBytes.get(victim);
-                    ByteBuffer victimBuf = dataBuffers.get(victim);
+                    byte[] victimBytes = (byte[]) byteSnap[victim];
+                    ByteBuffer victimBuf = (ByteBuffer) bufSnap[victim];
                     if (victimBytes == null && victimBuf == null) {
                         bufferLastAccessNanos.remove(victim);
                         continue;
@@ -1199,6 +1433,12 @@ public class DsMemory {
                     if (victimBytes != null) {
                         writeBlockToFile(victim, victimBytes);
                     }
+                    Object[] nb = bufSnap.clone();
+                    nb[victim] = null;
+                    bufSnap = nb;
+                    Object[] ny = byteSnap.clone();
+                    ny[victim] = null;
+                    byteSnap = ny;
                     dataBuffers.set(victim, null);
                     dataBytes.set(victim, null);
                     bufferLastAccessNanos.remove(victim);
@@ -1224,6 +1464,7 @@ public class DsMemory {
         }
         long start = (long) bufferIndex * (long) BLOCK_SIZE;
         long len;
+        syncOpLock.lock();
         try (RandomAccessFile raf = new RandomAccessFile(dataFile, "r")) {
             len = raf.length();
             if (start >= len) {
@@ -1238,6 +1479,8 @@ public class DsMemory {
         } catch (IOException ex) {
             throw new RuntimeException("Failed to read block index=" + bufferIndex
                 + " from " + dataFile, ex);
+        } finally {
+            syncOpLock.unlock();
         }
     }
 
@@ -1247,6 +1490,7 @@ public class DsMemory {
         }
         long start = (long) bufferIndex * (long) BLOCK_SIZE;
         ensureParentDirectory(dataFile);
+        syncOpLock.lock();
         try (RandomAccessFile raf = new RandomAccessFile(dataFile, "rw")) {
             long needed = start + BLOCK_SIZE;
             if (raf.length() < needed) {
@@ -1257,6 +1501,8 @@ public class DsMemory {
         } catch (IOException ex) {
             throw new RuntimeException("Failed to write block index=" + bufferIndex
                 + " to " + dataFile, ex);
+        } finally {
+            syncOpLock.unlock();
         }
     }
     
@@ -1278,6 +1524,14 @@ public class DsMemory {
         return buf;
     }
 
+    protected final void runWithBufferLocks(Runnable r) {
+        try { r.run(); } finally { releaseAllBufferLocks(); }
+    }
+
+    protected final <T> T runWithBufferLocksGet(java.util.function.Supplier<T> s) {
+        try { return s.get(); } finally { releaseAllBufferLocks(); }
+    }
+
     /**
      * 加载缓冲区用于更新，并加锁。
      *
@@ -1296,7 +1550,7 @@ public class DsMemory {
      * @param bufferIndex 缓冲区索引
      */
     protected void unlockBufferForUpdate(int bufferIndex) {
-
+        releaseAllBufferLocks();
     }
 
     /**
@@ -1305,7 +1559,7 @@ public class DsMemory {
      * @param bufferIndex 缓冲区索引
      */
     protected void unlockBuffer(long bufferIndex) {
-
+        releaseAllBufferLocks();
     }
     
      /**
@@ -1316,56 +1570,78 @@ public class DsMemory {
         if (dataFile == null) {
             throw new IllegalStateException("syncStore requires a non-null data file");
         }
-        if (syncOpLock.tryLock()) {
-            try {
-                long totalBytes = syncByteSize();
-                ensureParentDirectory(dataFile);
-                try (RandomAccessFile raf = new RandomAccessFile(dataFile, "rw")) {
-                    raf.setLength(Math.max(raf.length(), totalBytes));
-                    int required = requiredBlockCount(totalBytes);
-                    byte[] tempRead = null;
-                    for (int i = 0; i < required; i++) {
-                        byte[] block;
-                        if (i < dataBytes.size()) {
-                            block = dataBytes.get(i);
-                        } else {
-                            block = null;
-                        }
-                        if (block != null) {
-                            raf.seek((long) i * BLOCK_SIZE);
-                            raf.write(block, 0, BLOCK_SIZE);
-                            continue;
-                        }
-                        if (tempRead == null) {
-                            tempRead = new byte[BLOCK_SIZE];
-                        } else {
-                            Arrays.fill(tempRead, (byte) 0);
-                        }
-                        long filePos = (long) i * BLOCK_SIZE;
-                        long flen = raf.length();
-                        if (filePos + BLOCK_SIZE <= flen) {
-                            raf.seek(filePos);
-                            raf.readFully(tempRead, 0, BLOCK_SIZE);
-                            raf.seek(filePos);
-                            raf.write(tempRead, 0, BLOCK_SIZE);
-                        } else if (filePos < flen) {
-                            int rest = (int) (flen - filePos);
-                            raf.seek(filePos);
-                            raf.readFully(tempRead, 0, rest);
-                            raf.seek(filePos);
-                            raf.write(tempRead, 0, BLOCK_SIZE);
-                        } else {
-                            raf.seek(filePos);
-                            raf.write(ZERO_BLOCK_BYTES, 0, BLOCK_SIZE);
+        syncOpLock.lock();
+        try {
+            if (wal != null && !dirtyBufferIndices.isEmpty()) {
+                for (Integer idx : dirtyBufferIndices) {
+                    if (idx != null && idx >= 0 && idx < dataBytes.size() && dataBytes.get(idx) != null) {
+                        try {
+                            wal.appendBlockEntry(idx, dataBytes.get(idx));
+                        } catch (IOException ioe) {
+                            throw new RuntimeException("Failed to append WAL for block index=" + idx, ioe);
                         }
                     }
-                    dirtyBufferIndices.clear();
-                } catch (IOException ex) {
-                    throw new RuntimeException(ex);
                 }
-            } finally {
-                syncOpLock.unlock();
+                try {
+                    wal.fsync();
+                } catch (IOException ioe) {
+                    throw new RuntimeException("Failed to fsync WAL before data write", ioe);
+                }
             }
+            long totalBytes = syncByteSize();
+            ensureParentDirectory(dataFile);
+            try (RandomAccessFile raf = new RandomAccessFile(dataFile, "rw")) {
+                raf.setLength(Math.max(raf.length(), totalBytes));
+                int required = requiredBlockCount(totalBytes);
+                byte[] tempRead = null;
+                for (int i = 0; i < required; i++) {
+                    byte[] block;
+                    if (i < dataBytes.size()) {
+                        block = dataBytes.get(i);
+                    } else {
+                        block = null;
+                    }
+                    if (block != null) {
+                        raf.seek((long) i * BLOCK_SIZE);
+                        raf.write(block, 0, BLOCK_SIZE);
+                        continue;
+                    }
+                    if (tempRead == null) {
+                        tempRead = new byte[BLOCK_SIZE];
+                    } else {
+                        Arrays.fill(tempRead, (byte) 0);
+                    }
+                    long filePos = (long) i * BLOCK_SIZE;
+                    long flen = raf.length();
+                    if (filePos + BLOCK_SIZE <= flen) {
+                        raf.seek(filePos);
+                        raf.readFully(tempRead, 0, BLOCK_SIZE);
+                        raf.seek(filePos);
+                        raf.write(tempRead, 0, BLOCK_SIZE);
+                    } else if (filePos < flen) {
+                        int rest = (int) (flen - filePos);
+                        raf.seek(filePos);
+                        raf.readFully(tempRead, 0, rest);
+                        raf.seek(filePos);
+                        raf.write(tempRead, 0, BLOCK_SIZE);
+                    } else {
+                        raf.seek(filePos);
+                        raf.write(ZERO_BLOCK_BYTES, 0, BLOCK_SIZE);
+                    }
+                }
+                dirtyBufferIndices.clear();
+                if (wal != null) {
+                    try {
+                        wal.truncate();
+                    } catch (IOException ioe) {
+                        throw new RuntimeException("Failed to truncate WAL after successful sync", ioe);
+                    }
+                }
+            } catch (IOException ex) {
+                throw new RuntimeException(ex);
+            }
+        } finally {
+            syncOpLock.unlock();
         }
     }
     
@@ -1377,15 +1653,21 @@ public class DsMemory {
         if (dataFile == null) {
             throw new IllegalStateException("syncLoad requires a non-null data file");
         }
-        if (!dataFile.exists()) {
-            return;
-        }
         syncOpLock.lock();
         try {
             bufferLock.lock();
             try {
-                dataBuffers.clear();
-                dataBytes.clear();
+                int startCap = Math.max(8192, requiredBlockCount(dataFile == null || !dataFile.exists() ? 0 : dataFile.length()) + 1);
+                Object[] nb = new Object[startCap];
+                Object[] ny = new Object[startCap];
+                List<ByteBuffer> lb = new java.util.concurrent.CopyOnWriteArrayList<>();
+                List<byte[]> ly = new java.util.concurrent.CopyOnWriteArrayList<>();
+                while (lb.size() < startCap) lb.add(null);
+                while (ly.size() < startCap) ly.add(null);
+                this.bufSnap = nb;
+                this.byteSnap = ny;
+                this.dataBuffers = lb;
+                this.dataBytes = ly;
                 bufferLastAccessNanos.clear();
                 dirtyBufferIndices.clear();
                 activeCachedBlocks.set(0);
@@ -1395,10 +1677,28 @@ public class DsMemory {
                 evictionBytes.set(0);
                 evictionDirtyCount.set(0);
                 highestBufferIndexEverSeen = -1;
-                long fileLength = dataFile.length();
-                if (fileLength > 0) {
-                    highestBufferIndexEverSeen = requiredBlockCount(fileLength) - 1;
+                if (dataFile.exists()) {
+                    long fileLength = dataFile.length();
+                    if (fileLength > 0) {
+                        highestBufferIndexEverSeen = requiredBlockCount(fileLength) - 1;
+                    }
                 }
+                if (wal != null) {
+                    try {
+                        wal.replayAll(dataBytes, this);
+                    } catch (IOException ioe) {
+                        throw new RuntimeException("Failed to replay WAL during syncLoad", ioe);
+                    }
+                }
+                while (dataBuffers.size() < dataBytes.size()) {
+                    dataBuffers.add(null);
+                }
+                Object[] fb = new Object[dataBuffers.size()];
+                Object[] fy = new Object[dataBytes.size()];
+                for (int i = 0; i < dataBuffers.size(); i++) fb[i] = dataBuffers.get(i);
+                for (int i = 0; i < dataBytes.size(); i++) fy[i] = dataBytes.get(i);
+                this.bufSnap = fb;
+                this.byteSnap = fy;
             } finally {
                 bufferLock.unlock();
             }
@@ -1427,6 +1727,60 @@ public class DsMemory {
         if (parent != null && !parent.exists()) {
             parent.mkdirs();
         }
+    }
+
+    public void forceFlushAllWALAndSync() {
+        syncOpLock.lock();
+        try {
+            if (wal != null && wal.isOpen()) {
+                try {
+                    wal.fsync();
+                } catch (IOException ioe) {
+                    throw new RuntimeException(ioe);
+                }
+            }
+            syncStore();
+        } finally {
+            syncOpLock.unlock();
+        }
+    }
+
+    public int replayWALFromScratch() {
+        syncOpLock.lock();
+        try {
+            bufferLock.lock();
+            try {
+                if (wal == null) return 0;
+                try {
+                    return wal.replayAll(dataBytes, this);
+                } catch (IOException ioe) {
+                    throw new RuntimeException(ioe);
+                }
+            } finally {
+                bufferLock.unlock();
+            }
+        } finally {
+            syncOpLock.unlock();
+        }
+    }
+
+    public void truncateWALNow() {
+        syncOpLock.lock();
+        try {
+            if (wal != null && wal.isOpen()) {
+                try {
+                    wal.truncate();
+                } catch (IOException ioe) {
+                    throw new RuntimeException(ioe);
+                }
+            }
+        } finally {
+            syncOpLock.unlock();
+        }
+    }
+
+    public static void forceResetWALForTest(File dataFile) {
+        DsWAL.forceResetForTest(dataFile);
     }
 
 }

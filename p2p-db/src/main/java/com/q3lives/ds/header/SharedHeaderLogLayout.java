@@ -33,11 +33,10 @@ public final class SharedHeaderLogLayout {
 
     public static final int SLOT_MAGIC = 0x534C545F; // "SLT_"
     public static final int SLOT_HEADER_SIZE = 24;
-    public static final int OFF_SLOT_STORE_ID = 0;
-    public static final int OFF_SLOT_SEQ = 8;
-    public static final int OFF_SLOT_LEN = 16;
-    public static final int OFF_SLOT_FLAGS = 18;
-    public static final int OFF_SLOT_CRC16 = 20;
+    public static final int OFF_SLOT_STORE_ID = 4;
+    public static final int OFF_SLOT_SEQ = 12;
+    public static final int OFF_SLOT_LEN = 20;
+    public static final int OFF_SLOT_FLAGS = 22;
 
     public static int tierForDirtyEnd(int dirtyEndBytes) {
         if (dirtyEndBytes <= 0) return SLOT_TIER_64;

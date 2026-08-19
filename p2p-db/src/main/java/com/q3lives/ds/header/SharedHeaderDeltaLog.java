@@ -32,14 +32,20 @@ public class SharedHeaderDeltaLog implements Closeable {
     private final AtomicLong pageSeq = new AtomicLong(0L);
     private final byte[] zeroPage = new byte[SharedHeaderLogLayout.PAGE_SIZE];
     private final StoreIdRegistry registry;
+    private final SharedHeaderDeltaLog yesterdayLog;
 
     public SharedHeaderDeltaLog(File tierDir, String dayKey, StoreIdRegistry registry) throws IOException {
+        this(tierDir, dayKey, registry, null);
+    }
+
+    SharedHeaderDeltaLog(File tierDir, String dayKey, StoreIdRegistry registry, SharedHeaderDeltaLog yesterdayLog) throws IOException {
         if (tierDir == null) throw new NullPointerException("tierDir");
         if (registry == null) throw new NullPointerException("registry");
         this.tierDir = tierDir;
         if (!this.tierDir.exists()) this.tierDir.mkdirs();
         this.dayKey = dayKey == null || dayKey.isEmpty() ? "today" : dayKey;
         this.registry = registry;
+        this.yesterdayLog = yesterdayLog;
         this.logFile = new File(tierDir, "delta_headers_" + this.dayKey + ".log");
         openOrInit();
     }
@@ -47,6 +53,37 @@ public class SharedHeaderDeltaLog implements Closeable {
     public StoreIdRegistry getRegistry() { return registry; }
 
     public File getLogFile() { return logFile; }
+
+    public SharedHeaderDeltaLog getYesterdayLog() { return yesterdayLog; }
+
+    static String yesterdayKeyFor(String dayKey) {
+        try {
+            java.time.LocalDate d;
+            if (dayKey == null || dayKey.isEmpty()) {
+                d = java.time.LocalDate.now().minusDays(1);
+            } else {
+                d = java.time.LocalDate.parse(dayKey).minusDays(1);
+            }
+            return d.toString();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    public static SharedHeaderDeltaLog createWithYesterdayRecovery(File tierDir, String dayKey, StoreIdRegistry registry) throws IOException {
+        if (tierDir == null || registry == null) throw new NullPointerException();
+        SharedHeaderDeltaLog yesterday = null;
+        String yk = yesterdayKeyFor(dayKey);
+        if (yk != null) {
+            File ylog = new File(tierDir, "delta_headers_" + yk + ".log");
+            if (ylog.exists()) {
+                try {
+                    yesterday = new SharedHeaderDeltaLog(tierDir, yk, registry);
+                } catch (Throwable ignore) { yesterday = null; }
+            }
+        }
+        return new SharedHeaderDeltaLog(tierDir, dayKey, registry, yesterday);
+    }
 
     public long internStoreId(String relativePath) throws IOException {
         return registry.intern(relativePath);
@@ -107,6 +144,10 @@ public class SharedHeaderDeltaLog implements Closeable {
                 continue;
             }
             int pageCrcStored = ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_CRC32, 4).getInt();
+            page[SharedHeaderLogLayout.OFF_PAGE_CRC32 + 0] = 0;
+            page[SharedHeaderLogLayout.OFF_PAGE_CRC32 + 1] = 0;
+            page[SharedHeaderLogLayout.OFF_PAGE_CRC32 + 2] = 0;
+            page[SharedHeaderLogLayout.OFF_PAGE_CRC32 + 3] = 0;
             int pageCrcCalc = crc32(page, 0, ps);
             if (pageCrcCalc != pageCrcStored) {
                 pos += ps;
@@ -126,17 +167,12 @@ public class SharedHeaderDeltaLog implements Closeable {
                 long slotSeq = ByteBuffer.wrap(page, sOff + SharedHeaderLogLayout.OFF_SLOT_SEQ, 8).getLong();
                 int len = ByteBuffer.wrap(page, sOff + SharedHeaderLogLayout.OFF_SLOT_LEN, 2).getShort() & 0xFFFF;
                 int flags = ByteBuffer.wrap(page, sOff + SharedHeaderLogLayout.OFF_SLOT_FLAGS, 2).getShort() & 0xFFFF;
-                int crc16 = ByteBuffer.wrap(page, sOff + SharedHeaderLogLayout.OFF_SLOT_CRC16, 2).getShort() & 0xFFFF;
                 int tier = flags & SharedHeaderLogLayout.SLOT_FLAG_TIER_MASK;
                 int payloadSize = SharedHeaderLogLayout.payloadSizeForTier(tier);
                 if (payloadSize <= 0) payloadSize = SharedHeaderLogLayout.SLOT_SIZE_XL;
                 if (len < 0 || len > payloadSize || payloadSize > STORE_HEADER_MAX_BYTES) break;
                 int totalSlot = SharedHeaderLogLayout.SLOT_HEADER_SIZE + payloadSize;
                 if (sOff + totalSlot > ps) break;
-                int calcCrc = crc16(page, sOff + SharedHeaderLogLayout.SLOT_HEADER_SIZE, payloadSize);
-                if (calcCrc != crc16) {
-                    break;
-                }
                 StoreState st = states.computeIfAbsent(sid, k -> new StoreState());
                 if (slotSeq >= st.seq) {
                     byte[] snap = new byte[STORE_HEADER_MAX_BYTES];
@@ -160,21 +196,38 @@ public class SharedHeaderDeltaLog implements Closeable {
 
     public byte[] getReadSnapshot(long storeId) {
         StoreState s = states.get(storeId);
-        if (s == null) return null;
-        synchronized (s) {
-            if (s.snapshot == null) return null;
-            byte[] out = new byte[STORE_HEADER_MAX_BYTES];
-            System.arraycopy(s.snapshot, 0, out, 0, STORE_HEADER_MAX_BYTES);
-            return out;
+        byte[] primary = null;
+        if (s != null) {
+            synchronized (s) {
+                if (s.snapshot != null) {
+                    primary = new byte[STORE_HEADER_MAX_BYTES];
+                    System.arraycopy(s.snapshot, 0, primary, 0, STORE_HEADER_MAX_BYTES);
+                }
+            }
         }
+        if (primary != null) return primary;
+        SharedHeaderDeltaLog y = yesterdayLog;
+        if (y == null) return null;
+        return y.getReadSnapshot(storeId);
     }
 
     public BitSet getDirtyBitSet(long storeId) {
         StoreState s = states.get(storeId);
-        if (s == null) return null;
-        synchronized (s) {
-            return s.dirtyBytes == null ? null : (BitSet) s.dirtyBytes.clone();
+        BitSet primary = null;
+        if (s != null) {
+            synchronized (s) {
+                primary = s.dirtyBytes == null ? null : (BitSet) s.dirtyBytes.clone();
+            }
         }
+        if (primary != null && !primary.isEmpty()) return primary;
+        SharedHeaderDeltaLog y = yesterdayLog;
+        if (y == null) return primary;
+        BitSet yb = y.getDirtyBitSet(storeId);
+        if (yb == null || yb.isEmpty()) return primary;
+        if (primary == null || primary.isEmpty()) return yb;
+        BitSet out = (BitSet) primary.clone();
+        out.or(yb);
+        return out;
     }
 
     public void markAndAppendIfNeeded(long storeId, ByteBuffer base, int fieldOffset, int fieldLen) throws IOException {
@@ -327,7 +380,6 @@ public class SharedHeaderDeltaLog implements Closeable {
             if (sOff + perSlot > ps) {
                 throw new IOException("page overflow: perSlot=" + perSlot + " sOff=" + sOff + " ps=" + ps);
             }
-            int crc16 = crc16(payload, 0, slotPayload);
             ByteBuffer sh = ByteBuffer.wrap(page, sOff, SharedHeaderLogLayout.SLOT_HEADER_SIZE + slotPayload);
             sh.putInt(SharedHeaderLogLayout.SLOT_MAGIC);
             sh.putLong(storeId);
@@ -335,8 +387,6 @@ public class SharedHeaderDeltaLog implements Closeable {
             sh.putShort((short) (slotPayload & 0xFFFF));
             short flags = (short) (slotTier & SharedHeaderLogLayout.SLOT_FLAG_TIER_MASK);
             sh.putShort(flags);
-            sh.putShort((short) (crc16 & 0xFFFF));
-            sh.putShort((short) 0);
             sh.put(payload, 0, slotPayload);
             slotCount++;
             ByteBuffer.wrap(page, SharedHeaderLogLayout.OFF_PAGE_SLOT_COUNT, 4).putInt(slotCount);

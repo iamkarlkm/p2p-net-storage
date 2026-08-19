@@ -11,5 +11,5 @@ if (-not $protoc) {
   throw "protoc not found in PATH"
 }
 
-& protoc "--proto_path=$protoDir" "--java_out=$outDir" (Join-Path $protoDir "p2p_wrapper.proto") (Join-Path $protoDir "p2p_control.proto")
+& protoc "--proto_path=$protoDir" "--java_out=$outDir" (Join-Path $protoDir "p2p_wrapper.proto") (Join-Path $protoDir "p2p_control.proto") (Join-Path $protoDir "novel_writer.proto")
 

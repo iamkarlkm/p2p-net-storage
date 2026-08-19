@@ -1,0 +1,69 @@
+/*
+ * novel-writer 业务命令协议（RPC_UNARY=30000 / RPC_EVENT=30005 通道）
+ *
+ * 协议栈：
+ *   P2PWrapper (int32 seq, int32 command, bytes data)
+ *     └─ data: NovelWriterCommandRequest | NovelWriterCommandResponse | NovelWriterEvent
+ *
+ * 一条 RPC 调用映射到一个 novel-writer 业务命令（创建项目/启动规划/写章节/...）。
+ * 服务端异步任务通过 RPC_EVENT 推送 NovelWriterEvent 进度。
+ */
+syntax = "proto3";
+package p2pws.novel;
+
+option java_package = "p2pws.novel";
+option java_multiple_files = true;
+
+// ============== 命令请求 ==============
+
+message NovelWriterCommandRequest {
+  // 业务命令名（大写下划线），例如 CREATE_PROJECT / START_PLANNING / WRITE_CHAPTER
+  string command_id = 1;
+  // 命令上下文（部分命令需要）
+  string project_id = 2;
+  string chapter_id = 3;
+  // 通用参数（与具体 command_id 配套，定义在 Server 端 Java 注释里）
+  repeated KeyValue args = 4;
+}
+
+message KeyValue {
+  string key = 1;
+  string value = 2;
+}
+
+// ============== 命令响应 ==============
+
+message NovelWriterCommandResponse {
+  enum Status {
+    UNKNOWN = 0;
+    OK = 1;            // 同步命令成功完成
+    RUNNING = 2;       // 异步任务已受理，后续通过 RPC_EVENT 推送进度
+    FAILED = 3;
+  }
+  Status status = 1;
+  string message = 2;        // 错误信息或补充描述
+  string task_id = 3;        // 异步任务时返回的 ID
+  repeated KeyValue result = 4; // 命令结果（结构化字段）
+}
+
+// ============== 服务端推送事件 ==============
+
+message NovelWriterEvent {
+  enum Severity {
+    INFO = 0;
+    WARN = 1;
+    ERROR = 2;
+  }
+  Severity severity = 1;
+  // 对齐 WorkflowEvent.EventType 名字（AGENT_STREAMING / CHAPTER_WRITTEN / PLANNING_DONE / ...）
+  string event_type = 2;
+  // 项目/章节上下文
+  string project_id = 3;
+  string chapter_id = 4;
+  // 原始 payload（业务字段，键值对）
+  repeated KeyValue payload = 5;
+  // 关联任务 ID（异步任务的进度事件时使用）
+  string task_id = 6;
+  // 时间戳（毫秒）
+  int64 timestamp_ms = 7;
+}

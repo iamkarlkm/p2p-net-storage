@@ -99,7 +99,7 @@ public class SharedLogFileDeltaHeaderTierStore implements HeaderTieredStore {
             DsDbConfig cfg = DsDbConfig.getInstance();
             StoreIdRegistry registry = cfg.getOrCreateStoreIdRegistry(dir);
             String dayKey = java.time.LocalDate.now().toString();
-            SharedHeaderDeltaLog log = new SharedHeaderDeltaLog(dir, dayKey, registry);
+            SharedHeaderDeltaLog log = SharedHeaderDeltaLog.createWithYesterdayRecovery(dir, dayKey, registry);
             c = new SharedLogContext(log);
             c.refCount.set(1);
             CONTEXTS.put(key, c);
@@ -313,6 +313,7 @@ public class SharedLogFileDeltaHeaderTierStore implements HeaderTieredStore {
             }
             CONTEXTS.clear();
         }
+        STORE_INSTANCE_SALT.set(0L);
         if (tierRootDir != null) {
             deleteTierRuntimeFilesRecursive(new File(tierRootDir));
             File defDir = new File(tierRootDir, DsDbConfig.TIER_SUB_DIR);
