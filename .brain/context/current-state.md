@@ -1,6 +1,6 @@
 ---
 title: Current State
-updated: "2026-08-18T16:13:37Z"
+updated: "2026-08-20T01:43:31Z"
 ---
 # Current State
 
@@ -84,7 +84,7 @@ This file is a deterministic snapshot of the repository state at the last refres
 - Gotcha: 该 E2E 不要再手动 `setLastModifiedTime` 造时间戳，否则可能额外触发 `MODIFY` 事件导致时间线/历史断言不稳定；改为直接读取实际 mtime 作为对齐基准。
 - Updated: 2026-08-05 23:00:00 +08:00
 - `p2p-db` `DsMemory` 基座新增有上限近似 LRU 缓存（默认 2048 blocks = 128MB，参数 `ds.memory.maxCachedBlocks`，public getter/setter + `setMaxCachedBlocks` 动态收缩 + `trimCachedBuffers()` 主动裁剪），逐出候选用 16-slot 采样；双层锁均为阻塞保证 eviction 有进展；脏 victim 无条件落盘 RAF 不依赖 markDirty。
-- `DsMemory` 新增对外 `CacheStats`：`maxCachedBlocks / maxCachedBytes / activeCachedBlocks / cachedBytes / dirtyBuffers / highestIndex / evictionAttempts / evictionSuccess / evictionBytes / evictionDirtyCount`，以及 `getCacheStats() / getAndResetCacheStats() / resetCacheStats()`。
+- `DsMemory` 新增对外 `CacheStats`：`maxCachedBlocks / maxCachedBytes / activeCachedBlocks / cachedBytes / dirtyBuffers / highestIndex / evictionAttempts / evictionSuccess / evictionBytes / evictionDirtyCount / evictionDirtyCount`，以及 `getCacheStats() / getAndResetCacheStats() / resetCacheStats()`。
 - `syncLoad()` 改为 lazy 模式：清空 buffer/counts/stats，仅保留 `highestBufferIndexEverSeen`，后续访问按需触发 `loadBuffer` → `ensureCapacity` 逐出链路，严格维持 `activeCachedBlocks <= maxCachedBlocks`。
 - 回归测试迁到 `p2p-sync`（离线环境已有 JUnit4 依赖）：`p2p-sync/src/test/java/com/q3lives/ds/core/DsMemoryEvictionTest.java` 覆盖缓存上限、持久化+逆序扫读（605 block, max=2 下 496+ 次逐出，100% 命中）、收缩上限三个用例。
 - Verification:
@@ -111,13 +111,13 @@ This file is a deterministic snapshot of the repository state at the last refres
   - finalize `setType` 保持：uploadAndFinalize 的 `SyncFinalizeRequest.Builder.setType(toProtoType(type))` 用 lambda 外捕获的外层 `type` final 变量，MOVE/RENAME 不会被 `PUT_FILE` 覆盖。
 - **新增 2 条 P0 聚焦 E2E**（`P2PDirectorySyncE2ETest` task 1201 / 1202），加 base 基线共 3 条 + `MultiEndpointRpcSyncEventHandlerTest` 5 条，合计 8 条连续实跑全 PASS：
   - `shouldSyncAtomicFileRenameWithVerifiedContentOverTcp`（task1201）：同目录 `d1/original.txt → d1/renamed.txt`，断言 `assertPathAbsent(old) + assertFileSynced(new) + Monitor JSON 含 sourcePath + verifiedContentLength + verifiedContentMd5`。
-  - `shouldSyncCrossDirectoryFileMoveWithVerifiedContentOverTcp`（task1202）：跨目录 `srcdir/movethis.txt → dstdir/nested/washere.bin`，同上断言，fallback DELETE/CREATE → FILE_MOVE merge 链路已通过 trace 验证路径正确。
+  - `shouldSyncCrossDirectoryFileMoveWithVerifiedContentOverTcp`（task1202）：跨目录 `srcdir/movethis.txt → dstdir/nested/washere.bin`，同上断言，fallback DELETE/CREATE → FILE_MOVE 合并链路已通过 trace 验证路径正确。
 - **构建链 & 环境约束确认**：
   - JDK 21 release 基线：`p2p-db/pom.xml` `maven-compiler-plugin` 显式 `<release>${java.release}</release>`，防止 `DsHashMap classfile version 70` 的 UnsupportedClassVersionError；
   - PowerShell：`-Dxxx=yyy` 必须整体单引号，否则 Surefire 截断把 `.failIfNoSpecifiedTests=false` 当成未知 lifecycle phase；
   - Surefire 3.2.2 JUnit4：不支持 `Cls#method1+method2` 的 `-Dtest=` 语法（JUnit5 独有），使用全类名跑或单方法。
-  - Surefire 并行沙箱残留注意：15 条全量并行跑时 `shouldTreatFileRenameAsDeletePlusCreateOverTcp` 可能因 Windows 文件句柄占用（"另一个程序正在使用此文件"）不稳定，单跑任意 RENAME/MOVE 用例 100% PASS 已验证代码正确性；
-  - 分片大文件（P1）`shouldResumeSegmentedUpload / shouldSyncLargeFileWithSegmentation` 当前 FAIL，属于 P2 级的大文件分块能力，不阻塞 P0 主线提交。
+  - Surefire 并行沙箱残留注意：15 条全量并行跑时 `shouldTreatFileRenameAsDeletePlusCreateOverTcp` 可能因 Windows 文件句柄占用（“另一个程序正在使用此文件”）不稳定，单跑任意 RENAME/MOVE 用例 100% PASS 已验证代码正确性；
+  - 分片大文件（P1）`shouldResumeSegmentedUpload / shouldSyncLargeFileWithSegmentation` 当前 FAIL，属于 P2 级的大文件断点/重传能力，不阻塞 P0 主线提交。
 - Verification（最新 8 条聚焦绿，BUILD SUCCESS）：
   - `mvn -pl p2p-sync clean compile -o -q`
   - `mvn -pl p2p-sync test -o '-Dtest=P2PDirectorySyncE2ETest#shouldSyncFileToReceiverOverTcp+shouldSyncAtomicFileRenameWithVerifiedContentOverTcp+shouldSyncCrossDirectoryFileMoveWithVerifiedContentOverTcp,MultiEndpointRpcSyncEventHandlerTest' '-Dsurefire.failIfNoSpecifiedTests=false'`
@@ -160,7 +160,7 @@ This file is a deterministic snapshot of the repository state at the last refres
   - `mvn -pl p2p-db -Dtest=ds.DsEqIndexStoreTest -Dsurefire.useModulePath=false -Dsurefire.failIfNoSpecifiedTests=false test` → 5/5 0F0E
   - `mvn -pl p2p-db -Dtest=ds.DsEqIndexOrmAutoMaintainTest,ds.DsHashMapTest,ds.DsBinlogBasicTest,ds.OnlineSchemaCompatibilityTest -Dsurefire.useModulePath=false -Dsurefire.failIfNoSpecifiedTests=false test` → 19 tests 0F0E
   - `mvn -pl p2p-db -Dtest=ds.DsDatabaseLocalBasicTest -Dsurefire.useModulePath=false -Dsurefire.failIfNoSpecifiedTests=false test` → BUILD SUCCESS
-- **Gotcha：DsHashMap.forEachRange(start,count) 是 offset 分页，不是按值范围**——因此 V0.4 没有复用 §四 forEachRange 原语，改用 iterator+filter+sort，最小侵入不碰 hash map 内部原语；如果未来数据量超 100M 级再引入 B-Tree/有序索引，当前 V0.4 方案对百万级条目足够（sort O(N·logN)，现代 JDK Sort 对百万元素 ~20ms，和 bucket I/O 单次 seek 同阶）。
+- **Gotcha：DsHashMap.forEachRange(start,count) 是 offset 分页，不是按值范围**——因此 V0.4 没有复用 §四 forEachRange 原语，改用 iterator+filter+sort，不碰 hash map 内部原语；如果未来数据量超 100M 级再引入 B-Tree/有序索引，当前 V0.4 方案对百万级条目足够（sort O(N·logN)，现代 JDK Sort 对百万元素 ~20ms，和 bucket I/O 单次 seek 同阶）。
 
 - Updated: 2026-08-17 22:20:00 +08:00
 - **p2p-db DsEqIndexStore V0.5 Query Planner 接 eqIndex + rangeIndex 130 tests 0F0E 完整交付（§五 P2① 五批次 V0.1→V0.5 全链路闭环）**：在保留 V0.1~V0.4 所有索引写入维护/持久化/close 生命周期、子类 64 派生 0 代码改动、对外 DAO 入口签名不变的 Karpathy 三原则下，仅在 [GenericManager.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/integration/GenericManager.java) 的 4 条查询基元（count/getOne/listEntities/sliceEntities）接入 Query Planner：
@@ -196,3 +196,19 @@ This file is a deterministic snapshot of the repository state at the last refres
 - **Boundaries touched**: `p2p-db`（索引 planner + ORM 批量写入 + 复合索引维护）、`.brain`（durable notes）。
 - **Gotcha：复合索引 key 采用 FNV-1a 64 位哈希拼接**——`compositeKeyValue` 把多列值按 `\u0001` 分隔后整体 hash，NULL 列用 `\u0000` 占位；查询 planner 只使用 EQ 条件构成最左前缀，RANGE 条件仍走单列 RANGE 索引或全表扫。
 - **Gotcha：批量 putEntities 目前只聚合单表同 schema 的索引 I/O**——跨表/跨 schema 的批量调用仍需分表执行；`applyIndexBatch` 内部按 indexedValue 顺序串行处理，未做并行化，保持简单正确优先。
+
+- Updated: 2026-08-20 09:20:00 +08:00
+- **p2p-db 二级索引子系统 V0.9 Query Planner 补齐 OR/NOT_IN/IN/COUNT/EXISTS 五个算子（§六 ④）**：
+  - [QueryWrapper.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/integration/QueryWrapper.java) 扩展：Op 枚举新增 `EXISTS` / `NOT_EXISTS`；新增 `orBranches` 列表与 `or(QueryWrapper<T>)` 方法表达 OR 分支；新增 `exists(Class,String,QueryWrapper)` / `notExists(Class,String,QueryWrapper)` 相关子查询构造（第二个参数为 related 表外键列，与外层 entity id 做等值关联；传 null 为无关联子查询）；保留原 `exists(Class,QueryWrapper)` / `notExists(Class,QueryWrapper)` 兼容入口。
+  - [GenericManager.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/integration/GenericManager.java) 扩展：
+    - `matchesAll` 语义改为“顶层 criteria 全 AND，OR 分支至少命中一个”，即 `AND(top) AND OR(branches)`；
+    - `matches` 新增 `EXISTS` / `NOT_EXISTS` 分支，支持 correlated EXISTS（relatedField = 外层 id）和 uncorrelated EXISTS；
+    - `collectIndexableCriteria` 把 `IN` 纳入索引 narrowing（LONG/STRING 列均支持），`candidateIdsForQuery` 对 `IN` 做多值索引结果 `HashSet` 求并集；`NOT_IN` 不走索引 narrowing，由 matchesAll 最终裁决；
+    - `countByWrapper` 对空 wrapper（无 criteria、无 orBranches）直接返回 `idSet.size()`，避免全表实体加载。
+  - 新增测试 [DsEqIndexPlannerOperatorsTest.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/test/java/ds/DsEqIndexPlannerOperatorsTest.java) 10/10 0F0E：IN(LONG/STRING) 索引命中 + 索引+非索引混合过滤、NOT_IN fallback 全扫、OR 分支（顶层 AND + OR / 纯 OR）、COUNT 空条件优化、EXISTS/NOT_EXISTS correlated 子查询。
+  - 联合定向回归 ≈146 tests 0F0E：在 V0.6/V0.7/V0.8 验证命令基础上追加 `DsEqIndexPlannerOperatorsTest`，EqIndexStore/Range/ORM/Planner/MultiIndex/Composite/BatchPut/Binlog/GenericManager 全绿。
+- **验证命令（全部 exit 0）**：
+  - `mvn test -pl p2p-db -Dtest=DsEqIndexStoreTest,DsEqIndexRangeTest,DsEqIndexOrmAutoMaintainTest,DsEqIndexQueryPlannerTest,DsEqIndexPlannerMultiIndexIntersectTest,DsEqIndexCompositeIndexTest,DsDatabaseLocalBatchPutTest,DsBinlogBasicTest,GenericManagerTest,DsEqIndexPlannerOperatorsTest -q`
+- **Boundaries touched**: `p2p-db`（QueryWrapper + GenericManager）、`.brain`（durable notes）。
+- **Gotcha：EXISTS 目前仅支持“related 表字段 = 外层 entity id”的 correlated 语义**——更通用的 outer-reference（引用外层任意字段）尚未实现；如需引用非 id 字段，可先用 uncorrelated EXISTS 配合 subWrapper 条件近似。
+- **Gotcha：OR 分支不参与索引 narrowing**——含 OR 的查询目前走全表扫 + matchesAll 裁决；若 OR 各分支都是高选择性索引条件，后续可优化为各分支索引集合并集，但当前保持简单正确优先。

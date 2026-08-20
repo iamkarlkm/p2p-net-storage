@@ -281,6 +281,16 @@ SyncReceiverStateStore   → DsHashMap (pending-path lock, write_conflict tracki
 - **新增测试**：DsEqIndexCompositeIndexTest 6/6、DsEqIndexPlannerMultiIndexIntersectTest 6/6、DsDatabaseLocalBatchPutTest 6/6 全绿。
 - **联合定向回归 ≈136 tests 0F0E**。
 
+**P2① ① V0.9 Query Planner 补齐 OR/NOT_IN/IN/COUNT/EXISTS ✅ 2026-08-20 交付，10/10 专项 0F0E + ≈146 tests 联合 0F0E**：在 V0.5~V0.8  planner 能力基础上，[GenericManager.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/integration/GenericManager.java) 与 [QueryWrapper.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/integration/QueryWrapper.java) 联合补齐 5 个算子。
+- `QueryWrapper.java`：Op 枚举新增 `EXISTS` / `NOT_EXISTS`；新增 `orBranches` 列表与 `or(QueryWrapper<T>)` 方法；新增 `exists(Class<?>, String relatedField, QueryWrapper<?>)` / `notExists(...)` 构造方法，支持 correlated 子查询（related 表外键列 = 外层 entity id）与 uncorrelated 子查询。
+- `GenericManager.java`：
+  - `matchesAll` 语义改为「顶层 criteria 全 AND，OR 分支至少命中一个」，即 `AND(top) AND OR(branches)`；
+  - `matches` 新增 `EXISTS` / `NOT_EXISTS` 分支，correlated 时把外层 `entity.getId()` 注入 subWrapper 作为 relatedField 的 EQ 条件；
+  - `collectIndexableCriteria` 把 `IN` 纳入索引 narrowing（LONG/STRING 列均支持），`candidateIdsForQuery` 对 `IN` 做多值索引结果 `HashSet` 求并集；`NOT_IN` 不走索引 narrowing，由 `matchesAll` 最终裁决；
+  - `countByWrapper` 对空 wrapper（无 criteria、无 orBranches）直接返回 `idSet.size()`，避免加载所有实体。
+- 新增测试 [DsEqIndexPlannerOperatorsTest.java](file:///i:/2026/code/p2p-net-storage/p2p-db/src/test/java/ds/DsEqIndexPlannerOperatorsTest.java) 10/10 0F0E：IN(LONG/STRING) 索引命中 + 索引+非索引混合过滤、NOT_IN fallback 全扫、OR 分支（顶层 AND + OR / 纯 OR）、COUNT 空条件优化、EXISTS/NOT_EXISTS correlated 子查询。
+- 联合定向回归 ≈146 tests 0F0E：在 V0.6/V0.7/V0.8 验证命令基础上追加 `DsEqIndexPlannerOperatorsTest`，EqIndexStore/Range/ORM/Planner/MultiIndex/Composite/BatchPut/Binlog/GenericManager 全绿。
+
 ---
 
 **② MVCC + 快照隔离**
@@ -325,8 +335,9 @@ SyncReceiverStateStore   → DsHashMap (pending-path lock, write_conflict tracki
 - `SSTable`-style snapshot：syncStore() 后创建硬链接 snapshot 目录，增量备份 WAL；
 - 恢复流程 = 恢复 snapshot + 重放后续 WAL，与 P0 #3 的 Crash Recovery 共用同一套代码。
 
-**④ Query Planner / Cost Model**
-- OR_DNF / NOT_IN / COUNT / EXISTS 5 个算子落地后，加一个轻量 planner：
+**④ ✅ Query Planner / Cost Model（2026-08-20 交付，OR/NOT_IN/IN/COUNT/EXISTS 5 个算子落地，10/10 专项 0F0E + ≈146 tests 联合 0F0E）**
+- OR_DNF / NOT_IN / IN / COUNT / EXISTS 5 个算子已落地：OR 分支按 `AND(top) AND OR(branches)` 语义由 `matchesAll` 裁决；IN 走 eqIndex 多值并集 narrowing；NOT_IN 不走索引 narrowing 由 `matchesAll` 最终裁决；COUNT 空条件直接返回 idSet.size()；EXISTS/NOT_EXISTS 支持 correlated/uncorrelated 子查询。
+- 轻量 planner 已在 V0.5 落地并沿用：
   - 是否命中 eqIndex → index scan；
   - 否则走全表 set 扫描；
   - 多条件 AND 先选最选择性的 index。

@@ -1581,6 +1581,9 @@ try {
 
     private int countByWrapper(QueryWrapper<T> queryWrapper) {
         ensureInit();
+        if (isEmptyWrapper(queryWrapper)) {
+            return idSet.size();
+        }
         int c = 0;
         for (Long id : candidateIdsForQuery(queryWrapper)) {
             T e = db.getTable(persistentClass, id);
@@ -1589,6 +1592,11 @@ try {
             }
         }
         return c;
+    }
+
+    private boolean isEmptyWrapper(QueryWrapper<T> wrapper) {
+        return wrapper == null
+                || (wrapper.criteria().isEmpty() && wrapper.orBranches().isEmpty());
     }
 
     private T getOneByWrapper(QueryWrapper<T> queryWrapper) {
@@ -1873,6 +1881,30 @@ try {
         return set;
     }
 
+    private java.util.Set<Long> rowIdSetFromInCriterion(QueryWrapper.Criterion c) throws IOException {
+        IndexedColInfo info = indexedColInfo.get(c.col);
+        if (info == null || c.a == null || !(c.a instanceof Collection<?> vals)) {
+            return Collections.emptySet();
+        }
+        java.util.HashSet<Long> set = new java.util.HashSet<>();
+        try (DsEqIndexStore idx = openIndexStore(info)) {
+            for (Object val : vals) {
+                long[] ids;
+                if (info.valueKind == DsEqIndexStore.IndexedValueKind.LONG) {
+                    ids = idx.findByIndex(toIndexLongValue(val, info));
+                } else {
+                    ids = idx.findByIndex(toIndexStringValue(val));
+                }
+                if (ids != null) {
+                    for (long id : ids) {
+                        if (id != DsEqIndexStore.NOT_FOUND) set.add(id);
+                    }
+                }
+            }
+        }
+        return set;
+    }
+
     private List<QueryWrapper.Criterion> collectIndexableCriteria(QueryWrapper<T> wrapper) {
         if (!hasIndexedColumns || wrapper == null || wrapper.criteria() == null || wrapper.criteria().isEmpty()) {
             return Collections.emptyList();
@@ -1887,6 +1919,9 @@ try {
                     break;
                 case GT: case GE: case LT: case LE: case BETWEEN:
                     if (info.valueKind == DsEqIndexStore.IndexedValueKind.LONG) out.add(c);
+                    break;
+                case IN:
+                    if (c.a instanceof Collection<?> col && !col.isEmpty()) out.add(c);
                     break;
                 default: break;
             }
@@ -2022,7 +2057,9 @@ try {
             try {
                 List<java.util.Set<Long>> sets = new ArrayList<>(usable.size());
                 for (QueryWrapper.Criterion c : usable) {
-                    java.util.Set<Long> s = rowIdSetFromIndex(c);
+                    java.util.Set<Long> s = (c.op == QueryWrapper.Op.IN)
+                            ? rowIdSetFromInCriterion(c)
+                            : rowIdSetFromIndex(c);
                     if (s == null || s.isEmpty()) {
                         return Collections.emptyList();
                     }
@@ -2076,7 +2113,15 @@ try {
                 return false;
             }
         }
-        return true;
+        if (wrapper.orBranches().isEmpty()) {
+            return true;
+        }
+        for (QueryWrapper<T> branch : wrapper.orBranches()) {
+            if (matchesAll(branch, entity)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean matches(T entity, QueryWrapper.Criterion c) {
@@ -2100,7 +2145,44 @@ try {
             case IS_NULL -> fieldValue == null;
             case IS_NOT_NULL -> fieldValue != null;
             case IN_SUBQUERY -> false;
+            case EXISTS -> exists(entity, c);
+            case NOT_EXISTS -> !exists(entity, c);
         };
+    }
+
+    private boolean exists(T entity, QueryWrapper.Criterion c) {
+        if (c.a == null || !(c.a instanceof Class<?> cls) || !DsTableAdapter.class.isAssignableFrom(cls)) {
+            return false;
+        }
+        QueryWrapper.ExistsSpec spec = (c.b instanceof QueryWrapper.ExistsSpec)
+                ? (QueryWrapper.ExistsSpec) c.b : null;
+        QueryWrapper<?> sub = (spec != null) ? spec.subWrapper : null;
+        String relatedField = (spec != null) ? spec.relatedField : null;
+        try {
+            @SuppressWarnings("unchecked")
+            GenericManager<DsTableAdapter> mgr = new GenericManager<>((Class<DsTableAdapter>) cls);
+            QueryWrapper<?> effective = sub;
+            if (relatedField != null && !relatedField.isEmpty()) {
+                effective = correlatedWrapper(mgr, sub, relatedField, entity.getId());
+            }
+            return mgr.count((QueryWrapper) effective) > 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private QueryWrapper<?> correlatedWrapper(GenericManager<?> mgr, QueryWrapper<?> sub,
+            String relatedField, Object outerValue) {
+        QueryWrapper<?> target = mgr.buildQueryWrapper();
+        if (outerValue != null) {
+            target.eq(relatedField, outerValue);
+        } else {
+            target.isNull(relatedField);
+        }
+        if (sub != null) {
+            target.merge(sub);
+        }
+        return target;
     }
 
     private Object readByColumn(T entity, String col) {

@@ -1,12 +1,13 @@
 package com.q3lives.ds.database.integration;
 
-import com.q3lives.ds.database.adapter.DsTableAdapter;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+
+import com.q3lives.ds.database.adapter.DsTableAdapter;
 
 /**
  *
@@ -29,7 +30,9 @@ public class QueryWrapper<T> {
         LIKE_RIGHT,
         IS_NULL,
         IS_NOT_NULL,
-        IN_SUBQUERY
+        IN_SUBQUERY,
+        EXISTS,
+        NOT_EXISTS
     }
 
     public static final class Criterion {
@@ -60,6 +63,7 @@ public class QueryWrapper<T> {
     private final List<Order> orders = new java.util.ArrayList<>();
     private final List<String> selectCols = new java.util.ArrayList<>();
     private final Map<Class<? extends DsTableAdapter>, QueryWrapper<?>> subWrappers = new LinkedHashMap<>();
+    private final List<QueryWrapper<T>> orBranches = new java.util.ArrayList<>();
 
     public List<Criterion> criteria() {
         return Collections.unmodifiableList(criteria);
@@ -71,6 +75,24 @@ public class QueryWrapper<T> {
 
     public List<String> selectCols() {
         return Collections.unmodifiableList(selectCols);
+    }
+
+    public List<QueryWrapper<T>> orBranches() {
+        return Collections.unmodifiableList(orBranches);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    public void merge(QueryWrapper<?> other) {
+        if (other != null) {
+            criteria.addAll(other.criteria);
+            orBranches.addAll((List) other.orBranches);
+        }
+    }
+
+    public void or(QueryWrapper<T> branch) {
+        if (branch != null) {
+            orBranches.add(branch);
+        }
     }
 
     public void gt(String colName, Object val) {
@@ -157,5 +179,41 @@ public class QueryWrapper<T> {
     public void inSubWrapper(String colName, QueryWrapper subWrapper) {
         criteria.add(new Criterion(Op.IN_SUBQUERY, colName, subWrapper, null));
     }
-    
+
+    public void exists(Class<? extends DsTableAdapter> relatedClass, QueryWrapper<?> subWrapper) {
+        exists(relatedClass, null, subWrapper);
+    }
+
+    public void exists(Class<? extends DsTableAdapter> relatedClass, String relatedField,
+            QueryWrapper<?> subWrapper) {
+        if (relatedClass == null) {
+            throw new IllegalArgumentException("relatedClass cannot be null");
+        }
+        criteria.add(new Criterion(Op.EXISTS, relatedClass.getName(), relatedClass,
+                new ExistsSpec(relatedField, subWrapper)));
+    }
+
+    public void notExists(Class<? extends DsTableAdapter> relatedClass, QueryWrapper<?> subWrapper) {
+        notExists(relatedClass, null, subWrapper);
+    }
+
+    public void notExists(Class<? extends DsTableAdapter> relatedClass, String relatedField,
+            QueryWrapper<?> subWrapper) {
+        if (relatedClass == null) {
+            throw new IllegalArgumentException("relatedClass cannot be null");
+        }
+        criteria.add(new Criterion(Op.NOT_EXISTS, relatedClass.getName(), relatedClass,
+                new ExistsSpec(relatedField, subWrapper)));
+    }
+
+    public static final class ExistsSpec {
+        public final String relatedField;
+        public final QueryWrapper<?> subWrapper;
+
+        public ExistsSpec(String relatedField, QueryWrapper<?> subWrapper) {
+            this.relatedField = relatedField;
+            this.subWrapper = subWrapper;
+        }
+    }
+
 }
