@@ -32,6 +32,27 @@ from p2p_ws_sdk.handshake import (
     rsa_oaep_sha256_decrypt,
     rsa_oaep_sha256_encrypt,
 )
+
+
+def rsa_pkcs1v15_encrypt(public_key_pem: bytes, plain: bytes) -> bytes:
+    """RSA/ECB/PKCS1Padding 加密（对齐 Java Cipher.getInstance("RSA")）。
+
+    Java 在不指定 padding 时默认是 PKCS1Padding，对应 Python cryptography 的 PKCS1v15。
+    用于 AuthCrypto.rsaEncryptWithPublic（xorKey 加密）。
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    key = serialization.load_pem_public_key(public_key_pem)
+    # Java 默认每次只加密一个 RSA block；超长数据需分段（RSAUtils.encryptByPublicKey 走单 block）
+    return key.encrypt(plain, padding.PKCS1v15())
+
+
+def rsa_pkcs1v15_decrypt(private_key_pem: bytes, cipher: bytes) -> bytes:
+    """RSA/ECB/PKCS1Padding 解密。"""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    key = serialization.load_pem_private_key(private_key_pem, password=None)
+    return key.decrypt(cipher, padding.PKCS1v15())
 from p2p_ws_sdk.wrapper import P2PWrapper, decode_wrapper, encode_wrapper
 from p2p_ws_sdk.xor import xor_repeat
 
@@ -472,7 +493,9 @@ class P2PClient:
         xor_key = secrets.token_bytes(self.config.xor_key_length)
 
         if self.config.crypto_mode == CRYPTO_MODE_CLIENT_RANDOM:
-            encrypted_xor_key = rsa_oaep_sha256_encrypt(
+            # 对齐 p2p-core AuthCrypto.rsaEncryptWithPublic + RSAUtils.encryptByPublicKey：
+            # Java Cipher.getInstance("RSA") 默认 PKCS1Padding（PKCS1v15）
+            encrypted_xor_key = rsa_pkcs1v15_encrypt(
                 self.config.server_public_key_pem, xor_key
             )
         else:
@@ -509,20 +532,21 @@ class P2PClient:
             # 客户端自生成 key，无需服务端返回
             self._xor_key = xor_key
         elif self.config.crypto_mode == CRYPTO_MODE_SERVER_RANDOM:
-            # 服务端生成的 xorKey 用服务端公钥加密后回传；用本端私钥解密
-            # encryptedSeed 可能超过 RSA 块大小，按块解密
+            # 服务端生成的 xorKey 用服务端私钥加密后回传；用本端私钥（共享）解密
+            # 对齐 AuthCrypto.rsaDecryptLargeWithPublic（PKCS1v15 分块）
             from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric import padding
             priv = serialization.load_pem_private_key(self.config.secret_key_pem, password=None)
-            pub = priv.public_key()
-            key_size_bytes = (pub.key_size + 7) // 8
+            pub_key = priv.public_key()
+            key_size_bytes = (pub_key.key_size + 7) // 8
             chunks = []
             for off in range(0, len(resp["encrypted_seed"]), key_size_bytes):
-                chunks.append(
-                    rsa_oaep_sha256_decrypt(
-                        self.config.secret_key_pem,
-                        resp["encrypted_seed"][off:off + key_size_bytes],
-                    )
-                )
+                # 重新加载 priv（serialization 的 priv 对象未暴露 .decrypt；用 cipher 模式）
+                # 实际 PKCS1v15 单块解密用 priv.decrypt
+                chunks.append(priv.decrypt(
+                    resp["encrypted_seed"][off:off + key_size_bytes],
+                    padding.PKCS1v15(),
+                ))
             self._xor_key = b"".join(chunks)
         else:
             self._xor_key = None
