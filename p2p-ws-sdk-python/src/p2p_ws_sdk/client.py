@@ -35,16 +35,32 @@ from p2p_ws_sdk.handshake import (
 
 
 def rsa_pkcs1v15_encrypt(public_key_pem: bytes, plain: bytes) -> bytes:
-    """RSA/ECB/PKCS1Padding 加密（对齐 Java Cipher.getInstance("RSA")）。
+    """RSA/ECB/PKCS1Padding 加密单块（对齐 Java RSAUtils.encryptByPublicKey 单 block 加密）。
 
-    Java 在不指定 padding 时默认是 PKCS1Padding，对应 Python cryptography 的 PKCS1v15。
-    用于 AuthCrypto.rsaEncryptWithPublic（xorKey 加密）。
+    注意：RSA 单块明文最大 = keySize 字节 - 11（PKCS1v15 padding overhead）。
+    超长数据请用 rsa_pkcs1v15_encrypt_large。
     """
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import padding
     key = serialization.load_pem_public_key(public_key_pem)
-    # Java 默认每次只加密一个 RSA block；超长数据需分段（RSAUtils.encryptByPublicKey 走单 block）
     return key.encrypt(plain, padding.PKCS1v15())
+
+
+def rsa_pkcs1v15_encrypt_large(public_key_pem: bytes, plain: bytes) -> bytes:
+    """RSA/ECB/PKCS1Padding 大块加密（对齐 Java AuthCrypto.rsaEncryptLargeWithPublic）。
+
+    用于 xorKey 等可能超过单块 245 字节（2048-bit key）的数据。
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    pub = serialization.load_pem_public_key(public_key_pem)
+    key_size_bytes = (pub.key_size + 7) // 8
+    max_plain = key_size_bytes - 11  # PKCS1v15 overhead
+    chunks = []
+    for off in range(0, len(plain), max_plain):
+        block = plain[off:off + max_plain]
+        chunks.append(pub.encrypt(block, padding.PKCS1v15()))
+    return b"".join(chunks)
 
 
 def rsa_pkcs1v15_decrypt(private_key_pem: bytes, cipher: bytes) -> bytes:
@@ -493,14 +509,18 @@ class P2PClient:
         xor_key = secrets.token_bytes(self.config.xor_key_length)
 
         if self.config.crypto_mode == CRYPTO_MODE_CLIENT_RANDOM:
-            # 对齐 p2p-core AuthCrypto.rsaEncryptWithPublic + RSAUtils.encryptByPublicKey：
-            # Java Cipher.getInstance("RSA") 默认 PKCS1Padding（PKCS1v15）
-            encrypted_xor_key = rsa_pkcs1v15_encrypt(
+            # 对齐 p2p-core AuthCrypto.rsaDecryptLargeWithPublic：xorKey 可能超过单 RSA block，
+            # 服务端走分块解密；客户端必须用 rsa_pkcs1v15_encrypt_large 分块加密
+            encrypted_xor_key = rsa_pkcs1v15_encrypt_large(
                 self.config.server_public_key_pem, xor_key
             )
         else:
             # 其他模式加密字段可为空；服务端按模式分发
             encrypted_xor_key = b""
+
+        # 关键：握手请求**始终以明文发送**（服务端收到请求前不知道 xor_key，
+        # 无法解密请求）。xor_key 在收到响应后才用于收发其他命令。
+        # p2p-core HandServerHandler 也只对响应做加密（如果启用了对应 cryptoMode）。
 
         sig_payload = build_request_sig_payload_v2(
             timestamp_ms=timestamp_ms,
@@ -522,18 +542,30 @@ class P2PClient:
             sig_version=2,
             crypto_mode=self.config.crypto_mode,
         )
-        resp_bytes = await self._send_and_wait(CMD_HAND, req_bytes, self.config.handshake_timeout)
+        # 握手请求明文发送（绕过 _xor_key 加密），因为服务端收到请求前没有 xor_key
+        # 重要：CLIENT_RANDOM 模式下，xor_key 在响应到达前**必须已设置**，
+        # 因为服务端会用此 xor_key 加密响应（p2p-core HandServerHandler 行为）
+        if self.config.crypto_mode == CRYPTO_MODE_CLIENT_RANDOM:
+            self._xor_key = xor_key
+
+        seq = self._alloc_seq()
+        from p2p_ws_sdk.wrapper import encode_wrapper, P2PWrapper
+        wrapper_bytes = encode_wrapper(P2PWrapper(seq=seq, command=CMD_HAND, data=req_bytes))
+        plain_frame = encode_frame(WireHeader(len(wrapper_bytes), self.config.magic), wrapper_bytes)
+        fut = asyncio.get_event_loop().create_future()
+        self._pending[seq] = fut
+        try:
+            await self._ws.send(plain_frame)
+            resp_bytes = await asyncio.wait_for(fut, timeout=self.config.handshake_timeout)
+        finally:
+            self._pending.pop(seq, None)
+
         resp = decode_handshake_response(resp_bytes)
         if not resp.get("ok"):
             raise P2PHandshakeError(resp.get("error") or "handshake failed")
 
-        # XOR key 设定
-        if self.config.crypto_mode == CRYPTO_MODE_CLIENT_RANDOM:
-            # 客户端自生成 key，无需服务端返回
-            self._xor_key = xor_key
-        elif self.config.crypto_mode == CRYPTO_MODE_SERVER_RANDOM:
-            # 服务端生成的 xorKey 用服务端私钥加密后回传；用本端私钥（共享）解密
-            # 对齐 AuthCrypto.rsaDecryptLargeWithPublic（PKCS1v15 分块）
+        # SERVER_RANDOM 模式：xorKey 由服务端生成，在响应中带回
+        if self.config.crypto_mode == CRYPTO_MODE_SERVER_RANDOM:
             from cryptography.hazmat.primitives import serialization
             from cryptography.hazmat.primitives.asymmetric import padding
             priv = serialization.load_pem_private_key(self.config.secret_key_pem, password=None)
@@ -541,14 +573,12 @@ class P2PClient:
             key_size_bytes = (pub_key.key_size + 7) // 8
             chunks = []
             for off in range(0, len(resp["encrypted_seed"]), key_size_bytes):
-                # 重新加载 priv（serialization 的 priv 对象未暴露 .decrypt；用 cipher 模式）
-                # 实际 PKCS1v15 单块解密用 priv.decrypt
                 chunks.append(priv.decrypt(
                     resp["encrypted_seed"][off:off + key_size_bytes],
                     padding.PKCS1v15(),
                 ))
             self._xor_key = b"".join(chunks)
-        else:
+        elif self.config.crypto_mode not in (CRYPTO_MODE_CLIENT_RANDOM,):
             self._xor_key = None
 
         self._xor_offset = int(resp.get("key_file_offset", 0))
