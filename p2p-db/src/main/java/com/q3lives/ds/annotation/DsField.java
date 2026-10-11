@@ -63,4 +63,11 @@ public @interface DsField {
      * backward compatible：新增字段默认值 false 不改变任何既有行为，现有 64 个子类无需改动。
      */
     boolean indexed() default false;
+
+    /**
+     * 是否启用列级 MVCC（多版本并发控制）。默认 false。
+     * 启用后该列的值会随每次写入生成历史版本，查询可指定 readTimestamp 看到历史值；
+     * 未启用的列始终读取最新值。表级 @DsTable(mvcc=true) 仍保留作为“所有列都启用 MVCC”的快捷方式。
+     */
+    boolean mvcc() default false;
 }

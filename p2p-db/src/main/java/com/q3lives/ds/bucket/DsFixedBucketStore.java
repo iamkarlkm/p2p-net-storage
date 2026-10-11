@@ -864,6 +864,15 @@ public class DsFixedBucketStore {
         }
     }
 
+    /**
+     * 同步所有已打开 bucket 的脏页到磁盘（不关闭句柄）。
+     */
+    public void sync() {
+        for (Bucket b : buckets.values()) {
+            b.sync();
+        }
+    }
+
     private Bucket getBucket(String space, String type, int power) throws IOException {
         String spacePath = DsPathUtil.dottedToLinuxPath(space, "space");
         DsPathUtil.validateSegment(type, "type");
@@ -939,9 +948,21 @@ public class DsFixedBucketStore {
     }
 
     /**
+     * 根据行长度把 baseId（低 56bit）编码为全局 id。
+     *
+     * <p>binlog 中只保存 32bit 的 rowKey（即 baseId 的低 32bit），回放时需要重新按行长度
+     * 推导出 bucket 档位 power，才能还原出 DsFixedBucketStore 使用的完整全局 id。</p>
+     */
+    public static long encodeRowId(long baseId, int rowLength) {
+        int unitSize = toBucketSize(rowLength);
+        int power = log2(unitSize);
+        return encodeId(power, baseId);
+    }
+
+    /**
      * 从全局 id 中解出 power（bucketSize=2^power）。
      */
-    private static int decodePower(long id) {
+    public static int decodePower(long id) {
         return (int) ((id >>> ID_OFFSET_BITS) & 0xFF);
     }
 
@@ -1086,9 +1107,11 @@ public class DsFixedBucketStore {
         }
 
         /**
-         * 回收一个 baseId：仅入队到 free-ring，不清零数据内容。
+         * 回收一个 baseId：先清零数据内容（作为 tombstone，便于非 MVCC 表识别删除），
+         * 再入队到 free-ring。
          */
         void free(long baseId) throws IOException {
+            write(baseId, new byte[unitSize]);
             offerFree(baseId);
         }
 

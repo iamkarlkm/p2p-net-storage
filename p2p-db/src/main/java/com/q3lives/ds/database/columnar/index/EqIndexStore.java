@@ -1,21 +1,44 @@
 package com.q3lives.ds.database.columnar.index;
 
-import com.q3lives.ds.bucket.DsFixedBucketStore;
-import com.q3lives.ds.collections.DsHashMap;
-import com.q3lives.ds.util.DsDataUtil;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.NavigableMap;
 import java.util.Objects;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+
+import com.q3lives.ds.bucket.DsFixedBucketStore;
+import com.q3lives.ds.collections.DsHashMap;
+import com.q3lives.ds.util.BloomFilter64;
+import com.q3lives.ds.util.DsDataUtil;
 
 public final class EqIndexStore {
     private static final int NODE_BYTES = 16;
+    private static final Comparator<ByteBuffer> LEX_UNSIGNED = (a, b) -> {
+        int min = Math.min(a.remaining(), b.remaining());
+        for (int i = 0; i < min; i++) {
+            int ai = a.get(a.position() + i) & 0xFF;
+            int bi = b.get(b.position() + i) & 0xFF;
+            if (ai != bi) return Integer.compare(ai, bi);
+        }
+        return Integer.compare(a.remaining(), b.remaining());
+    };
     private final File dbRoot;
     private final DsFixedBucketStore bucketStore;
     private final EqIndexMetaStore metaStore;
+    private final ConcurrentHashMap<String, BloomFilter64> blooms = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, TreeMap<ByteBuffer, List<Long>>> rangeMaps = new ConcurrentHashMap<>();
+    private Consumer<String> dsHashMapObserver;
 
     public EqIndexStore(File dbRoot) {
         this.dbRoot = Objects.requireNonNull(dbRoot, "dbRoot cannot be null");
@@ -70,23 +93,32 @@ public final class EqIndexStore {
         if (rowId <= 0L) {
             return;
         }
-        long hash = DsDataUtil.hash64(normalizeBytes(valueBytes));
+        byte[] norm = normalizeBytes(valueBytes);
+        long hash = DsDataUtil.hash64(norm);
         withLock(entityClassName, colId, () -> {
-            DsHashMap map = new DsHashMap(metaStore.mapFile(entityClassName, colId));
+            DsHashMap map = newDsHashMap(entityClassName, colId);
             long head = map.getOrDefault(hash, 0L);
             long nodeId = bucketStore.getNewId(entityClassName, nodeType(colId), NODE_BYTES);
             bucketStore.overwrite(entityClassName, nodeType(colId), nodeId, encodeNode(rowId, head));
             map.put(hash, nodeId);
         });
+        BloomFilter64 bf = blooms.get(bloomKey(entityClassName, colId));
+        if (bf != null) {
+            bf.add(norm);
+        }
+        rangeMaps.computeIfAbsent(bloomKey(entityClassName, colId), k -> new TreeMap<>(LEX_UNSIGNED))
+            .computeIfAbsent(ByteBuffer.wrap(norm), k -> new ArrayList<>())
+            .add(rowId);
     }
 
     public void remove(String entityClassName, long colId, byte[] valueBytes, long rowId) throws Exception {
         if (rowId <= 0L) {
             return;
         }
-        long hash = DsDataUtil.hash64(normalizeBytes(valueBytes));
+        byte[] norm = normalizeBytes(valueBytes);
+        long hash = DsDataUtil.hash64(norm);
         withLock(entityClassName, colId, () -> {
-            DsHashMap map = new DsHashMap(metaStore.mapFile(entityClassName, colId));
+            DsHashMap map = newDsHashMap(entityClassName, colId);
             long head = map.getOrDefault(hash, 0L);
             if (head == 0L) {
                 return;
@@ -116,12 +148,26 @@ public final class EqIndexStore {
                 map.put(hash, newHead);
             }
         });
+        TreeMap<ByteBuffer, List<Long>> rm = rangeMaps.get(bloomKey(entityClassName, colId));
+        if (rm != null) {
+            ByteBuffer key = ByteBuffer.wrap(norm);
+            List<Long> list = rm.get(key);
+            if (list != null) {
+                list.remove(rowId);
+                if (list.isEmpty()) rm.remove(key);
+            }
+        }
     }
 
     public long[] findRowIds(String entityClassName, long colId, byte[] valueBytes, int limit) throws Exception {
-        long hash = DsDataUtil.hash64(normalizeBytes(valueBytes));
+        byte[] norm = normalizeBytes(valueBytes);
+        BloomFilter64 bf = blooms.get(bloomKey(entityClassName, colId));
+        if (bf != null && !bf.mightContain(norm)) {
+            return new long[0];
+        }
+        long hash = DsDataUtil.hash64(norm);
         return withLock(entityClassName, colId, () -> {
-            DsHashMap map = new DsHashMap(metaStore.mapFile(entityClassName, colId));
+            DsHashMap map = newDsHashMap(entityClassName, colId);
             long head = map.getOrDefault(hash, 0L);
             if (head == 0L) {
                 return new long[0];
@@ -140,6 +186,97 @@ public final class EqIndexStore {
             }
             return arr;
         });
+    }
+
+    long[] findRowIdsBetween(String entityClassName, long colId,
+                             byte[] loBytes, boolean loInclusive,
+                             byte[] hiBytes, boolean hiInclusive,
+                             boolean asc, int limit) throws Exception {
+        byte[] lo = normalizeBytes(loBytes);
+        byte[] hi = normalizeBytes(hiBytes);
+        TreeMap<ByteBuffer, List<Long>> rm = rangeMaps.get(bloomKey(entityClassName, colId));
+        if (rm == null || rm.isEmpty()) {
+            return new long[0];
+        }
+        ByteBuffer loBB = ByteBuffer.wrap(lo);
+        ByteBuffer hiBB = ByteBuffer.wrap(hi);
+        NavigableMap<ByteBuffer, List<Long>> slice;
+        try {
+            slice = rm.subMap(loBB, loInclusive, hiBB, hiInclusive);
+        } catch (IllegalArgumentException badBounds) {
+            return new long[0];
+        }
+        if (slice.isEmpty()) {
+            return new long[0];
+        }
+        int cap = limit <= 0 ? Integer.MAX_VALUE : limit;
+        ArrayList<Long> out = new ArrayList<>(Math.min(cap, 256));
+        Iterator<Map.Entry<ByteBuffer, List<Long>>> it = asc
+            ? slice.entrySet().iterator()
+            : slice.descendingMap().entrySet().iterator();
+        while (it.hasNext() && out.size() < cap) {
+            Map.Entry<ByteBuffer, List<Long>> e = it.next();
+            List<Long> rowIds = e.getValue();
+            if (rowIds == null || rowIds.isEmpty()) continue;
+            if (asc) {
+                for (int i = 0; i < rowIds.size() && out.size() < cap; i++) {
+                    out.add(rowIds.get(i));
+                }
+            } else {
+                for (int i = rowIds.size() - 1; i >= 0 && out.size() < cap; i--) {
+                    out.add(rowIds.get(i));
+                }
+            }
+        }
+        long[] arr = new long[out.size()];
+        for (int i = 0; i < out.size(); i++) arr[i] = out.get(i);
+        return arr;
+    }
+
+    long[] findRowIdsGt(String entityClassName, long colId, byte[] loBytes, boolean asc, int limit) throws Exception {
+        return findRowIdsBetween(entityClassName, colId, loBytes, false, maxBytes(), true, asc, limit);
+    }
+
+    long[] findRowIdsGe(String entityClassName, long colId, byte[] loBytes, boolean asc, int limit) throws Exception {
+        return findRowIdsBetween(entityClassName, colId, loBytes, true, maxBytes(), true, asc, limit);
+    }
+
+    long[] findRowIdsLt(String entityClassName, long colId, byte[] hiBytes, boolean asc, int limit) throws Exception {
+        return findRowIdsBetween(entityClassName, colId, minBytes(), true, hiBytes, false, asc, limit);
+    }
+
+    long[] findRowIdsLe(String entityClassName, long colId, byte[] hiBytes, boolean asc, int limit) throws Exception {
+        return findRowIdsBetween(entityClassName, colId, minBytes(), true, hiBytes, true, asc, limit);
+    }
+
+    private static byte[] minBytes() { return new byte[0]; }
+    private static byte[] maxBytes() { return new byte[] {(byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF, (byte)0xFF}; }
+
+
+    public void enableBloomForColumn(String entityClassName, long colId, long expectedInserts, double fpp) {
+        blooms.put(bloomKey(entityClassName, colId), new BloomFilter64(expectedInserts, fpp));
+    }
+
+    public void enableBloomForColumn(String entityClassName, long colId, long expectedInserts, double fpp, AtomicInteger dsHashMapConstructedCounter) {
+        blooms.put(bloomKey(entityClassName, colId), new BloomFilter64(expectedInserts, fpp));
+        if (dsHashMapConstructedCounter != null) {
+            this.dsHashMapObserver = key -> dsHashMapConstructedCounter.incrementAndGet();
+        }
+    }
+
+    public boolean isBloomEnabled(String entityClassName, long colId) {
+        return blooms.containsKey(bloomKey(entityClassName, colId));
+    }
+
+    private DsHashMap newDsHashMap(String entityClassName, long colId) {
+        if (dsHashMapObserver != null) {
+            dsHashMapObserver.accept(bloomKey(entityClassName, colId));
+        }
+        return new DsHashMap(metaStore.mapFile(entityClassName, colId));
+    }
+
+    private static String bloomKey(String entityClassName, long colId) {
+        return entityClassName + "___" + colId;
     }
 
     private void withLock(String entityClassName, long colId, ThrowingRunnable body) throws Exception {

@@ -3,6 +3,7 @@ package com.q3lives.ds.bucket;
 import java.io.File;
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.q3lives.ds.index.master.DsTieredMasterIndex;
 import com.q3lives.ds.util.DsDataUtil;
@@ -55,6 +56,8 @@ public class DsData {
     private final DsFixedBucketStore bucketStore;
     private final DsTieredMasterIndex masterIndex;
 
+    private final ConcurrentHashMap<Long, Object> indexLocks = new ConcurrentHashMap<>();
+
     private final String space;
 
     /**
@@ -101,45 +104,59 @@ public class DsData {
      */
     public long put(byte[] valueBytes) throws IOException {
         if (valueBytes == null) {
-            // 统一把 null 视为“空值”，避免上层出现两套语义（null vs empty）导致去重/索引不一致
             valueBytes = new byte[0];
         }
         int valueLen = valueBytes.length;
-        // 这里提前缓存 hash16 的原因：
-        // 1) readIndexRecord 只拿到 valueLen/valueHash16/refCount/valueId，不需要每次都把 value 读出来；
-        // 2) 短哈希只用于快速过滤，最终仍以 Arrays.equals 做强校验，避免误判。
         short hash16 = (short) (DsDataUtil.hash32(valueBytes) & 0xFFFF);
 
-        for (int attempt = 0; attempt < 8; attempt++) {
+        for (int attempt = 0; attempt < 64; attempt++) {
             Long indexId = masterIndex.get(valueBytes);
             if (indexId == null) {
-                // “未命中”：需要创建新 value 与新 index record，并把 valueBytes->indexId 放入 masterIndex
-                // 注意：masterIndex.put(...) 在最后执行，是为了避免在 value/index 写入失败时留下“悬挂映射”
                 long valueId = bucketStore.put(space, TYPE_VALUE, valueBytes);
                 byte[] record = buildIndexRecord(valueLen, hash16, (short) 1, valueId);
                 long newIndexId = bucketStore.put(space, TYPE_INDEX, record);
                 masterIndex.put(valueBytes, newIndexId, false);
-                return newIndexId;
-            }
-
-            IndexRecord r = readIndexRecord(indexId);
-            if (r.valueLen == valueLen && r.valueHash16 == hash16) {
-                // 快速过滤通过后，再把 value 拉出来做强校验，避免 hash/长度碰撞导致误复用
-                byte[] stored = bucketStore.get(space, TYPE_VALUE, r.valueId, valueLen);
-                if (Arrays.equals(stored, valueBytes)) {
-                    // 同值：只增加 refCount，不重复写 value
-                    // refCount 用 short 的原因：index record 固定 16B，且引用计数通常不会巨大
-                    short newRef = (short) (r.refCount + 1);
-                    byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
-                    bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
-                    return indexId;
+                Long verify = masterIndex.get(valueBytes);
+                if (verify != null && verify.longValue() == newIndexId) {
+                    return newIndexId;
                 }
+                bucketStore.remove(space, TYPE_INDEX, newIndexId);
+                bucketStore.remove(space, TYPE_VALUE, valueId);
+                continue;
             }
 
-            byte[] otherValue = bucketStore.get(space, TYPE_VALUE, r.valueId, r.valueLen);
-            // 发生碰撞：masterIndex 的层级哈希命中到了同一个 indexId，但 value 不相同
-            // 通过 promoteOnCollision(...) 升级索引层级（例如从 hash32 升级到更强层），然后重试
-            masterIndex.promoteOnCollision(valueBytes, otherValue, indexId);
+            IndexRecord rPre = readIndexRecord(indexId);
+            boolean fastOk = rPre.valueLen == valueLen && rPre.valueHash16 == hash16;
+            byte[] stored = null;
+            if (fastOk) {
+                stored = bucketStore.get(space, TYPE_VALUE, rPre.valueId, valueLen);
+                fastOk = Arrays.equals(stored, valueBytes);
+            }
+            if (!fastOk) {
+                byte[] otherValue = bucketStore.get(space, TYPE_VALUE, rPre.valueId, rPre.valueLen);
+                masterIndex.promoteOnCollision(valueBytes, otherValue, indexId);
+                continue;
+            }
+
+            Object lock = indexLocks.computeIfAbsent(indexId, k -> new Object());
+            synchronized (lock) {
+                IndexRecord r = readIndexRecord(indexId);
+                int ref = r.refCount & 0xFFFF;
+                if (ref <= 0) {
+                    masterIndex.remove(valueBytes);
+                    continue;
+                }
+                if (r.valueLen != valueLen || r.valueHash16 != hash16) {
+                    byte[] otherValue = bucketStore.get(space, TYPE_VALUE, r.valueId, r.valueLen);
+                    masterIndex.promoteOnCollision(valueBytes, otherValue, indexId);
+                    continue;
+                }
+                if (ref >= 0xFFFF) return indexId;
+                short newRef = (short) (ref + 1);
+                byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
+                bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
+                return indexId;
+            }
         }
 
         throw new IOException("Too many collisions");
@@ -187,79 +204,125 @@ public class DsData {
      */
     public long updatePartialValueByIndexId(long indexId, int offset, byte[] data) throws IOException {
         if (data == null || data.length == 0) {
-            // 空写入没有意义，直接返回避免无谓 IO
             return indexId;
         }
-        IndexRecord r = readIndexRecord(indexId);
-        if (offset < 0 || offset + data.length > r.valueLen) {
-            throw new IndexOutOfBoundsException("Invalid offset/data length for valueLen " + r.valueLen);
+        IndexRecord rHead = readIndexRecord(indexId);
+        if (offset < 0 || offset + data.length > rHead.valueLen) {
+            throw new IndexOutOfBoundsException("Invalid offset/data length for valueLen " + rHead.valueLen);
         }
 
-        // 先构造“修改后的新值”，用于判断是否真的发生变化，以及后续去重/升级。
-        // 这里选择“读全量 value 再 patch”的原因：
-        // 1) masterIndex 是以内容寻址的，更新必须知道 newVal 才能正确改 key；
-        // 2) 还需要与潜在重复值合并（newVal 可能已经存在），因此必须得到完整 newVal。
-        byte[] oldVal = bucketStore.get(space, TYPE_VALUE, r.valueId, r.valueLen);
+        byte[] oldVal = bucketStore.get(space, TYPE_VALUE, rHead.valueId, rHead.valueLen);
         byte[] newVal = Arrays.copyOf(oldVal, oldVal.length);
         System.arraycopy(data, 0, newVal, offset, data.length);
         if (Arrays.equals(oldVal, newVal)) {
-            // 实际没有变化：保持 indexId 不变，避免写放大
             return indexId;
         }
 
-        if ((r.refCount & 0xFFFF) > 1) {
-            // Copy-On-Write：非唯一拥有者不允许原地修改。
-            // 1) 先把旧 indexId 的 refCount--（释放一次引用）
-            // 2) 再 put(newVal) 创建/复用新的 indexId，并把新 id 返回给调用者
-            short newRef = (short) (r.refCount - 1);
-            byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
-            bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
-            return put(newVal);
+        Object lock = indexLocks.computeIfAbsent(indexId, k -> new Object());
+        synchronized (lock) {
+            IndexRecord r = readIndexRecord(indexId);
+            int ref = r.refCount & 0xFFFF;
+            if (ref > 1) {
+                short newRef = (short) (ref - 1);
+                byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
+                bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
+                return put(newVal);
+            }
+            if (ref <= 0) {
+                return put(newVal);
+            }
         }
 
         for (int attempt = 0; attempt < 8; attempt++) {
             Long otherIndexId = masterIndex.get(newVal);
             if (otherIndexId == null) {
-                // 唯一拥有者 + 新值未存在：原地更新 value，并把 masterIndex 从 oldVal->indexId 改为 newVal->indexId
-                // 先 remove(oldVal) 再 put(newVal) 的理由：
-                // - masterIndex 的 key 是 valueBytes 本身，更新时必须把旧 key 移除
-                // - 先移除再写入，避免 oldVal/newVal 同时指向同一个 indexId 造成歧义
-                masterIndex.remove(oldVal);
-                bucketStore.update(space, TYPE_VALUE, r.valueId, offset, data);
-                short newHash16 = (short) (DsDataUtil.hash32(newVal) & 0xFFFF);
-                byte[] record = buildIndexRecord(r.valueLen, newHash16, r.refCount, r.valueId);
-                bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
-                masterIndex.put(newVal, indexId, false);
-                return indexId;
+                synchronized (lock) {
+                    IndexRecord r = readIndexRecord(indexId);
+                    int ref = r.refCount & 0xFFFF;
+                    if (ref <= 0) {
+                        continue;
+                    }
+                    if (ref > 1) {
+                        short newRef = (short) (ref - 1);
+                        byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
+                        bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
+                        return put(newVal);
+                    }
+                    masterIndex.remove(oldVal);
+                    bucketStore.update(space, TYPE_VALUE, r.valueId, offset, data);
+                    short newHash16 = (short) (DsDataUtil.hash32(newVal) & 0xFFFF);
+                    byte[] record = buildIndexRecord(r.valueLen, newHash16, r.refCount, r.valueId);
+                    bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
+                    masterIndex.put(newVal, indexId, false);
+                    return indexId;
+                }
             }
             if (otherIndexId == indexId) {
-                // 保护性分支：如果 masterIndex 已经映射到自身（可能由上一次写入/重试造成），仍按“原地更新+重绑映射”处理
-                // 这里 put(..., true) 的理由：允许覆盖同 key 的既有映射，避免并发/重试导致的异常
-                masterIndex.remove(oldVal);
-                bucketStore.update(space, TYPE_VALUE, r.valueId, offset, data);
-                short newHash16 = (short) (DsDataUtil.hash32(newVal) & 0xFFFF);
-                byte[] record = buildIndexRecord(r.valueLen, newHash16, r.refCount, r.valueId);
-                bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
-                masterIndex.put(newVal, indexId, true);
-                return indexId;
+                synchronized (lock) {
+                    IndexRecord r = readIndexRecord(indexId);
+                    int ref = r.refCount & 0xFFFF;
+                    if (ref <= 0) {
+                        continue;
+                    }
+                    if (ref > 1) {
+                        short newRef = (short) (ref - 1);
+                        byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
+                        bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
+                        return put(newVal);
+                    }
+                    masterIndex.remove(oldVal);
+                    bucketStore.update(space, TYPE_VALUE, r.valueId, offset, data);
+                    short newHash16 = (short) (DsDataUtil.hash32(newVal) & 0xFFFF);
+                    byte[] record = buildIndexRecord(r.valueLen, newHash16, r.refCount, r.valueId);
+                    bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
+                    masterIndex.put(newVal, indexId, true);
+                    return indexId;
+                }
             }
 
             IndexRecord other = readIndexRecord(otherIndexId);
-            if (other.valueLen == r.valueLen && other.valueHash16 == (short) (DsDataUtil.hash32(newVal) & 0xFFFF)) {
+            if (other.valueLen == rHead.valueLen && other.valueHash16 == (short) (DsDataUtil.hash32(newVal) & 0xFFFF)) {
                 byte[] otherVal = bucketStore.get(space, TYPE_VALUE, other.valueId, other.valueLen);
                 if (Arrays.equals(otherVal, newVal)) {
-                    // 新值已存在：合并到已有 indexId（otherIndexId），并释放旧 indexId（引用归零会回收）
-                    // 合并理由：保证“内容寻址去重”的核心不变量——同内容只保留一份 value
-                    short otherNewRef = (short) (other.refCount + 1);
-                    byte[] otherRecord = buildIndexRecord(other.valueLen, other.valueHash16, otherNewRef, other.valueId);
-                    bucketStore.overwrite(space, TYPE_INDEX, otherIndexId, otherRecord);
-                    remove(indexId);
-                    return otherIndexId;
+                    long a = Math.min(indexId, otherIndexId);
+                    long b = Math.max(indexId, otherIndexId);
+                    Object lockA = indexLocks.computeIfAbsent(a, k -> new Object());
+                    Object lockB = indexLocks.computeIfAbsent(b, k -> new Object());
+                    synchronized (lockA) {
+                        synchronized (lockB) {
+                            IndexRecord rr = readIndexRecord(indexId);
+                            if ((rr.refCount & 0xFFFF) <= 0) {
+                                // source already freed, just increment other and return
+                                Object otherLock = indexLocks.computeIfAbsent(otherIndexId, k -> new Object());
+                                synchronized (otherLock) {
+                                    IndexRecord o = readIndexRecord(otherIndexId);
+                                    int oref = o.refCount & 0xFFFF;
+                                    if (oref > 0 && oref < 0xFFFF) {
+                                        short oNewRef = (short) (oref + 1);
+                                        byte[] oRec = buildIndexRecord(o.valueLen, o.valueHash16, oNewRef, o.valueId);
+                                        bucketStore.overwrite(space, TYPE_INDEX, otherIndexId, oRec);
+                                    }
+                                }
+                                return otherIndexId;
+                            }
+                            Object otherLock = indexLocks.computeIfAbsent(otherIndexId, k -> new Object());
+                            synchronized (otherLock) {
+                                IndexRecord o = readIndexRecord(otherIndexId);
+                                int oref = o.refCount & 0xFFFF;
+                                if (oref > 0 && oref < 0xFFFF) {
+                                    short oNewRef = (short) (oref + 1);
+                                    byte[] oRec = buildIndexRecord(o.valueLen, o.valueHash16, oNewRef, o.valueId);
+                                    bucketStore.overwrite(space, TYPE_INDEX, otherIndexId, oRec);
+                                }
+                            }
+                            remove(indexId);
+                            return otherIndexId;
+                        }
+                    }
                 }
             }
 
             byte[] otherVal = bucketStore.get(space, TYPE_VALUE, other.valueId, other.valueLen);
-            // 确认发生碰撞（hash 相同但 value 不同），让 masterIndex 升级到更强哈希层后重试
             masterIndex.promoteOnCollision(newVal, otherVal, otherIndexId);
         }
 
@@ -285,20 +348,21 @@ public class DsData {
      */
     public boolean retain(long indexId) throws IOException {
         try {
-            IndexRecord r = readIndexRecord(indexId);
-            int ref = r.refCount & 0xFFFF;
-            if (ref <= 0) {
-                // refCount<=0 代表已删除或无效，retain 不应把“死记录”复活
-                return false;
-            }
-            if (ref >= 0xFFFF) {
-                // 饱和保护：short 只有 16-bit，达到上限后继续 +1 会溢出变负数
+            Object lock = indexLocks.computeIfAbsent(indexId, k -> new Object());
+            synchronized (lock) {
+                IndexRecord r = readIndexRecord(indexId);
+                int ref = r.refCount & 0xFFFF;
+                if (ref <= 0) {
+                    return false;
+                }
+                if (ref >= 0xFFFF) {
+                    return true;
+                }
+                short newRef = (short) (ref + 1);
+                byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
+                bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
                 return true;
             }
-            short newRef = (short) (ref + 1);
-            byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
-            bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
-            return true;
         } catch (Exception e) {
             return false;
         }
@@ -315,30 +379,34 @@ public class DsData {
      */
     public boolean remove(long indexId) throws IOException {
         try {
-            IndexRecord r = readIndexRecord(indexId);
-            if (r.refCount <= 0) {
-                return false;
-            }
-            if (r.refCount > 1) {
-                // 还有其他引用：仅做 ref--，不做真实删除
-                short newRef = (short) (r.refCount - 1);
-                byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
+            Object lock = indexLocks.computeIfAbsent(indexId, k -> new Object());
+            boolean isLastRef;
+            long lastValueId;
+            int lastValueLen;
+            synchronized (lock) {
+                IndexRecord r = readIndexRecord(indexId);
+                int ref = r.refCount & 0xFFFF;
+                if (ref <= 0) return false;
+                if (ref > 1) {
+                    short newRef = (short) (ref - 1);
+                    byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
+                    bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
+                    return true;
+                }
+                byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, (short) 0, r.valueId);
                 bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
-                return true;
+                lastValueId = r.valueId;
+                lastValueLen = r.valueLen;
+                isLastRef = true;
             }
-
-            // refCount==1：这是最后一个引用，需要把“内容寻址映射 + 数据记录”一起回收
-            byte[] valueBytes = bucketStore.get(space, TYPE_VALUE, r.valueId, r.valueLen);
-            masterIndex.remove(valueBytes);
-            
-            // 先把 refCount 写成 0 再 remove 的理由：
-            // - getRefCountByIndexId 对异常会返回 0，但“记录仍存在但 refCount=0”更容易被诊断/调试；
-            // - 即使随后 remove 失败，上层至少不会再把它当作有效引用。
-            byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, (short) 0, r.valueId);
-            bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
-            
-            bucketStore.remove(space, TYPE_INDEX, indexId);
-            bucketStore.remove(space, TYPE_VALUE, r.valueId);
+            if (isLastRef) {
+                byte[] valueBytes = bucketStore.get(space, TYPE_VALUE, lastValueId, lastValueLen);
+                if (valueBytes != null) {
+                    masterIndex.remove(valueBytes);
+                }
+                bucketStore.remove(space, TYPE_INDEX, indexId);
+                bucketStore.remove(space, TYPE_VALUE, lastValueId);
+            }
             return true;
         } catch (Exception e) {
             return false;

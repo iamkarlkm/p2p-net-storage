@@ -1,12 +1,27 @@
 package com.q3lives.ds.util;
 
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Field;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
 import com.alibaba.fastjson.JSON;
 import com.google.common.collect.Lists;
 import com.q3lives.ds.annotation.DsManyToMany;
 import com.q3lives.ds.annotation.DsMapField;
 import com.q3lives.ds.annotation.DsOneToMany;
 import com.q3lives.ds.annotation.DsOneToOne;
-
 import com.q3lives.ds.annotation.query.CodeType;
 import com.q3lives.ds.annotation.query.JoinPropToStringArray;
 import com.q3lives.ds.annotation.query.JoinProps;
@@ -18,22 +33,10 @@ import com.q3lives.ds.annotation.query.UnionJoinPropsArray;
 import com.q3lives.ds.database.integration.GenericManager;
 import com.q3lives.ds.database.integration.QueryWrapper;
 import com.q3lives.ds.database.interfaces.VoCallback;
-import java.lang.annotation.Annotation;
-import java.lang.reflect.Field;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.HashSet;
-import java.util.Set;
+
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * sql工具类
@@ -43,6 +46,8 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 public class MyDsDatabaseUtil {
+    private static final Logger log = LoggerFactory.getLogger(MyDsDatabaseUtil.class);
+
 
     private static final String SUFFIX_COMMA = ",";
     private static final String SUFFIX_KG = " ";

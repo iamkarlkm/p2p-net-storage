@@ -566,7 +566,7 @@ public final class StringSerializerWithByteBuf
             final int len, final int lowerLimit, int expectedSize,
             final WriteSessionWithByteBuf session, ByteBuf byteBuf)
     {
-               
+
         byte[] data = str.toString().getBytes(CharsetUtil.UTF_8);
         // everything fits
 
@@ -585,6 +585,7 @@ public final class StringSerializerWithByteBuf
 
        byteBuf.writeByte( (byte) (size));
        byteBuf.writeBytes(data);
+       session.size += data.length;
        return byteBuf;
     }
 

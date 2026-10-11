@@ -186,11 +186,16 @@ public class QueryWrapper<T> {
 
     public void exists(Class<? extends DsTableAdapter> relatedClass, String relatedField,
             QueryWrapper<?> subWrapper) {
+        exists(relatedClass, relatedField, null, subWrapper);
+    }
+
+    public void exists(Class<? extends DsTableAdapter> relatedClass, String relatedField,
+            String outerField, QueryWrapper<?> subWrapper) {
         if (relatedClass == null) {
             throw new IllegalArgumentException("relatedClass cannot be null");
         }
         criteria.add(new Criterion(Op.EXISTS, relatedClass.getName(), relatedClass,
-                new ExistsSpec(relatedField, subWrapper)));
+                new ExistsSpec(relatedField, outerField, subWrapper)));
     }
 
     public void notExists(Class<? extends DsTableAdapter> relatedClass, QueryWrapper<?> subWrapper) {
@@ -199,19 +204,26 @@ public class QueryWrapper<T> {
 
     public void notExists(Class<? extends DsTableAdapter> relatedClass, String relatedField,
             QueryWrapper<?> subWrapper) {
+        notExists(relatedClass, relatedField, null, subWrapper);
+    }
+
+    public void notExists(Class<? extends DsTableAdapter> relatedClass, String relatedField,
+            String outerField, QueryWrapper<?> subWrapper) {
         if (relatedClass == null) {
             throw new IllegalArgumentException("relatedClass cannot be null");
         }
         criteria.add(new Criterion(Op.NOT_EXISTS, relatedClass.getName(), relatedClass,
-                new ExistsSpec(relatedField, subWrapper)));
+                new ExistsSpec(relatedField, outerField, subWrapper)));
     }
 
     public static final class ExistsSpec {
         public final String relatedField;
+        public final String outerField;
         public final QueryWrapper<?> subWrapper;
 
-        public ExistsSpec(String relatedField, QueryWrapper<?> subWrapper) {
+        public ExistsSpec(String relatedField, String outerField, QueryWrapper<?> subWrapper) {
             this.relatedField = relatedField;
+            this.outerField = outerField;
             this.subWrapper = subWrapper;
         }
     }

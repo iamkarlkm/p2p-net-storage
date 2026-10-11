@@ -146,6 +146,65 @@ public class DsString {
     }
 
     /**
+     * 判断字符串是否已在存储中存在（不改变引用计数，不产生写 IO）。
+     *
+     * @param value 待判断的字符串
+     * @return true 表示已有对应条目（refCount >= 1）；false 表示不存在
+     * @throws java.io.IOException
+     */
+    public boolean contains(String value) throws IOException {
+        if (value == null) {
+            value = "";
+        }
+        Long indexId = dataStore.getIndexId(value.getBytes(StandardCharsets.UTF_8));
+        if (indexId == null) {
+            return false;
+        }
+        return dataStore.getRefCountByIndexId(indexId) > 0;
+    }
+
+    /**
+     * 查询字符串对应的 indexId（不改变引用计数，不产生写 IO）。
+     *
+     * <p>如果字符串不存在（或已被删除到 refCount=0），返回 {@code null}。
+     * 调用方可通过返回值与 {@code add(String)} 返回值直接比较，判断是否复用了同一条目。</p>
+     *
+     * @param key 待查询的字符串
+     * @return 对应的 indexId；不存在或已被彻底删除时返回 {@code null}
+     * @throws java.io.IOException
+     */
+    public Long getIndexId(String key) throws IOException {
+        return getIndexId(key, false);
+    }
+
+    /**
+     * 查询字符串对应的 indexId；当不存在时可选择自动 {@link #add(String) 写入}。
+     *
+     * <p>当 {@code createIfAbsent=true} 且字符串不存在（或已被删除到 refCount=0）时，
+     * 先写入新条目并返回新 id，效果等价于 {@link #add(String)}；</p>
+     * <p>当 {@code createIfAbsent=false} 行为同 {@link #getIndexId(String)}，纯读不产生写 IO。</p>
+     *
+     * @param key             待查询/写入的字符串
+     * @param createIfAbsent  若为 true，key 不存在时自动 add 后再返回 id；若为 false，纯读 miss 返回 null
+     * @return 对应的 indexId；createIfAbsent=false 且缺失返回 null；createIfAbsent=true 始终返回非 null 的 indexId
+     * @throws java.io.IOException
+     */
+    public Long getIndexId(String key, boolean createIfAbsent) throws IOException {
+        if (key == null) {
+            key = "";
+        }
+        byte[] b = key.getBytes(StandardCharsets.UTF_8);
+        Long indexId = dataStore.getIndexId(b);
+        if (indexId != null && dataStore.getRefCountByIndexId(indexId) > 0) {
+            return indexId;
+        }
+        if (!createIfAbsent) {
+            return null;
+        }
+        return dataStore.put(b);
+    }
+
+    /**
      * 关闭底层 {@link DsData} 资源。
      */
     public void close() {

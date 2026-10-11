@@ -62,10 +62,21 @@ final class DsBinlogWriter implements Closeable {
     }
 
     /**
-     * 追加一帧。
+     * 追加一帧（默认 flags=0）。
      * @return 本帧在 fixed 文件中的 byte 偏移（可直接用于 replayFrom(offset)）。
      */
     long append(int opTypeOrdinal, int serverId, long sequence, long timestamp,
+               int tableId, int rowKey,
+               BitSet colIdsBitSet, short[] packedSlots, byte[][] dynPayloads) throws IOException {
+        return append(0, opTypeOrdinal, serverId, sequence, timestamp, tableId, rowKey,
+                colIdsBitSet, packedSlots, dynPayloads);
+    }
+
+    /**
+     * 追加一帧。
+     * @return 本帧在 fixed 文件中的 byte 偏移（可直接用于 replayFrom(offset)）。
+     */
+    long append(int flags, int opTypeOrdinal, int serverId, long sequence, long timestamp,
                int tableId, int rowKey,
                BitSet colIdsBitSet, short[] packedSlots, byte[][] dynPayloads) throws IOException {
         if (colIdsBitSet.length() > DsBinlogLayout.COL_IDS_MAX) {
@@ -94,7 +105,6 @@ final class DsBinlogWriter implements Closeable {
         ByteBuffer buf = ByteBuffer.wrap(f);
         buf.putInt(DsBinlogLayout.OFF_MAGIC, DsBinlogLayout.MAGIC);
         buf.putInt(DsBinlogLayout.OFF_VERSION, DsBinlogLayout.VERSION);
-        int flags = 0;
         if (dynLen > 0) flags |= DsBinlogLayout.FLAG_BIT_HAS_DYN;
         buf.putInt(DsBinlogLayout.OFF_FLAGS, flags);
         buf.putInt(DsBinlogLayout.OFF_CRC32, 0); // 占位，写完整体再算

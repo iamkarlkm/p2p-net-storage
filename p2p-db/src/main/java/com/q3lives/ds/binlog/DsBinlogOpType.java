@@ -21,5 +21,7 @@ public enum DsBinlogOpType {
     /** 业务自定义事务边界 rollback。 */
     XA_ROLLBACK,
     /** 心跳/保活帧。 */
-    HEARTBEAT
+    HEARTBEAT,
+    /** 持久化检查点：标记此前所有数据变更已可靠落盘。 */
+    CHECKPOINT
 }

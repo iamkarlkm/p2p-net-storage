@@ -2861,7 +2861,28 @@ public class DsHashMap extends DsObject implements Map<Long, Long> {
         }
     }
 
-    private void recycleEntryId(long entryId) {
+    /**
+     * 分配一个新的 entryId，用于聚合层 rowId 分配器。
+     *
+     * @return 新分配的内部 entryId
+     */
+    public long allocateEntryId() {
+        headerOpLockWrite.lock();
+        try {
+            return allocateEntryIdOnly();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        } finally {
+            headerOpLockWrite.unlock();
+        }
+    }
+
+    /**
+     * 回收 entryId，供聚合层 rowId 分配器复用。
+     *
+     * @param entryId 要回收的内部 entryId
+     */
+    public void recycleEntryId(long entryId) {
         headerOpLockWrite.lock();
         try {
             freeEntryRing.offer(entryId);

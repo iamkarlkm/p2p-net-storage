@@ -513,7 +513,193 @@ public enum P2PCommand {
     DB_ROW_QUERY_IDS_STREAM(24046, P2PServiceCategory.DS_DB),
 
     R_OK_DB_ROW_QUERY_IDS_STREAM(24047, P2PServiceCategory.DS_DB),
-    
+
+    DB_NODE_GET_TOPOLOGY(24100, P2PServiceCategory.DS_DB),
+
+    DB_NODE_PUT(24101, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_NODE_PUT(24102, P2PServiceCategory.DS_DB),
+
+    DB_NODE_GET(24103, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_NODE_GET(24104, P2PServiceCategory.DS_DB),
+
+    DB_NODE_REMOVE(24105, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_NODE_REMOVE(24106, P2PServiceCategory.DS_DB),
+
+    DB_NODE_QUERY_IDS(24107, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_NODE_QUERY_IDS(24108, P2PServiceCategory.DS_DB),
+
+    DB_NODE_REPLICATE_FRAME(24109, P2PServiceCategory.DS_DB),
+
+    DB_NODE_REPLICATE_ACK(24110, P2PServiceCategory.DS_DB),
+
+    DB_NODE_FORCE_MOVE_PARTITION(24111, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_NODE_FORCE_MOVE_PARTITION(24112, P2PServiceCategory.DS_DB),
+
+    DB_ENTITY_BINLOG_FRAME(24300, P2PServiceCategory.DS_DB),
+
+    R_OK_DB_ENTITY_BINLOG_FRAME_ACK(24301, P2PServiceCategory.DS_DB),
+
+    REGISTRY_MKDIRS(24304, P2PServiceCategory.DS_DB),
+
+    R_OK_REGISTRY_MKDIRS_ACK(24404, P2PServiceCategory.DS_DB),
+
+    REGISTRY_PUT_LONG(24305, P2PServiceCategory.DS_DB),
+
+    R_OK_REGISTRY_PUT_LONG_ACK(24405, P2PServiceCategory.DS_DB),
+
+    REGISTRY_PUT_STRING(24306, P2PServiceCategory.DS_DB),
+
+    R_OK_REGISTRY_PUT_STRING_ACK(24406, P2PServiceCategory.DS_DB),
+
+    REGISTRY_PUT_BYTES(24307, P2PServiceCategory.DS_DB),
+
+    R_OK_REGISTRY_PUT_BYTES_ACK(24407, P2PServiceCategory.DS_DB),
+
+    REGISTRY_GET(24308, P2PServiceCategory.DS_DB),
+
+    R_OK_REGISTRY_GET_ACK(24408, P2PServiceCategory.DS_DB),
+
+    REGISTRY_REMOVE(24309, P2PServiceCategory.DS_DB),
+
+    R_OK_REGISTRY_REMOVE_ACK(24409, P2PServiceCategory.DS_DB),
+
+    REGISTRY_LIST_CHILDREN(24310, P2PServiceCategory.DS_DB),
+
+    R_OK_REGISTRY_LIST_CHILDREN_ACK(24410, P2PServiceCategory.DS_DB),
+
+    REGISTRY_FIND_BY_PREFIX(24311, P2PServiceCategory.DS_DB),
+
+    R_OK_REGISTRY_FIND_BY_PREFIX_ACK(24411, P2PServiceCategory.DS_DB),
+
+    REGISTRY_FIND_BY_PREFIX_KEYS(24312, P2PServiceCategory.DS_DB),
+
+    R_OK_REGISTRY_FIND_BY_PREFIX_KEYS_ACK(24412, P2PServiceCategory.DS_DB),
+
+    EXTA_ADD_TAG(24313, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_ADD_TAG_ACK(24413, P2PServiceCategory.DS_DB),
+
+    EXTA_ADD_TAGS(24314, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_ADD_TAGS_ACK(24414, P2PServiceCategory.DS_DB),
+
+    EXTA_REMOVE_TAG(24315, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_REMOVE_TAG_ACK(24415, P2PServiceCategory.DS_DB),
+
+    EXTA_REMOVE_TAGS(24316, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_REMOVE_TAGS_ACK(24416, P2PServiceCategory.DS_DB),
+
+    EXTA_REMOVE_ALL_TAGS(24317, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_REMOVE_ALL_TAGS_ACK(24417, P2PServiceCategory.DS_DB),
+
+    EXTA_LIST_TAGS(24318, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_LIST_TAGS_ACK(24418, P2PServiceCategory.DS_DB),
+
+    EXTA_LIST_TAGS_FILTERED(24319, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_LIST_TAGS_FILTERED_ACK(24419, P2PServiceCategory.DS_DB),
+
+    EXTA_HAS_TAG(24320, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_HAS_TAG_ACK(24420, P2PServiceCategory.DS_DB),
+
+    EXTA_ADD_DESC(24321, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_ADD_DESC_ACK(24421, P2PServiceCategory.DS_DB),
+
+    EXTA_LIST_DESCS(24322, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_LIST_DESCS_ACK(24422, P2PServiceCategory.DS_DB),
+
+    EXTA_LAST_DESC(24323, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_LAST_DESC_ACK(24423, P2PServiceCategory.DS_DB),
+
+    EXTA_REMOVE_LAST_DESC(24324, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_REMOVE_LAST_DESC_ACK(24424, P2PServiceCategory.DS_DB),
+
+    EXTA_REMOVE_ALL_DESCS(24325, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_REMOVE_ALL_DESCS_ACK(24425, P2PServiceCategory.DS_DB),
+
+    EXTA_ADD_SPEC(24326, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_ADD_SPEC_ACK(24426, P2PServiceCategory.DS_DB),
+
+    EXTA_LIST_SPECS(24327, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_LIST_SPECS_ACK(24427, P2PServiceCategory.DS_DB),
+
+    EXTA_LAST_SPEC(24328, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_LAST_SPEC_ACK(24428, P2PServiceCategory.DS_DB),
+
+    EXTA_REMOVE_LAST_SPEC(24329, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_REMOVE_LAST_SPEC_ACK(24429, P2PServiceCategory.DS_DB),
+
+    EXTA_REMOVE_ALL_SPECS(24330, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_REMOVE_ALL_SPECS_ACK(24430, P2PServiceCategory.DS_DB),
+
+    EXTA_ADD_COMMENT(24331, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_ADD_COMMENT_ACK(24431, P2PServiceCategory.DS_DB),
+
+    EXTA_LIST_COMMENTS(24332, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_LIST_COMMENTS_ACK(24432, P2PServiceCategory.DS_DB),
+
+    EXTA_LAST_COMMENT(24333, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_LAST_COMMENT_ACK(24433, P2PServiceCategory.DS_DB),
+
+    EXTA_REMOVE_LAST_COMMENT(24334, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_REMOVE_LAST_COMMENT_ACK(24434, P2PServiceCategory.DS_DB),
+
+    EXTA_REMOVE_ALL_COMMENTS(24335, P2PServiceCategory.DS_DB),
+
+    R_OK_EXTA_REMOVE_ALL_COMMENTS_ACK(24435, P2PServiceCategory.DS_DB),
+
+    // ========== P7 Follow-up Tgt-2 — ORM 9 Handler 跨节点路由（REQ 24336-24344 / ACK 24436-24444）==========
+    ORM_PUT(24336, P2PServiceCategory.DS_DB),
+    R_OK_ORM_PUT_ACK(24436, P2PServiceCategory.DS_DB),
+
+    ORM_GET(24337, P2PServiceCategory.DS_DB),
+    R_OK_ORM_GET_ACK(24437, P2PServiceCategory.DS_DB),
+
+    ORM_EXISTS(24338, P2PServiceCategory.DS_DB),
+    R_OK_ORM_EXISTS_ACK(24438, P2PServiceCategory.DS_DB),
+
+    ORM_REMOVE(24339, P2PServiceCategory.DS_DB),
+    R_OK_ORM_REMOVE_ACK(24439, P2PServiceCategory.DS_DB),
+
+    ORM_FIND_RANGE(24340, P2PServiceCategory.DS_DB),
+    R_OK_ORM_FIND_RANGE_ACK(24440, P2PServiceCategory.DS_DB),
+
+    ORM_GET_ONE(24341, P2PServiceCategory.DS_DB),
+    R_OK_ORM_GET_ONE_ACK(24441, P2PServiceCategory.DS_DB),
+
+    ORM_COUNT(24342, P2PServiceCategory.DS_DB),
+    R_OK_ORM_COUNT_ACK(24442, P2PServiceCategory.DS_DB),
+
+    ORM_LIST_IDS(24343, P2PServiceCategory.DS_DB),
+    R_OK_ORM_LIST_IDS_ACK(24443, P2PServiceCategory.DS_DB),
+
+    ORM_SAVE_OR_UPDATE(24344, P2PServiceCategory.DS_DB),
+    R_OK_ORM_SAVE_OR_UPDATE_ACK(24444, P2PServiceCategory.DS_DB),
+
     DATA_TRANSFER(21000, P2PServiceCategory.DATA_TRANSFER),
 
     PUBSUB_STREAM(21001, P2PServiceCategory.DATA_TRANSFER),
@@ -536,7 +722,37 @@ public enum P2PCommand {
     RPC_DISCOVER(30004, P2PServiceCategory.RPC),
 
     /** RPC 服务端事件推送 */
-    RPC_EVENT(30005, P2PServiceCategory.RPC);
+    RPC_EVENT(30005, P2PServiceCategory.RPC),
+
+    RAFT_REQUEST_VOTE(31201, P2PServiceCategory.DS_DB),
+    R_OK_RAFT_REQUEST_VOTE_ACK(31301, P2PServiceCategory.DS_DB),
+
+    RAFT_APPEND_ENTRIES(31202, P2PServiceCategory.DS_DB),
+    R_OK_RAFT_APPEND_ENTRIES_ACK(31302, P2PServiceCategory.DS_DB),
+
+    RAFT_INSTALL_SNAPSHOT(31203, P2PServiceCategory.DS_DB),
+    R_OK_RAFT_INSTALL_SNAPSHOT_ACK(31303, P2PServiceCategory.DS_DB),
+
+    FULLTEXT_SHARD_PUT_DOC(24354, P2PServiceCategory.DS_DB),
+    R_OK_FULLTEXT_SHARD_PUT_DOC_ACK(24454, P2PServiceCategory.DS_DB),
+
+    FULLTEXT_SHARD_CLEAR_DOC(24355, P2PServiceCategory.DS_DB),
+    R_OK_FULLTEXT_SHARD_CLEAR_DOC_ACK(24455, P2PServiceCategory.DS_DB),
+
+    FULLTEXT_SHARD_INDEX_VECTOR(24356, P2PServiceCategory.DS_DB),
+    R_OK_FULLTEXT_SHARD_INDEX_VECTOR_ACK(24456, P2PServiceCategory.DS_DB),
+
+    FULLTEXT_SHARD_SEARCH_VECTOR(24357, P2PServiceCategory.DS_DB),
+    R_OK_FULLTEXT_SHARD_SEARCH_VECTOR_ACK(24457, P2PServiceCategory.DS_DB),
+
+    FULLTEXT_SHARD_SEARCH(24358, P2PServiceCategory.DS_DB),
+    R_OK_FULLTEXT_SHARD_SEARCH_ACK(24458, P2PServiceCategory.DS_DB),
+
+    FULLTEXT_SHARD_SEARCH_EXTRAS(24359, P2PServiceCategory.DS_DB),
+    R_OK_FULLTEXT_SHARD_SEARCH_EXTRAS_ACK(24459, P2PServiceCategory.DS_DB),
+
+    FULLTEXT_SHARD_CLOSE(24360, P2PServiceCategory.DS_DB),
+    R_OK_FULLTEXT_SHARD_CLOSE_ACK(24460, P2PServiceCategory.DS_DB);
     /** 命令的数值编码，用于网络传输和序列化 */
     private final int value;
     private final P2PServiceCategory category;

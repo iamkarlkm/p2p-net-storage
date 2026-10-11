@@ -34,7 +34,7 @@ public final class EntitySchemaUtil {
                 DsField a = f.getAnnotation(DsField.class);
                 String name = a.name().isEmpty() ? f.getName() : a.name();
                 String defVal = a.defaultValue();
-                columns.add(new ColumnDef(name, f.getType().getName(), a.length(), a.precision(), a.scale(), defVal, a.indexed(), f));
+                columns.add(new ColumnDef(name, f.getType().getName(), a.length(), a.precision(), a.scale(), defVal, a.indexed(), a.mvcc(), f));
             }
         }
 
@@ -114,7 +114,8 @@ public final class EntitySchemaUtil {
                 .append(d.length).append('|')
                 .append(d.precision).append('|')
                 .append(d.scale)
-                .append("|I=").append(d.indexed ? 1 : 0).append('\n');
+                .append("|I=").append(d.indexed ? 1 : 0)
+                .append("|M=").append(d.mvcc ? 1 : 0).append('\n');
         }
         for (CompositeIndexDef d : compositeIndexes) {
             sb.append("I|").append(d.name);
@@ -198,7 +199,7 @@ public final class EntitySchemaUtil {
         public final int endBits;
         public final Field declaredField;
 
-        CompositeDef(String name, String group, int length, int startBits, int endBits, Field declaredField) {
+        public CompositeDef(String name, String group, int length, int startBits, int endBits, Field declaredField) {
             this.name = name;
             this.group = group;
             this.length = length;
@@ -238,9 +239,10 @@ public final class EntitySchemaUtil {
         public final int scale;
         public final String defaultValue;
         public final boolean indexed;
+        public final boolean mvcc;
         public final Field declaredField;
 
-        ColumnDef(String name, String typeName, int length, int precision, int scale, String defaultValue, boolean indexed, Field declaredField) {
+        public ColumnDef(String name, String typeName, int length, int precision, int scale, String defaultValue, boolean indexed, boolean mvcc, Field declaredField) {
             this.name = name;
             this.typeName = typeName;
             this.length = length;
@@ -248,6 +250,7 @@ public final class EntitySchemaUtil {
             this.scale = scale;
             this.defaultValue = defaultValue;
             this.indexed = indexed;
+            this.mvcc = mvcc;
             this.declaredField = declaredField;
         }
     }

@@ -42,10 +42,12 @@ public final class DsBinlogStore implements Closeable {
     private final File storeDir;
     private final DsBytes dsBytes;
     private final AtomicLong nextSeq = new AtomicLong(0L);
+    private final AtomicLong lastSequence = new AtomicLong(0L);
     private final boolean enableDsBytes;
 
     private String currentDayKey;
     private DsBinlogWriter writer;
+    private volatile DsBinlogPosition currentPosition;
 
     public DsBinlogStore(String rootDir) throws IOException {
         this(new File(rootDir), true);
@@ -64,12 +66,70 @@ public final class DsBinlogStore implements Closeable {
         this.dsBytes = enableDsBytes ? new DsBytes(storeDir) : null;
         this.currentDayKey = LocalDate.now().format(DAY_FMT);
         this.writer = new DsBinlogWriter(storeDir, currentDayKey);
+        this.currentPosition = new DsBinlogPosition(currentDayKey, writer.nextFrameOffset(), lastSequence.get());
     }
 
     public DsBytes dsBytes() { return dsBytes; }
     public String currentDayKey() { synchronized (monitor) { return currentDayKey; } }
 
     public long nextSequence() { return nextSeq.incrementAndGet(); }
+
+    /**
+     * 返回当前已写入的最后一帧序列号（外部传入或内部生成）。
+     */
+    public long lastSequence() { return lastSequence.get(); }
+
+    /**
+     * 获取当前 binlog 排他水位：dayKey + fixed 文件偏移 + 最后写入 sequence。
+     *
+     * <p>snapshot/增量备份调用本方法记录瞬间水位，后续恢复按 [basePosition, targetPosition) 重放。
+     */
+    public DsBinlogPosition getCurrentPosition() throws IOException {
+        synchronized (monitor) {
+            ensureWriterOpenLocked();
+            currentPosition = new DsBinlogPosition(currentDayKey, writer.nextFrameOffset(), lastSequence.get());
+            return currentPosition;
+        }
+    }
+
+    /**
+     * 在 [start, end) 区间回放 binlog，跨天自动连续读取。
+     *
+     * @return 成功回放帧数
+     */
+    public int replayBinlog(DsBinlogPosition start, DsBinlogPosition end, DsBinlogHandler handler) throws IOException {
+        if (start == null) throw new NullPointerException("start");
+        if (end == null) throw new NullPointerException("end");
+        if (handler == null) throw new NullPointerException("handler");
+        if (start.isLatest()) return 0;
+
+        List<String> dayKeys = listDayKeys();
+        String endDayKey = end.isLatest() ? null : end.dayKey();
+        long endOffset = end.isLatest() ? Long.MAX_VALUE : end.fixedOffset();
+        int total = 0;
+
+        for (String dayKey : dayKeys) {
+            if (dayKey.compareTo(start.dayKey()) < 0) continue;
+            if (endDayKey != null && dayKey.compareTo(endDayKey) > 0) break;
+
+            long startOffset = dayKey.equals(start.dayKey()) ? start.fixedOffset() : 0L;
+            if (endDayKey != null && dayKey.equals(endDayKey)) {
+                if (startOffset >= endOffset) break;
+                try (DsBinlogReplayer r = new DsBinlogReplayer(storeDir, dayKey)) {
+                    DsBinlogHandler bounded = (frameOffset, entry) -> {
+                        if (frameOffset >= endOffset) return false;
+                        return handler.apply(frameOffset, entry);
+                    };
+                    total += r.replayFrom(startOffset, bounded);
+                }
+            } else {
+                try (DsBinlogReplayer r = new DsBinlogReplayer(storeDir, dayKey)) {
+                    total += r.replayFrom(startOffset, handler);
+                }
+            }
+        }
+        return total;
+    }
 
     /**
      * 追加一行 binlog 帧（外部调用主入口）。
@@ -88,6 +148,40 @@ public final class DsBinlogStore implements Closeable {
      */
     public long append(DsBinlogOpType opType, int serverId, long sequence,
                        int tableId, int rowKey, int[] colIds, Object[] values) throws IOException {
+        return append(opType, serverId, sequence, tableId, rowKey, colIds, values, DsBinlogLogLevel.REDO);
+    }
+
+    /**
+     * 追加一行 binlog 帧，可指定日志级别（REDO/UNDO/FULL）。
+     *
+     * <p>FULL 级别需要调用方自行先写 UNDO 帧、再写 REDO 帧；本方法只写单帧。
+     */
+    public long append(DsBinlogOpType opType, int serverId, long sequence,
+                       int tableId, int rowKey, int[] colIds, Object[] values,
+                       DsBinlogLogLevel logLevel) throws IOException {
+        int flags = (logLevel == DsBinlogLogLevel.UNDO) ? DsBinlogLayout.FLAG_BIT_UNDO_LOG : 0;
+        return appendWithFlags(flags, opType, serverId, sequence, tableId, rowKey, colIds, values);
+    }
+
+    /**
+     * 追加一个持久化检查点帧。
+     *
+     * <p>payload 包含两个 long：committedSequence / replayedSequence，分别表示
+     * {@link DsBinlogLayout#FLAG_BIT_COMMIT_DURABLE} 与 {@link DsBinlogLayout#FLAG_BIT_REPLAY_DURABLE}
+     * 所覆盖的序列号边界。
+     */
+    public long appendCheckpoint(int serverId, long sequence,
+                                 long committedSequence, long replayedSequence,
+                                 boolean commitDurable, boolean replayDurable) throws IOException {
+        int flags = 0;
+        if (commitDurable) flags |= DsBinlogLayout.FLAG_BIT_COMMIT_DURABLE;
+        if (replayDurable) flags |= DsBinlogLayout.FLAG_BIT_REPLAY_DURABLE;
+        return appendWithFlags(flags, DsBinlogOpType.CHECKPOINT, serverId, sequence, 0, 0,
+                new int[]{0, 1}, new Object[]{committedSequence, replayedSequence});
+    }
+
+    private long appendWithFlags(int flags, DsBinlogOpType opType, int serverId, long sequence,
+                                  int tableId, int rowKey, int[] colIds, Object[] values) throws IOException {
         if (DsBinlogContext.isInReplay()) return -1L;
         if (colIds == null || colIds.length == 0) return -1L;
         if (values == null || values.length != colIds.length) {
@@ -194,7 +288,10 @@ public final class DsBinlogStore implements Closeable {
 
         synchronized (monitor) {
             ensureWriterOpenLocked();
-            return writer.append(opType.ordinal(), serverId, seq, ts, tableId, rowKey, mask, slots, dynPayloads);
+            long offset = writer.append(flags, opType.ordinal(), serverId, seq, ts, tableId, rowKey, mask, slots, dynPayloads);
+            lastSequence.set(seq);
+            currentPosition = new DsBinlogPosition(currentDayKey, writer.nextFrameOffset(), seq);
+            return offset;
         }
     }
 
@@ -232,6 +329,7 @@ public final class DsBinlogStore implements Closeable {
             }
             currentDayKey = newDayKey;
             writer = new DsBinlogWriter(storeDir, currentDayKey);
+            currentPosition = new DsBinlogPosition(currentDayKey, writer.nextFrameOffset(), lastSequence.get());
             return currentDayKey;
         }
     }
@@ -263,6 +361,70 @@ public final class DsBinlogStore implements Closeable {
         }
         result.sort(null);
         return result;
+    }
+
+    /**
+     * 扫描已有 binlog 文件恢复 lastSequence，防止实例重启后序列号回退/重复。
+     *
+     * @return 恢复后的最大 sequence（无 binlog 文件返回 0）
+     */
+    public long recoverLastSequence() throws IOException {
+        List<String> days = listDayKeys();
+        if (days.isEmpty()) {
+            return 0L;
+        }
+        java.util.concurrent.atomic.AtomicLong maxSeq = new java.util.concurrent.atomic.AtomicLong(0L);
+        for (String dayKey : days) {
+            try (DsBinlogReplayer r = new DsBinlogReplayer(storeDir, dayKey)) {
+                r.replayFrom(0L, (frameOffset, entry) -> {
+                    long seq = entry.sequence();
+                    long current;
+                    do {
+                        current = maxSeq.get();
+                        if (seq <= current) break;
+                    } while (!maxSeq.compareAndSet(current, seq));
+                    return true;
+                });
+            }
+        }
+        long seq = maxSeq.get();
+        nextSeq.set(seq);
+        lastSequence.set(seq);
+        return seq;
+    }
+
+    /**
+     * 加载持久化的 checkpoint 文件（不存在返回 null）。
+     */
+    public DsBinlogCheckpoint loadCheckpoint() {
+        return DsBinlogCheckpoint.load(storeDir);
+    }
+
+    /**
+     * 持久化 checkpoint 位点：先确保 binlog 已 fsync，再原子写 position.yaml。
+     */
+    public void saveCheckpoint(DsBinlogCheckpoint checkpoint) throws IOException {
+        if (checkpoint == null) return;
+        synchronized (monitor) {
+            ensureWriterOpenLocked();
+            writer.flush();
+        }
+        checkpoint.save(storeDir);
+    }
+
+    /**
+     * 写 CHECKPOINT 帧并持久化位点文件（group commit 标准用法）。
+     *
+     * @return CHECKPOINT 帧在 fixed 文件中的偏移
+     */
+    public long writeAndSaveCheckpoint(int serverId, long sequence,
+                                       long committedSequence, long replayedSequence,
+                                       boolean commitDurable, boolean replayDurable) throws IOException {
+        long offset = appendCheckpoint(serverId, sequence, committedSequence, replayedSequence, commitDurable, replayDurable);
+        DsBinlogCheckpoint checkpoint = new DsBinlogCheckpoint(
+                currentDayKey, offset, sequence, committedSequence, replayedSequence, System.currentTimeMillis());
+        saveCheckpoint(checkpoint);
+        return offset;
     }
 
     public void forceFlushAll() throws IOException {

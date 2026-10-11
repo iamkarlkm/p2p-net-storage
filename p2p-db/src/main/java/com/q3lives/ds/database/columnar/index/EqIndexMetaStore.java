@@ -1,6 +1,11 @@
 package com.q3lives.ds.database.columnar.index;
 
+import com.q3lives.ds.enums.DataType;
 import com.q3lives.ds.exception.meta.MetaStoreException;
+import com.q3lives.ds.registry.RegistryEntry;
+import com.q3lives.ds.registry.meta.AbstractRegistryBackend;
+import com.q3lives.ds.registry.meta.MetaMode;
+import com.q3lives.ds.registry.meta.RegistryMetaPaths;
 import com.q3lives.ds.util.DsPathUtil;
 import java.io.File;
 import java.io.FileInputStream;
@@ -17,49 +22,92 @@ import java.util.List;
 import java.util.Objects;
 import org.yaml.snakeyaml.Yaml;
 
+/**
+ * 列存等值索引元数据存储（公开签名零改，内部 backend 三态路由）
+ *
+ * Registry：/orm/column/<entityClass>/indexes/eq/<logicalName>/colId  REG_QWORD
+ *
+ * Non-Goal #1 不碰真实数据：mapFile / lockFile 方法体零改（仍指向原 indexes/<spacePath>/idx/*.map
+ */
 public final class EqIndexMetaStore {
     private final File dbRoot;
+    private final Backend backend;
 
     public EqIndexMetaStore(File dbRoot) {
         this.dbRoot = Objects.requireNonNull(dbRoot, "dbRoot cannot be null");
+        try {
+            this.backend = new Backend(dbRoot);
+        } catch (java.io.IOException e) {
+            throw new MetaStoreException("fail open EqIndexMeta backend", e);
+        }
     }
 
     public boolean exists(String entityClassName, String logicalName) {
-        return metaFile(entityClassName, logicalName).isFile();
+        if (entityClassName == null || entityClassName.isBlank()) return false;
+        if (logicalName == null || logicalName.isBlank()) return false;
+        boolean yaml = metaFile(entityClassName, logicalName).isFile();
+        try {
+            boolean reg = backend.registryExists(entityClassName, logicalName);
+            return yaml || reg;
+        } catch (java.io.IOException e) {
+            return yaml;
+        }
     }
 
     public IndexDef get(String entityClassName, String logicalName) {
         File f = metaFile(entityClassName, logicalName);
-        if (!f.isFile()) {
-            return null;
+        IndexDef y = null;
+        if (f.isFile()) {
+            try (InputStream in = new FileInputStream(f)) {
+                Yaml yaml = new Yaml();
+                y = yaml.loadAs(in, IndexDef.class);
+            } catch (Exception e) {
+                throw new MetaStoreException("failed to read eq index meta: entityClass=" + entityClassName + ", logicalName=" + logicalName, e);
+            }
         }
-        try (InputStream in = new FileInputStream(f)) {
-            Yaml yaml = new Yaml();
-            IndexDef meta = yaml.loadAs(in, IndexDef.class);
-            return meta;
-        } catch (Exception e) {
-            throw new MetaStoreException("failed to read eq index meta: entityClass=" + entityClassName + ", logicalName=" + logicalName, e);
+        try {
+            IndexDef reg = backend.registryGet(entityClassName, logicalName);
+            if (reg != null && reg.colId > 0) {
+                // HYBRID：YAML 已同步 Registry：如果 YAML 存在但 Registry 不存在，在 put 时再写；此处直接返回 Registry
+                return reg;
+            }
+        } catch (java.io.IOException e) {
+            // fallthrough 降级
         }
+        return y;
     }
 
     public List<IndexDef> list(String entityClassName) {
         File dir = idxDir(entityClassName);
+        ArrayList<IndexDef> out = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
         File[] files = dir.listFiles((d, name) -> name != null && name.endsWith(".eq.idx.yaml"));
-        if (files == null || files.length == 0) {
-            return List.of();
-        }
-        ArrayList<IndexDef> out = new ArrayList<>(files.length);
-        for (File f : files) {
-            try (InputStream in = new FileInputStream(f)) {
-                Yaml yaml = new Yaml();
-                IndexDef meta = yaml.loadAs(in, IndexDef.class);
-                if (meta != null && meta.logicalName != null && !meta.logicalName.isBlank() && meta.colId > 0) {
-                    out.add(meta);
+        if (files != null) {
+            for (File f : files) {
+                try (InputStream in = new FileInputStream(f)) {
+                    Yaml yaml = new Yaml();
+                    IndexDef meta = yaml.loadAs(in, IndexDef.class);
+                    if (meta != null && meta.logicalName != null && !meta.logicalName.isBlank() && meta.colId > 0) {
+                        out.add(meta);
+                        seen.add(meta.logicalName);
+                    }
+                } catch (Exception e) {
+                    throw new MetaStoreException("failed to read eq index meta: file=" + f.getAbsolutePath(), e);
                 }
-            } catch (Exception e) {
-                throw new MetaStoreException("failed to read eq index meta: file=" + f.getAbsolutePath(), e);
             }
         }
+        // Registry 侧补充
+        try {
+            List<String> names = backend.registryList(entityClassName);
+            for (String n : names) {
+                if (n == null || n.isEmpty() || seen.contains(n)) continue;
+                IndexDef reg = backend.registryGet(entityClassName, n);
+                if (reg != null && reg.colId > 0) {
+                    out.add(reg);
+                    seen.add(n);
+                }
+            }
+        } catch (java.io.IOException ignored) {}
         return out;
     }
 
@@ -77,8 +125,13 @@ public final class EqIndexMetaStore {
         File metaFile = metaFile(meta.entityClassName, meta.logicalName);
         File lockFile = new File(metaFile.getParentFile(), metaFile.getName() + ".lock");
         try (FileChannel ch = new FileOutputStream(lockFile, true).getChannel();
-            FileLock ignored = ch.lock()) {
-            save(metaFile, meta);
+             FileLock ignored = ch.lock()) {
+            // YAML side（HYBRID/YAML
+            if (MetaMode.isGlobalYamlOrHybrid()) {
+                save(metaFile, meta);
+            }
+            // Registry side
+            backend.registryPut(meta);
         } catch (Exception e) {
             throw new MetaStoreException("failed to write eq index meta: entityClass=" + meta.entityClassName + ", logicalName=" + meta.logicalName, e);
         }
@@ -94,12 +147,16 @@ public final class EqIndexMetaStore {
         File metaFile = metaFile(entityClassName, logicalName);
         File lockFile = new File(metaFile.getParentFile(), metaFile.getName() + ".lock");
         try (FileChannel ch = new FileOutputStream(lockFile, true).getChannel();
-            FileLock ignored = ch.lock()) {
+             FileLock ignored = ch.lock()) {
             boolean existed = metaFile.exists();
             if (metaFile.exists()) {
                 metaFile.delete();
             }
-            return existed && !metaFile.exists();
+            boolean regDeleted = false;
+            try {
+                regDeleted = backend.registryDelete(entityClassName, logicalName);
+            } catch (java.io.IOException ex) {}
+            return (existed && !metaFile.exists()) || regDeleted;
         } catch (Exception e) {
             throw new MetaStoreException("failed to delete eq index meta: entityClass=" + entityClassName + ", logicalName=" + logicalName, e);
         }
@@ -149,5 +206,52 @@ public final class EqIndexMetaStore {
         public String entityClassName;
         public String logicalName;
         public long colId;
+    }
+
+    // ================== Backend ==================
+    private static final class Backend extends AbstractRegistryBackend {
+        Backend(File dbRoot) throws java.io.IOException { super(dbRoot); }
+
+        boolean registryExists(String entity, String name) throws java.io.IOException {
+            if (mode == MetaMode.YAML) return false;
+            String p = RegistryMetaPaths.columnEqIndexColId(entity, name);
+            RegistryEntry e = registry.get(p);
+            return e != null && e.isPresent();
+        }
+
+        IndexDef registryGet(String entity, String name) throws java.io.IOException {
+            if (mode == MetaMode.YAML) return null;
+            String p = RegistryMetaPaths.columnEqIndexColId(entity, name);
+            RegistryEntry e = registry.get(p);
+            if (e == null || !e.isPresent()) return null;
+            try {
+                long colId = e.asLong();
+                if (colId <= 0) return null;
+                IndexDef d = new IndexDef();
+                d.entityClassName = entity;
+                d.logicalName = name;
+                d.colId = colId;
+                return d;
+            } catch (Exception ex) { return null; }
+        }
+
+        List<String> registryList(String entity) throws java.io.IOException {
+            if (mode == MetaMode.YAML) return java.util.Collections.emptyList();
+            String dir = RegistryMetaPaths.columnEqDir(entity);
+            return super.listChildren(dir, () -> java.util.Collections.emptyList());
+        }
+
+        void registryPut(IndexDef meta) throws java.io.IOException {
+            if (mode == MetaMode.YAML) return;
+            String p = RegistryMetaPaths.columnEqIndexColId(meta.entityClassName, meta.logicalName);
+            super.mkdirs(RegistryMetaPaths.columnEqIndexDir(meta.entityClassName, meta.logicalName));
+            super.writeLeafLong(p, meta.colId, true, l -> {});
+        }
+
+        boolean registryDelete(String entity, String name) throws java.io.IOException {
+            if (mode == MetaMode.YAML) return false;
+            String p = RegistryMetaPaths.columnEqIndexColId(entity, name);
+            return registry.remove(p, false);
+        }
     }
 }

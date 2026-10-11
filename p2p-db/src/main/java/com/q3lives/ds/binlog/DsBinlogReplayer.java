@@ -20,12 +20,15 @@ import java.util.List;
  */
 final class DsBinlogReplayer implements Closeable {
 
+    private static final int CHUNK_SIZE = 64 * 1024; // 256 frames * 256B
+
     private final RandomAccessFile fixedRaf;
     private final RandomAccessFile dynRaf;
     private final File fixedFile;
     private final File dynFile;
     private final byte[] frameBuf = new byte[DsBinlogLayout.FIXED_FRAME_SIZE];
     private final byte[] crcBuf = new byte[DsBinlogLayout.FIXED_FRAME_SIZE];
+    private final byte[] chunkBuf = new byte[CHUNK_SIZE];
 
     DsBinlogReplayer(File dir, String dayKey) throws IOException {
         this.fixedFile = new File(dir, DsBinlogLayout.FILE_PREFIX + dayKey + DsBinlogLayout.FIXED_SUFFIX);
@@ -45,97 +48,112 @@ final class DsBinlogReplayer implements Closeable {
 
     int replayFrom(long startOffset, DsBinlogHandler handler) throws IOException {
         if (startOffset < 0) startOffset = 0;
-        if (startOffset % DsBinlogLayout.FIXED_FRAME_SIZE != 0) {
+        long frameSize = DsBinlogLayout.FIXED_FRAME_SIZE;
+        if (startOffset % frameSize != 0) {
             // 对齐到上一个 frame 起点
-            startOffset = startOffset - (startOffset % DsBinlogLayout.FIXED_FRAME_SIZE);
+            startOffset = startOffset - (startOffset % frameSize);
         }
         long len = fixedRaf.length();
         if (startOffset >= len) return 0;
-        fixedRaf.seek(startOffset);
 
         int processed = 0;
-        while (true) {
-            long pos = fixedRaf.getFilePointer();
-            if (pos + DsBinlogLayout.FIXED_FRAME_SIZE > len) break;
+        long pos = startOffset;
+        while (pos + frameSize <= len) {
+            int toRead = (int) Math.min((long) CHUNK_SIZE, len - pos);
+            toRead = toRead - (int) (toRead % frameSize);
+            if (toRead == 0) break;
 
+            fixedRaf.seek(pos);
             int readN = 0;
-            while (readN < DsBinlogLayout.FIXED_FRAME_SIZE) {
-                int r = fixedRaf.read(frameBuf, readN, DsBinlogLayout.FIXED_FRAME_SIZE - readN);
+            while (readN < toRead) {
+                int r = fixedRaf.read(chunkBuf, readN, toRead - readN);
                 if (r < 0) break;
                 readN += r;
             }
-            if (readN < DsBinlogLayout.FIXED_FRAME_SIZE) break; // 半写尾部，直接停
+            if (readN < frameSize) break; // 不足一帧，视为尾部半写
 
-            int magic = ByteBuffer.wrap(frameBuf, DsBinlogLayout.OFF_MAGIC, 4).getInt();
-            if (magic != DsBinlogLayout.MAGIC) break; // MAGIC 不匹配视为坏帧或尾垃圾，不再向后
-
-            int storedCrc = ByteBuffer.wrap(frameBuf, DsBinlogLayout.OFF_CRC32, 4).getInt();
-            System.arraycopy(frameBuf, 0, crcBuf, 0, DsBinlogLayout.FIXED_FRAME_SIZE);
-            crcBuf[DsBinlogLayout.OFF_CRC32 + 0] = 0;
-            crcBuf[DsBinlogLayout.OFF_CRC32 + 1] = 0;
-            crcBuf[DsBinlogLayout.OFF_CRC32 + 2] = 0;
-            crcBuf[DsBinlogLayout.OFF_CRC32 + 3] = 0;
-            int calcCrc = DsBinlogWriter.crc32(crcBuf, 0, DsBinlogLayout.FIXED_FRAME_SIZE);
-            if (storedCrc != calcCrc) break; // 与写侧对齐：CRC 非零→半写，整条 truncate
-
-            ByteBuffer b = ByteBuffer.wrap(frameBuf);
-            int opTypeOrdinal = b.getInt(DsBinlogLayout.OFF_OP_TYPE);
-            int serverId = b.getInt(DsBinlogLayout.OFF_SERVER_ID);
-            long sequence = b.getLong(DsBinlogLayout.OFF_SEQUENCE);
-            long timestamp = b.getLong(DsBinlogLayout.OFF_TIMESTAMP);
-            int tableId = b.getInt(DsBinlogLayout.OFF_TABLE_ID);
-            int rowKey = b.getInt(DsBinlogLayout.OFF_ROW_KEY);
-            long dynStart = b.getLong(DsBinlogLayout.OFF_DYN_START);
-            int dynLen = b.getInt(DsBinlogLayout.OFF_DYN_LEN);
-            int dynCount = b.getInt(DsBinlogLayout.OFF_DYN_COUNT);
-
-            byte[] maskArr = new byte[DsBinlogLayout.COL_IDS_MASK_BYTES];
-            System.arraycopy(frameBuf, DsBinlogLayout.OFF_COL_IDS_MASK, maskArr, 0, DsBinlogLayout.COL_IDS_MASK_BYTES);
-            BitSet mask = BitSet.valueOf(maskArr);
-            int[] colIds = mask.stream().toArray();
-
-            short[] slots = new short[colIds.length];
-            for (int i = 0; i < colIds.length; i++) {
-                slots[i] = b.getShort(DsBinlogLayout.OFF_COL_FIXED + i * DsBinlogLayout.COL_FIXED_SLOT_BYTES);
-            }
-
-            List<byte[]> dynFrames = new ArrayList<>(Math.max(dynCount, 0));
-            if (dynCount > 0 && dynLen > 0 && dynStart >= 0 && dynRaf != null) {
-                dynRaf.seek(dynStart);
-                int remaining = dynLen;
-                for (int i = 0; i < dynCount && remaining > 0; i++) {
-                    if (remaining < 4) break;
-                    int segLen = dynRaf.readInt();
-                    remaining -= 4;
-                    if (segLen < 0 || segLen > remaining) break;
-                    byte[] seg = new byte[segLen];
-                    if (segLen > 0) {
-                        int got = 0;
-                        while (got < segLen) {
-                            int r = dynRaf.read(seg, got, segLen - got);
-                            if (r < 0) break;
-                            got += r;
-                        }
-                        if (got < segLen) break;
-                        remaining -= segLen;
-                    }
-                    dynFrames.add(seg);
+            int frames = readN / (int) frameSize;
+            for (int i = 0; i < frames; i++) {
+                long framePos = pos + (long) i * frameSize;
+                System.arraycopy(chunkBuf, i * (int) frameSize, frameBuf, 0, (int) frameSize);
+                if (!processFrame(framePos, handler)) {
+                    return processed;
                 }
-            }
-
-            DsBinlogEntry entry = new DsBinlogEntry(opTypeOrdinal, serverId, sequence, timestamp, tableId, rowKey, mask, colIds, slots, dynFrames);
-
-            boolean wasInReplay = DsBinlogContext.isInReplay();
-            try {
-                if (!wasInReplay) DsBinlogContext.setInReplay(true);
-                boolean cont = handler.apply(pos, entry);
                 processed++;
-                if (!cont) break;
-            } finally {
-                if (!wasInReplay) DsBinlogContext.clear();
             }
+            pos += (long) frames * frameSize;
         }
         return processed;
+    }
+
+    private boolean processFrame(long pos, DsBinlogHandler handler) throws IOException {
+        int magic = ByteBuffer.wrap(frameBuf, DsBinlogLayout.OFF_MAGIC, 4).getInt();
+        if (magic != DsBinlogLayout.MAGIC) return false; // MAGIC 不匹配视为坏帧或尾垃圾，不再向后
+
+        int storedCrc = ByteBuffer.wrap(frameBuf, DsBinlogLayout.OFF_CRC32, 4).getInt();
+        System.arraycopy(frameBuf, 0, crcBuf, 0, DsBinlogLayout.FIXED_FRAME_SIZE);
+        crcBuf[DsBinlogLayout.OFF_CRC32 + 0] = 0;
+        crcBuf[DsBinlogLayout.OFF_CRC32 + 1] = 0;
+        crcBuf[DsBinlogLayout.OFF_CRC32 + 2] = 0;
+        crcBuf[DsBinlogLayout.OFF_CRC32 + 3] = 0;
+        int calcCrc = DsBinlogWriter.crc32(crcBuf, 0, DsBinlogLayout.FIXED_FRAME_SIZE);
+        if (storedCrc != calcCrc) return false; // 与写侧对齐：CRC 非零→半写，整条 truncate
+
+        ByteBuffer b = ByteBuffer.wrap(frameBuf);
+        int flags = b.getInt(DsBinlogLayout.OFF_FLAGS);
+        int opTypeOrdinal = b.getInt(DsBinlogLayout.OFF_OP_TYPE);
+        int serverId = b.getInt(DsBinlogLayout.OFF_SERVER_ID);
+        long sequence = b.getLong(DsBinlogLayout.OFF_SEQUENCE);
+        long timestamp = b.getLong(DsBinlogLayout.OFF_TIMESTAMP);
+        int tableId = b.getInt(DsBinlogLayout.OFF_TABLE_ID);
+        int rowKey = b.getInt(DsBinlogLayout.OFF_ROW_KEY);
+        long dynStart = b.getLong(DsBinlogLayout.OFF_DYN_START);
+        int dynLen = b.getInt(DsBinlogLayout.OFF_DYN_LEN);
+        int dynCount = b.getInt(DsBinlogLayout.OFF_DYN_COUNT);
+
+        byte[] maskArr = new byte[DsBinlogLayout.COL_IDS_MASK_BYTES];
+        System.arraycopy(frameBuf, DsBinlogLayout.OFF_COL_IDS_MASK, maskArr, 0, DsBinlogLayout.COL_IDS_MASK_BYTES);
+        BitSet mask = BitSet.valueOf(maskArr);
+        int[] colIds = mask.stream().toArray();
+
+        short[] slots = new short[colIds.length];
+        for (int i = 0; i < colIds.length; i++) {
+            slots[i] = b.getShort(DsBinlogLayout.OFF_COL_FIXED + i * DsBinlogLayout.COL_FIXED_SLOT_BYTES);
+        }
+
+        List<byte[]> dynFrames = new ArrayList<>(Math.max(dynCount, 0));
+        if (dynCount > 0 && dynLen > 0 && dynStart >= 0 && dynRaf != null) {
+            dynRaf.seek(dynStart);
+            int remaining = dynLen;
+            for (int i = 0; i < dynCount && remaining > 0; i++) {
+                if (remaining < 4) break;
+                int segLen = dynRaf.readInt();
+                remaining -= 4;
+                if (segLen < 0 || segLen > remaining) break;
+                byte[] seg = new byte[segLen];
+                if (segLen > 0) {
+                    int got = 0;
+                    while (got < segLen) {
+                        int r = dynRaf.read(seg, got, segLen - got);
+                        if (r < 0) break;
+                        got += r;
+                    }
+                    if (got < segLen) break;
+                    remaining -= segLen;
+                }
+                dynFrames.add(seg);
+            }
+        }
+
+        DsBinlogEntry entry = new DsBinlogEntry(flags, opTypeOrdinal, serverId, sequence, timestamp, tableId, rowKey, mask, colIds, slots, dynFrames);
+
+        boolean wasInReplay = DsBinlogContext.isInReplay();
+        try {
+            if (!wasInReplay) DsBinlogContext.setInReplay(true);
+            return handler.apply(pos, entry);
+        } finally {
+            if (!wasInReplay) DsBinlogContext.clear();
+        }
     }
 
     @Override

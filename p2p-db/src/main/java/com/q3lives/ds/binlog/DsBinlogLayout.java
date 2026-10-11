@@ -15,6 +15,7 @@ package com.q3lives.ds.binlog;
  *   0..3    MAGIC       (0x4453424C = "DSBL")
  *   4..7    version     int32, 恒 = 1
  *   8..11   flags       int32  bit0=TOMBSTONE  bit1=HAS_DYN_BYTES(非0字节引用)
+ *                       bit2=COMMIT_DURABLE  bit3=REPLAY_DURABLE  bit4=UNDO_LOG
  *  12..15   crc32       int32  IEEE 0xEDB88320 (写前先将此处清 0 再算，回放时同序对齐)
  *  16..19   opType      int32  OpType 枚举 ordinal
  *  20..23   serverId    int32  节点 serverId，主从/多副本区分
@@ -74,6 +75,12 @@ public final class DsBinlogLayout {
 
     public static final int FLAG_BIT_TOMBSTONE = 1 << 0;
     public static final int FLAG_BIT_HAS_DYN = 1 << 1;
+    /** 标识 CHECKPOINT 帧：其记录的 committedSequence 之前的所有数据已可靠序列化到 dataFile/index。 */
+    public static final int FLAG_BIT_COMMIT_DURABLE = 1 << 2;
+    /** 标识 CHECKPOINT 帧：其记录 replayedSequence 之前的所有 binlog 已回放并落盘到 dataFile/index。 */
+    public static final int FLAG_BIT_REPLAY_DURABLE = 1 << 3;
+    /** 标识 UNDO 帧：本帧记录的是变更前的旧值（before image）。 */
+    public static final int FLAG_BIT_UNDO_LOG = 1 << 4;
 
     public static final int DYN_INDEX_NONE = 0x7FF;
     public static final int COL_SLOT_INLINE_BIT = 0x8000;   // bit15 = 1 → 带符号 15 位 short inline

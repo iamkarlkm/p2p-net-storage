@@ -31,6 +31,7 @@ public final class DsBinlogEntry {
         }
     }
 
+    private final int flags;
     private final int opTypeOrdinal;
     private final int serverId;
     private final long sequence;
@@ -42,9 +43,10 @@ public final class DsBinlogEntry {
     private final short[] colValueSlots;
     private final List<byte[]> dynFrames;
 
-    DsBinlogEntry(int opTypeOrdinal, int serverId, long sequence, long timestamp,
+    DsBinlogEntry(int flags, int opTypeOrdinal, int serverId, long sequence, long timestamp,
                   int tableId, int rowKey, BitSet colIdsBitSet, int[] colIds,
                   short[] colValueSlots, List<byte[]> dynFrames) {
+        this.flags = flags;
         this.opTypeOrdinal = opTypeOrdinal;
         this.serverId = serverId;
         this.sequence = sequence;
@@ -55,6 +57,13 @@ public final class DsBinlogEntry {
         this.colIds = colIds;
         this.colValueSlots = colValueSlots;
         this.dynFrames = dynFrames != null ? dynFrames : new ArrayList<>(0);
+    }
+
+    public int flags() { return flags; }
+
+    /** 本帧是否带 {@link DsBinlogLayout#FLAG_BIT_UNDO_LOG} 标志（记录的是旧值）。 */
+    public boolean isUndo() {
+        return (flags & DsBinlogLayout.FLAG_BIT_UNDO_LOG) != 0;
     }
 
     public DsBinlogOpType opType() {
@@ -72,6 +81,16 @@ public final class DsBinlogEntry {
     public BitSet colIdsBitSet() { return (BitSet) colIdsBitSet.clone(); }
     public int[] colIds() { return Arrays.copyOf(colIds, colIds.length); }
     public int colCount() { return colIds.length; }
+
+    /**
+     * 若本帧为 {@link DsBinlogOpType#CHECKPOINT}，返回 [committedSequence, replayedSequence]；否则返回 null。
+     */
+    public long[] decodeCheckpointSequences(DsBytes dsBytes) throws java.io.IOException {
+        if (opType() != DsBinlogOpType.CHECKPOINT || colIds.length < 2) return null;
+        long committed = ((Number) decodeCol(0, dsBytes).decoded).longValue();
+        long replayed = ((Number) decodeCol(1, dsBytes).decoded).longValue();
+        return new long[]{committed, replayed};
+    }
 
     /**
      * 按出现顺序的第 i 列解析值（0<=i<colCount）。

@@ -5,11 +5,12 @@ import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.LongConsumer;
 
 public  class DsFreeRing implements AutoCloseable {
         private static final byte[] MAGIC = new byte[] {'.', 'F', '-', 'R'};
         private static final int OFF_MAGIC = 0;
-         private static final int OFF_CAP = 4;   
+        private static final int OFF_CAP = 4;
         private static final int OFF_HEAD = 8;
         private static final int OFF_TAIL = 12;
         private static final int OFF_COUNT = 16;
@@ -29,7 +30,6 @@ public  class DsFreeRing implements AutoCloseable {
                 throw new IllegalArgumentException("initialCap must be > 0");
             }
             this.file = file;
-            //this.tmpFile = tmpFile;
             openOrInit(initialCap);
         }
 
@@ -41,6 +41,10 @@ public  class DsFreeRing implements AutoCloseable {
             } finally {
                 lock.unlock();
             }
+        }
+
+        public int size() throws IOException {
+            return count();
         }
 
         public void clear() throws IOException {
@@ -58,9 +62,7 @@ public  class DsFreeRing implements AutoCloseable {
         public boolean offer(long value) throws IOException {
             lock.lock();
             try {
-                //reloadHeaderIfNeeded();
                 if (count >= cap) {
-                    tail = cap;
                     expand(cap * 2);
                 }
                 writeAt(tail, value);
@@ -72,16 +74,15 @@ public  class DsFreeRing implements AutoCloseable {
                 lock.unlock();
             }
         }
-        
-         public boolean offerUnique(long value) throws IOException {
+
+        public boolean offerUnique(long value) throws IOException {
             lock.lock();
             try {
-                //reloadHeaderIfNeeded();
+                if (containsLocked(value)) {
+                    return false;
+                }
                 if (count >= cap) {
                     expand(cap * 2);
-                }
-                for(int i=head;i<tail;i++){//如果存在，直接返回false。
-                    if(value==readAt(i)) return false;
                 }
                 writeAt(tail, value);
                 tail = (tail + 1) % cap;
@@ -96,7 +97,6 @@ public  class DsFreeRing implements AutoCloseable {
         public long poll() throws IOException {
             lock.lock();
             try {
-                //reloadHeaderIfNeeded();
                 if (count <= 0L) {
                     return -1L;
                 }
@@ -105,6 +105,45 @@ public  class DsFreeRing implements AutoCloseable {
                 count--;
                 writeHeader();
                 return value;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        public boolean contains(long value) throws IOException {
+            lock.lock();
+            try {
+                return containsLocked(value);
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        public boolean remove(long value) throws IOException {
+            lock.lock();
+            try {
+                if (count <= 0) {
+                    return false;
+                }
+                int idx = findSlotLocked(value);
+                if (idx < 0) {
+                    return false;
+                }
+                removeSlotLocked(idx);
+                writeHeader();
+                return true;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        public long[] snapshot() throws IOException {
+            lock.lock();
+            try {
+                long[] out = new long[count];
+                final int[] w = {0};
+                forEachSlotLocked(v -> out[w[0]++] = v);
+                return out;
             } finally {
                 lock.unlock();
             }
@@ -121,6 +160,50 @@ public  class DsFreeRing implements AutoCloseable {
             } finally {
                 lock.unlock();
             }
+        }
+
+        private boolean containsLocked(long value) throws IOException {
+            return findSlotLocked(value) >= 0;
+        }
+
+        private int findSlotLocked(long value) throws IOException {
+            if (count <= 0) {
+                return -1;
+            }
+            int remain = count;
+            for (int i = head; remain > 0 && i < cap; i++, remain--) {
+                if (readAt(i) == value) {
+                    return i;
+                }
+            }
+            for (int i = 0; remain > 0 && i < head; i++, remain--) {
+                if (readAt(i) == value) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        private void forEachSlotLocked(LongConsumer consumer) throws IOException {
+            if (count <= 0) {
+                return;
+            }
+            int remain = count;
+            for (int i = head; remain > 0 && i < cap; i++, remain--) {
+                consumer.accept(readAt(i));
+            }
+            for (int i = 0; remain > 0 && i < head; i++, remain--) {
+                consumer.accept(readAt(i));
+            }
+        }
+
+        private void removeSlotLocked(int idx) throws IOException {
+            int lastIdx = (tail + cap - 1) % cap;
+            if (idx != lastIdx) {
+                writeAt(idx, readAt(lastIdx));
+            }
+            tail = lastIdx;
+            count--;
         }
 
         private void openOrInit(int initialCap) throws IOException {
@@ -157,12 +240,12 @@ public  class DsFreeRing implements AutoCloseable {
             raf.seek(OFF_CAP);
             raf.writeInt(initialCap);
             raf.seek(OFF_HEAD);
-            raf.writeInt(0); // head
+            raf.writeInt(0);
             raf.seek(OFF_TAIL);
-            raf.writeInt(0); // tail
+            raf.writeInt(0);
             raf.seek(OFF_COUNT);
-            raf.writeInt(0); // count
-           
+            raf.writeInt(0);
+
             if (raf.length() < OFF_DATA + initialCap * 8L) {
                 raf.setLength(OFF_DATA + initialCap * 8L);
             }
@@ -180,15 +263,15 @@ public  class DsFreeRing implements AutoCloseable {
         }
 
         private void readHeader() throws IOException {
-            raf.seek(OFF_CAP);            
+            raf.seek(OFF_CAP);
             cap = raf.readInt();
-            raf.seek(OFF_HEAD);  
+            raf.seek(OFF_HEAD);
             head = raf.readInt();
             raf.seek(OFF_TAIL);
             tail = raf.readInt();
             raf.seek(OFF_COUNT);
             count = raf.readInt();
-          
+
             if (cap < 1) {
                 cap = 0;
                 head = 0;
@@ -211,8 +294,8 @@ public  class DsFreeRing implements AutoCloseable {
 
         private void writeHeader() throws IOException {
             raf.seek(OFF_CAP);
-            raf.writeInt(cap);                     
-            raf.seek(OFF_HEAD); 
+            raf.writeInt(cap);
+            raf.seek(OFF_HEAD);
             raf.writeInt(head);
             raf.seek(OFF_TAIL);
             raf.writeInt(tail);
@@ -231,8 +314,19 @@ public  class DsFreeRing implements AutoCloseable {
         }
 
         private void expand(int newCap) throws IOException {
+            final int oldCap = cap;
+            if (raf.length() < OFF_DATA + newCap * 8L) {
+                raf.setLength(OFF_DATA + newCap * 8L);
+            }
+            if (head + count > oldCap) {
+                final int wrapCount = (head + count) - oldCap;
+                for (int k = 0; k < wrapCount; k++) {
+                    writeAt((long)oldCap + k, readAt(k));
+                }
+            }
             cap = newCap;
-            raf.setLength(OFF_DATA + newCap * 8L);
+            tail = (head + count) % cap;
+            writeHeader();
         }
 
     public int capacity() {
@@ -242,6 +336,5 @@ public  class DsFreeRing implements AutoCloseable {
     public int getCount() {
         return count;
     }
-        
-        
+
 }

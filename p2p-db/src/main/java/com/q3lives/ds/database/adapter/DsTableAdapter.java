@@ -31,11 +31,63 @@ public abstract class DsTableAdapter implements DsTableByteBufferSerializable {
     private static final Map<Class<?>, FieldMapping> MAPPING_CACHE = new ConcurrentHashMap<>();
 
     // 实体ID
-    private Long id;
+    private transient Long id;
 
     // 字段映射信息
-    private FieldMapping fieldMapping;
-    
+    private transient FieldMapping fieldMapping;
+
+    private FieldMapping ensureMapping() {
+        if (fieldMapping == null) {
+            fieldMapping = getOrCreateMapping(this.getClass());
+        }
+        Class<?> self = this.getClass();
+        for (CompositeFieldInfo cfi : fieldMapping.compositeFields) {
+            if (isFieldBroken(cfi.field)) {
+                cfi.field = findField(self, cfi.declaringClass, cfi.fieldName);
+            }
+        }
+        for (ColumnFieldInfo cfi : fieldMapping.columnFields) {
+            if (isFieldBroken(cfi.field)) {
+                cfi.field = findField(self, cfi.declaringClass, cfi.fieldName);
+            }
+        }
+        return fieldMapping;
+    }
+
+    private static boolean isFieldBroken(Field f) {
+        if (f == null) return true;
+        try {
+            return f.getDeclaringClass() == null;
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    private static Field findField(Class<?> self, Class<?> declaredIn, String fieldName) {
+        Class<?> c = (declaredIn != null) ? declaredIn : self;
+        while (c != null && c != Object.class) {
+            try {
+                Field f = c.getDeclaredField(fieldName);
+                f.setAccessible(true);
+                return f;
+            } catch (NoSuchFieldException nsfe) {
+                c = c.getSuperclass();
+            }
+        }
+        if (declaredIn == null || declaredIn == self) return null;
+        c = self;
+        while (c != null && c != Object.class) {
+            try {
+                Field f = c.getDeclaredField(fieldName);
+                f.setAccessible(true);
+                return f;
+            } catch (NoSuchFieldException nsfe) {
+                c = c.getSuperclass();
+            }
+        }
+        return null;
+    }
+
     /**
      * 构造函数 - 初始化时扫描注解
      */
@@ -59,20 +111,17 @@ public abstract class DsTableAdapter implements DsTableByteBufferSerializable {
     @Override
     public ByteBuffer toBytes() {
         try {
-            // 计算总大小
-            int totalSize = calculateTotalSize();
+            FieldMapping fm = ensureMapping();
+            int totalSize = calculateTotalSize(fm);
             ByteBuffer buffer = ByteBuffer.allocate(totalSize);
             
-            // 写入ID (8字节)
             buffer.putLong(id != null ? id : 0L);
             
-            // 按顺序写入复合列存储字段
-            for (CompositeFieldInfo compositeInfo : fieldMapping.compositeFields) {
+            for (CompositeFieldInfo compositeInfo : fm.compositeFields) {
                 writeCompositeField(buffer, compositeInfo);
             }
             
-            // 按顺序写入普通列存储字段
-            for (ColumnFieldInfo columnInfo : fieldMapping.columnFields) {
+            for (ColumnFieldInfo columnInfo : fm.columnFields) {
                 writeColumnField(buffer, columnInfo);
             }
             
@@ -94,12 +143,13 @@ public abstract class DsTableAdapter implements DsTableByteBufferSerializable {
     public void load(ByteBuffer data) {
         try {
             data.rewind();
-            int expectedTotal = calculateTotalSize();
+            FieldMapping fm = ensureMapping();
+            int expectedTotal = calculateTotalSize(fm);
             int actualRemaining = data.remaining();
 
             this.id = data.getLong();
 
-            for (CompositeFieldInfo compositeInfo : fieldMapping.compositeFields) {
+            for (CompositeFieldInfo compositeInfo : fm.compositeFields) {
                 if (data.remaining() >= compositeInfo.length) {
                     readCompositeField(data, compositeInfo);
                 } else {
@@ -110,7 +160,7 @@ public abstract class DsTableAdapter implements DsTableByteBufferSerializable {
                 }
             }
 
-            for (ColumnFieldInfo columnInfo : fieldMapping.columnFields) {
+            for (ColumnFieldInfo columnInfo : fm.columnFields) {
                 if (data.remaining() >= columnInfo.length) {
                     readColumnField(data, columnInfo);
                 } else {
@@ -171,22 +221,14 @@ public abstract class DsTableAdapter implements DsTableByteBufferSerializable {
         return null;
     }
     
-    /**
-     * 计算总大小
-     */
-    private int calculateTotalSize() {
-        int size = 8; // ID占8字节
-        
-        // 复合列存储字段大小
-        for (CompositeFieldInfo info : fieldMapping.compositeFields) {
+    private int calculateTotalSize(FieldMapping fm) {
+        int size = 8;
+        for (CompositeFieldInfo info : fm.compositeFields) {
             size += info.length;
         }
-        
-        // 普通列存储字段大小
-        for (ColumnFieldInfo info : fieldMapping.columnFields) {
+        for (ColumnFieldInfo info : fm.columnFields) {
             size += info.length;
         }
-        
         return size;
     }
     
@@ -484,15 +526,15 @@ public abstract class DsTableAdapter implements DsTableByteBufferSerializable {
     private static FieldMapping createMapping(Class<?> clazz) {
         FieldMapping mapping = new FieldMapping();
         
-        // 扫描所有字段
         List<Field> allFields = getAllFields(clazz);
         
         for (Field field : allFields) {
-            // 处理复合列存储字段
             if (field.isAnnotationPresent(DsCompositeField.class)) {
                 DsCompositeField annotation = field.getAnnotation(DsCompositeField.class);
                 CompositeFieldInfo info = new CompositeFieldInfo();
                 info.field = field;
+                info.fieldName = field.getName();
+                info.declaringClass = field.getDeclaringClass();
                 info.name = annotation.name().isEmpty() ? field.getName() : annotation.name();
                 info.group = annotation.group();
                 info.length = annotation.length();
@@ -501,11 +543,12 @@ public abstract class DsTableAdapter implements DsTableByteBufferSerializable {
                 mapping.compositeFields.add(info);
             }
             
-            // 处理普通列存储字段
             if (field.isAnnotationPresent(DsField.class)) {
                 DsField annotation = field.getAnnotation(DsField.class);
                 ColumnFieldInfo info = new ColumnFieldInfo();
                 info.field = field;
+                info.fieldName = field.getName();
+                info.declaringClass = field.getDeclaringClass();
                 info.name = annotation.name().isEmpty() ? field.getName() : annotation.name();
                 info.length = annotation.length();
                 info.precision = annotation.precision();
@@ -566,6 +609,8 @@ public abstract class DsTableAdapter implements DsTableByteBufferSerializable {
      */
     private static class CompositeFieldInfo {
         Field field;
+        String fieldName;
+        Class<?> declaringClass;
         String name;
         String group;
         int length;
@@ -578,6 +623,8 @@ public abstract class DsTableAdapter implements DsTableByteBufferSerializable {
      */
     private static class ColumnFieldInfo {
         Field field;
+        String fieldName;
+        Class<?> declaringClass;
         String name;
         int length;
         int precision;
@@ -590,23 +637,24 @@ public abstract class DsTableAdapter implements DsTableByteBufferSerializable {
      * 获取字段映射信息（用于调试）
      */
     public String getMappingInfo() {
+        FieldMapping fm = ensureMapping();
         StringBuilder sb = new StringBuilder();
         sb.append("=== 字段映射信息 ===");
         sb.append("类: ").append(this.getClass().getName()).append("\n");
         
         sb.append("复合列存储字段:");
-        for (CompositeFieldInfo info : fieldMapping.compositeFields) {
+        for (CompositeFieldInfo info : fm.compositeFields) {
             sb.append(String.format("  %s [%s] - 长度:%d, 位范围:%d-%d",
                 info.name, info.group, info.length, info.startBits, info.endBits));
         }
         
         sb.append("普通列存储字段:");
-        for (ColumnFieldInfo info : fieldMapping.columnFields) {
+        for (ColumnFieldInfo info : fm.columnFields) {
             sb.append(String.format("  %s - 长度:%d, 精度:%d, 小数位:%d",
                 info.name, info.length, info.precision, info.scale));
         }
         
-        sb.append("总大小: ").append(calculateTotalSize()).append(" 字节");
+        sb.append("总大小: ").append(calculateTotalSize(fm)).append(" 字节");
         
         return sb.toString();
     }

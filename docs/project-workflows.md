@@ -1,3 +1,6 @@
+---
+updated: "2026-09-01T03:01:25Z"
+---
 # Project Workflows
 
 <!-- brain:begin project-doc-workflows -->
@@ -27,6 +30,7 @@ After `brain adopt` creates starter context, the AI agent must scan the repo bef
 - Update existing durable notes instead of duplicating context.
 - Run required verification commands through `brain session run -- <command>`.
 - Run `brain context audit` after meaningful architecture, config, CI, deploy, test, or docs-surface changes.
+- If you change Brain command behavior or agent-facing workflow guidance, update `skills/brain/SKILL.md` in the same branch.
 - Re-read context before large changes if the task shifts.
 
 ## Ticket Loop
@@ -44,7 +48,7 @@ After `brain adopt` creates starter context, the AI agent must scan the repo bef
 - Use `brain context audit --proposal` when context coverage findings should become a reviewed durable update proposal.
 - If `brain session finish` blocks, inspect the promotion suggestions first; run `brain distill --session --dry-run` only when you need the full review without creating a proposal note.
 - Before switching away from a working branch or back to `develop`, run `git status --short` and resolve repo-owned leftovers. If `.brain/resources/changes/*`, `.brain/`, `docs/`, or contract files belong to the task, keep them in the same branch/PR; otherwise review and intentionally remove them instead of carrying them onto `develop`, `release/*`, or `main`.
-- If the local Brain skill source changed in its owning checkout, reinstall the local Brain skill for Codex and OpenClaw with `brain skills install --scope local --agent codex --agent openclaw --project .`.
+- If `skills/brain/` changed, reinstall the local Brain skill for Codex and OpenClaw with `brain skills install --scope local --agent codex --agent openclaw --project .`.
 - When opening a PR, make the title and body release-note friendly because GitHub release notes are generated from merged PR metadata.
 - Summarize shipped behavior in the PR, not just implementation steps, so future changelogs stay human-readable.
 - Finish with `brain session finish`.

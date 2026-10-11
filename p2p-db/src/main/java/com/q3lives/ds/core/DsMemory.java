@@ -1,13 +1,15 @@
 package com.q3lives.ds.core;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.Charset;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -24,6 +26,10 @@ import com.q3lives.ds.collections.DsList;
 import com.q3lives.ds.fs.Ds128SuperInode;
 import com.q3lives.ds.header.HeaderTieredStore;
 import com.q3lives.ds.header.HeaderTieredStoreFactory;
+
+import net.jpountz.lz4.LZ4Compressor;
+import net.jpountz.lz4.LZ4Factory;
+import net.jpountz.lz4.LZ4SafeDecompressor;
 
 /**
  * 基于内存映射文件(Memory Mapped Files, MappedByteBuffer)的持久化数据结构基类。
@@ -45,7 +51,7 @@ import com.q3lives.ds.header.HeaderTieredStoreFactory;
  * </ul>
  * </p>
  */
-public class DsMemory {
+public class DsMemory implements AutoCloseable {
 
     /**
      * 启用分区(同一服务器分表空间(不同硬盘)存储,以纵向扩展/并行读写提高性能)
@@ -96,6 +102,20 @@ public class DsMemory {
     protected final int[] evictCandIdxs = new int[EVICT_CANDIDATE_SLOT];
     protected final long[] evictCandAccess = new long[EVICT_CANDIDATE_SLOT];
 
+    /**
+     * 冷热分层：冷目录。为 null 时禁用冷热分层。
+     */
+    protected volatile File coldDirectory = null;
+    /**
+     * 冷热分层：块被视为“冷”并压缩落盘所需的最小未访问时间（毫秒）。
+     * 默认 60 秒；0 表示只要启用冷目录，淘汰时立即视为冷。
+     */
+    protected volatile long coldThresholdMs = 60_000L;
+    protected final AtomicLong coldBlockCount = new AtomicLong(0);
+    protected final AtomicLong coldBlockBytes = new AtomicLong(0);
+    protected final AtomicLong coldReadHits = new AtomicLong(0);
+    protected final AtomicLong coldReadMisses = new AtomicLong(0);
+
     public static final class CacheStats {
         private final int maxCachedBlocks;
         private final long maxCachedBytes;
@@ -107,10 +127,15 @@ public class DsMemory {
         private final long evictionSuccess;
         private final long evictionBytes;
         private final long evictionDirtyCount;
+        private final long coldBlockCount;
+        private final long coldBlockBytes;
+        private final long coldReadHits;
+        private final long coldReadMisses;
 
         public CacheStats(int maxCachedBlocks, long maxCachedBytes, int activeCachedBlocks, long cachedBytes,
             int dirtyBuffers, int highestIndex, long evictionAttempts, long evictionSuccess,
-            long evictionBytes, long evictionDirtyCount) {
+            long evictionBytes, long evictionDirtyCount,
+            long coldBlockCount, long coldBlockBytes, long coldReadHits, long coldReadMisses) {
             this.maxCachedBlocks = maxCachedBlocks;
             this.maxCachedBytes = maxCachedBytes;
             this.activeCachedBlocks = activeCachedBlocks;
@@ -121,6 +146,10 @@ public class DsMemory {
             this.evictionSuccess = evictionSuccess;
             this.evictionBytes = evictionBytes;
             this.evictionDirtyCount = evictionDirtyCount;
+            this.coldBlockCount = coldBlockCount;
+            this.coldBlockBytes = coldBlockBytes;
+            this.coldReadHits = coldReadHits;
+            this.coldReadMisses = coldReadMisses;
         }
 
         public int getMaxCachedBlocks() { return maxCachedBlocks; }
@@ -133,6 +162,10 @@ public class DsMemory {
         public long getEvictionSuccess() { return evictionSuccess; }
         public long getEvictionBytes() { return evictionBytes; }
         public long getEvictionDirtyCount() { return evictionDirtyCount; }
+        public long getColdBlockCount() { return coldBlockCount; }
+        public long getColdBlockBytes() { return coldBlockBytes; }
+        public long getColdReadHits() { return coldReadHits; }
+        public long getColdReadMisses() { return coldReadMisses; }
     }
 
     // DONE (was TODO): 实现缓存淘汰策略 (如 LRU)，防止大文件加载导致内存溢出 (OOM)。
@@ -214,7 +247,6 @@ public class DsMemory {
     
     public final int headerSize;
     protected final File dataFile;
-    protected DsWAL wal;
 
     public DsMemory(File dataFile,int headerSize, int dataUnitSize) {
         this.dataFile = dataFile;
@@ -228,9 +260,11 @@ public class DsMemory {
             idLockPool.add(new ReentrantLock());
         }
         this.headerTier = HeaderTieredStoreFactory.create(dataFile, dataFile == null ? "dsmem" : dataFile.getName());
-        if (this.dataFile != null) {
-            this.wal = new DsWAL(this.dataFile);
-        }
+    }
+
+    @Override
+    public void close() throws IOException {
+        // WAL 已移除；dataFile 是内存映射，由 JVM 负责释放映射。
     }
 
     protected final void ensureHeaderTierAttached() {
@@ -304,6 +338,7 @@ public class DsMemory {
     public void writeLong(long id, int offset, long value)  {
         runWithBufferLocks(() -> {
             loadBufferWithOffsetFromId(id, offset).putLong(value);
+            markDirty((int) ((id * dataUnitSize + headerSize + offset) / BLOCK_SIZE));
         });
     }
 
@@ -317,6 +352,7 @@ public class DsMemory {
     public void writeLong(long id, long value)  {
         runWithBufferLocks(() -> {
             loadBufferWithOffsetFromId(id).putLong(value);
+            markDirty(bufferIndexFromId(id));
         });
     }
 
@@ -330,6 +366,7 @@ public class DsMemory {
     protected void storeLongOffset(long position, long value)  {
         runWithBufferLocks(() -> {
             loadBufferWithOffset(position).putLong(value);
+            markDirty(bufferIndexFromPosition(position));
         });
     }
 
@@ -511,8 +548,68 @@ public class DsMemory {
 
     protected void loadBytesOffset(long position, byte[] dest, int destOffset, int length)  {
         runWithBufferLocks(() -> {
-            loadBufferWithOffset(position).get( dest, destOffset, length);
+            if (dest == null) {
+                return;
+            }
+            if (length <= 0) {
+                return;
+            }
+            if (destOffset < 0 || destOffset + length > dest.length) {
+                throw new IllegalArgumentException(
+                    "Invalid destination bounds: destOffset=" + destOffset
+                    + ", length=" + length + ", array length=" + dest.length);
+            }
+            int remaining = length;
+            int dp = destOffset;
+            long currentPos = position;
+            while (remaining > 0) {
+                int bufferIndex = bufferIndexFromPosition(currentPos);
+                int offset = bufferOffsetFromPosition(currentPos);
+                int take = Math.min(remaining, BLOCK_SIZE - offset);
+                ByteBuffer buf = loadBuffer(bufferIndex);
+                buf.get(offset, dest, dp, take);
+                remaining -= take;
+                dp += take;
+                currentPos += take;
+            }
         });
+    }
+
+    protected void storeBytesOffset(long position, byte[] src, int srcOffset, int length)  {
+        runWithBufferLocks(() -> {
+            if (src == null) {
+                return;
+            }
+            if (length <= 0) {
+                return;
+            }
+            if (srcOffset < 0 || srcOffset + length > src.length) {
+                throw new IllegalArgumentException(
+                    "Invalid source bounds: srcOffset=" + srcOffset
+                    + ", length=" + length + ", array length=" + src.length);
+            }
+            int remaining = length;
+            int sp = srcOffset;
+            long currentPos = position;
+            while (remaining > 0) {
+                int bufferIndex = bufferIndexFromPosition(currentPos);
+                int offset = bufferOffsetFromPosition(currentPos);
+                int take = Math.min(remaining, BLOCK_SIZE - offset);
+                ByteBuffer buf = loadBuffer(bufferIndex);
+                buf.put(offset, src, sp, take);
+                markDirty(bufferIndex);
+                remaining -= take;
+                sp += take;
+                currentPos += take;
+            }
+        });
+    }
+
+    protected void storeBytesOffset(long position, byte[] src)  {
+        if (src == null || src.length == 0) {
+            return;
+        }
+        storeBytesOffset(position, src, 0, src.length);
     }
 
     protected ReentrantReadWriteLock getDataBufferLock(long bufferIndex) {
@@ -573,6 +670,7 @@ public class DsMemory {
     public void writeInt(long id, int offset, int value)  {
         runWithBufferLocks(() -> {
             loadBufferWithOffsetFromId(id,offset).putInt(value);
+            markDirty((int) ((id * dataUnitSize + headerSize + offset) / BLOCK_SIZE));
         });
     }
 
@@ -637,6 +735,7 @@ public class DsMemory {
     protected void storeShortOffset(long position, short value)  {
         runWithBufferLocks(() -> {
             loadBufferWithOffset(position).putShort(value);
+            markDirty(bufferIndexFromPosition(position));
         });
     }
 
@@ -650,6 +749,7 @@ public class DsMemory {
     protected void storeIntOffset(long position, int value)  {
         runWithBufferLocks(() -> {
             loadBufferWithOffset(position).putInt(value);
+            markDirty(bufferIndexFromPosition(position));
         });
     }
 
@@ -663,6 +763,7 @@ public class DsMemory {
     protected void storeByteOffset(long position, byte value)  {
         runWithBufferLocks(() -> {
             loadBufferWithOffset(position).put(value);
+            markDirty(bufferIndexFromPosition(position));
         });
     }
 
@@ -788,6 +889,7 @@ public class DsMemory {
             int bufferIndex = bufferIndexFromId(id,offset);
             ByteBuffer buf = loadBuffer(bufferIndex);
             buf.putShort(bufferPositionFromId(id), value);
+            markDirty(bufferIndex);
         });
     }
 
@@ -802,6 +904,7 @@ public class DsMemory {
             int bufferIndex = bufferIndexFromId(id,offset);
             ByteBuffer buf = loadBuffer(bufferIndex);
             buf.putFloat(bufferPositionFromId(id), value);
+            markDirty(bufferIndex);
         });
     }
 
@@ -834,6 +937,7 @@ public class DsMemory {
             int bufferIndex = bufferIndexFromId(id,offset);
             ByteBuffer buf = loadBuffer(bufferIndex);
             buf.putDouble(bufferPositionFromId(id), value);
+            markDirty(bufferIndex);
         });
     }
 
@@ -867,6 +971,7 @@ public class DsMemory {
             int bufferIndex = bufferIndexFromId(id,offset);
             ByteBuffer buf = loadBuffer(bufferIndex);
             buf.put(bufferPositionFromId(id), value);
+            markDirty(bufferIndex);
         });
     }
 
@@ -1127,49 +1232,52 @@ public class DsMemory {
                 }
             }
         }
+
+        // Phase 1: reserve capacity and double-check the slot under bufferLock.
         bufferLock.lock();
         try {
-            ByteBuffer buf = null;
-            boolean allocatedNew = false;
-            if (idx < bufSnap.length) {
-                buf = (ByteBuffer) bufSnap[idx];
+            if (idx < bufSnap.length && bufSnap[idx] != null) {
+                ByteBuffer buf = (ByteBuffer) bufSnap[idx];
+                touchBuffer(idx);
+                ReentrantReadWriteLock stripe = getDataBufferLock((long) idx);
+                stripe.readLock().lock();
+                pushReadHold(stripe, bufSnap, buf, idx);
+                return buf.duplicate();
             }
-            if (buf == null) {
-                ensureCapacity(1, idx);
-                byte[] data;
-                if (idx < byteSnap.length) {
-                    data = (byte[]) byteSnap[idx];
-                    if (data == null) {
-                        data = readBlockFromFile(idx);
-                        applyByteSnap(idx, data);
-                        buf = ByteBuffer.wrap(data);
-                        applyBufSnap(idx, buf);
-                        allocatedNew = true;
-                    } else {
-                        if (idx < bufSnap.length) {
-                            buf = (ByteBuffer) bufSnap[idx];
-                        }
-                        if (buf == null) {
-                            buf = ByteBuffer.wrap(data);
-                            applyBufSnap(idx, buf);
-                            allocatedNew = true;
-                        }
-                    }
-                } else {
-                    growSnapTo(idx + 1);
-                    data = readBlockFromFile(idx);
-                    applyByteSnap(idx, data);
-                    buf = ByteBuffer.wrap(data);
-                    applyBufSnap(idx, buf);
-                    allocatedNew = true;
-                }
-                if (allocatedNew) {
-                    activeCachedBlocks.incrementAndGet();
-                    cachedBytes.addAndGet(BLOCK_SIZE);
-                    if (idx > highestBufferIndexEverSeen) {
-                        highestBufferIndexEverSeen = idx;
-                    }
-                }
+            ensureCapacity(1, idx);
+        } finally {
+            bufferLock.unlock();
+        }
+
+        // Phase 2: perform blocking I/O outside bufferLock so multiple misses can read in parallel.
+        byte[] data = readBlockFromFile(idx);
+        ByteBuffer buf = ByteBuffer.wrap(data);
+
+        // Phase 3: publish the loaded block under bufferLock.
+        bufferLock.lock();
+        try {
+            ByteBuffer existing = null;
+            if (idx < bufSnap.length) {
+                existing = (ByteBuffer) bufSnap[idx];
+            }
+            if (existing != null) {
+                // Another thread loaded it while we were reading from disk.
+                touchBuffer(idx);
+                ReentrantReadWriteLock stripe = getDataBufferLock((long) idx);
+                stripe.readLock().lock();
+                pushReadHold(stripe, bufSnap, existing, idx);
+                return existing.duplicate();
+            }
+            if (idx >= byteSnap.length || byteSnap[idx] == null) {
+                applyByteSnap(idx, data);
+            }
+            if (idx >= bufSnap.length || bufSnap[idx] == null) {
+                applyBufSnap(idx, buf);
+            }
+            activeCachedBlocks.incrementAndGet();
+            cachedBytes.addAndGet(BLOCK_SIZE);
+            if (idx > highestBufferIndexEverSeen) {
+                highestBufferIndexEverSeen = idx;
             }
             touchBuffer(idx);
             ReentrantReadWriteLock stripe = getDataBufferLock((long) idx);
@@ -1229,6 +1337,8 @@ public class DsMemory {
 
     protected final void markDirty(int bufferIndex) {
         dirtyBufferIndices.add(bufferIndex);
+        // 块变热（被修改）后，对应的冷文件已失效，立即删除以避免重启后读到旧数据。
+        deleteColdBlock(bufferIndex);
         if (bufferIndex == 0) {
             try {
                 ensureHeaderTierAttached();
@@ -1257,6 +1367,29 @@ public class DsMemory {
         return maxCachedBytes;
     }
 
+    public File getColdDirectory() {
+        return coldDirectory;
+    }
+
+    public void setColdDirectory(File coldDirectory) {
+        this.coldDirectory = coldDirectory;
+        if (coldDirectory != null) {
+            ensureParentDirectory(coldDirectory);
+            coldDirectory.mkdirs();
+        }
+    }
+
+    public long getColdThresholdMs() {
+        return coldThresholdMs;
+    }
+
+    public void setColdThresholdMs(long coldThresholdMs) {
+        if (coldThresholdMs < 0) {
+            throw new IllegalArgumentException("coldThresholdMs must be >= 0");
+        }
+        this.coldThresholdMs = coldThresholdMs;
+    }
+
     public int getActiveCachedBlocks() {
         return activeCachedBlocks.get();
     }
@@ -1271,7 +1404,9 @@ public class DsMemory {
             activeCachedBlocks.get(), cachedBytes.get(),
             dirtyBufferIndices.size(), highestBufferIndexEverSeen,
             evictionAttempts.get(), evictionSuccess.get(),
-            evictionBytes.get(), evictionDirtyCount.get()
+            evictionBytes.get(), evictionDirtyCount.get(),
+            coldBlockCount.get(), coldBlockBytes.get(),
+            coldReadHits.get(), coldReadMisses.get()
         );
     }
 
@@ -1281,7 +1416,9 @@ public class DsMemory {
             activeCachedBlocks.get(), cachedBytes.get(),
             dirtyBufferIndices.size(), highestBufferIndexEverSeen,
             evictionAttempts.getAndSet(0), evictionSuccess.getAndSet(0),
-            evictionBytes.getAndSet(0), evictionDirtyCount.getAndSet(0)
+            evictionBytes.getAndSet(0), evictionDirtyCount.getAndSet(0),
+            coldBlockCount.getAndSet(0), coldBlockBytes.getAndSet(0),
+            coldReadHits.getAndSet(0), coldReadMisses.getAndSet(0)
         );
     }
 
@@ -1290,6 +1427,10 @@ public class DsMemory {
         evictionSuccess.set(0);
         evictionBytes.set(0);
         evictionDirtyCount.set(0);
+        coldBlockCount.set(0);
+        coldBlockBytes.set(0);
+        coldReadHits.set(0);
+        coldReadMisses.set(0);
     }
 
     public void trimCachedBuffers() {
@@ -1411,10 +1552,14 @@ public class DsMemory {
 
         for (int i = 0; i < n; i++) {
             int victim = candIdxs[i];
-            ReentrantReadWriteLock stripe = getDataBufferLock((long) victim);
-            stripe.writeLock().lock();
+            // Lock ordering must be bufferLock -> stripe lock, matching loadBuffer().
+            // This prevents a deadlock where loadBuffer() holds bufferLock and waits
+            // for a stripe read lock while evictOne() holds the stripe write lock and
+            // waits for bufferLock.
+            bufferLock.lock();
             try {
-                bufferLock.lock();
+                ReentrantReadWriteLock stripe = getDataBufferLock((long) victim);
+                stripe.writeLock().lock();
                 try {
                     if (victim >= bufSnap.length) {
                         bufferLastAccessNanos.remove(victim);
@@ -1430,8 +1575,20 @@ public class DsMemory {
                     if (wasDirty) {
                         evictionDirtyCount.incrementAndGet();
                     }
-                    if (victimBytes != null) {
-                        writeBlockToFile(victim, victimBytes);
+                    if (victimBytes != null && victimBytes.length == BLOCK_SIZE && !isAllZero(victimBytes)) {
+                        File coldDir = coldDirectory;
+                        Long lastAccess = bufferLastAccessNanos.get(victim);
+                        long nowMs = System.currentTimeMillis();
+                        long lastAccessMs = lastAccess == null ? 0L : lastAccess.longValue() / 1_000_000L;
+                        if (coldDir != null && coldThresholdMs >= 0
+                                && (coldThresholdMs == 0L || nowMs - lastAccessMs >= coldThresholdMs)) {
+                            int compressedLen = writeColdBlock(victim, victimBytes);
+                            coldBlockCount.incrementAndGet();
+                            coldBlockBytes.addAndGet(compressedLen);
+                            zeroBlockInMainFile(victim);
+                        } else {
+                            writeBlockToFile(victim, victimBytes);
+                        }
                     }
                     Object[] nb = bufSnap.clone();
                     nb[victim] = null;
@@ -1448,10 +1605,10 @@ public class DsMemory {
                     evictionBytes.addAndGet(BLOCK_SIZE);
                     return true;
                 } finally {
-                    bufferLock.unlock();
+                    stripe.writeLock().unlock();
                 }
             } finally {
-                stripe.writeLock().unlock();
+                bufferLock.unlock();
             }
         }
         return false;
@@ -1460,7 +1617,7 @@ public class DsMemory {
     protected byte[] readBlockFromFile(int bufferIndex) {
         byte[] out = new byte[BLOCK_SIZE];
         if (dataFile == null || !dataFile.exists()) {
-            return out;
+            return tryReadColdBlock(bufferIndex, out);
         }
         long start = (long) bufferIndex * (long) BLOCK_SIZE;
         long len;
@@ -1468,20 +1625,43 @@ public class DsMemory {
         try (RandomAccessFile raf = new RandomAccessFile(dataFile, "r")) {
             len = raf.length();
             if (start >= len) {
-                return out;
+                return tryReadColdBlock(bufferIndex, out);
             }
             raf.seek(start);
             int remaining = (int) Math.min((long) BLOCK_SIZE, len - start);
             if (remaining > 0) {
                 raf.readFully(out, 0, remaining);
             }
-            return out;
+            if (!isAllZero(out)) {
+                return out;
+            }
         } catch (IOException ex) {
             throw new RuntimeException("Failed to read block index=" + bufferIndex
                 + " from " + dataFile, ex);
         } finally {
             syncOpLock.unlock();
         }
+        return tryReadColdBlock(bufferIndex, out);
+    }
+
+    private byte[] tryReadColdBlock(int bufferIndex, byte[] out) {
+        File coldDir = coldDirectory;
+        if (coldDir == null) {
+            coldReadMisses.incrementAndGet();
+            return out;
+        }
+        byte[] decompressed = readColdBlock(bufferIndex);
+        if (decompressed == null) {
+            coldReadMisses.incrementAndGet();
+            return out;
+        }
+        coldReadHits.incrementAndGet();
+        int copyLen = Math.min(decompressed.length, out.length);
+        System.arraycopy(decompressed, 0, out, 0, copyLen);
+        if (copyLen < out.length) {
+            Arrays.fill(out, copyLen, out.length, (byte) 0);
+        }
+        return out;
     }
 
     protected void writeBlockToFile(int bufferIndex, byte[] block) {
@@ -1504,8 +1684,156 @@ public class DsMemory {
         } finally {
             syncOpLock.unlock();
         }
+        deleteColdBlock(bufferIndex);
     }
     
+    protected static boolean isAllZero(byte[] bytes) {
+        if (bytes == null) {
+            return true;
+        }
+        int len = bytes.length;
+        int i = 0;
+        for (; i + 8 <= len; i += 8) {
+            if (((bytes[i] & 0xFFL)
+                    | ((bytes[i + 1] & 0xFFL) << 8)
+                    | ((bytes[i + 2] & 0xFFL) << 16)
+                    | ((bytes[i + 3] & 0xFFL) << 24)
+                    | ((bytes[i + 4] & 0xFFL) << 32)
+                    | ((bytes[i + 5] & 0xFFL) << 40)
+                    | ((bytes[i + 6] & 0xFFL) << 48)
+                    | ((bytes[i + 7] & 0xFFL) << 56)) != 0L) {
+                return false;
+            }
+        }
+        for (; i < len; i++) {
+            if (bytes[i] != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    protected File coldFileFor(int bufferIndex) {
+        File coldDir = coldDirectory;
+        if (coldDir == null) {
+            return null;
+        }
+        return new File(coldDir, "cold_" + bufferIndex + ".lz4");
+    }
+
+    protected int writeColdBlock(int bufferIndex, byte[] block) {
+        File coldDir = coldDirectory;
+        if (coldDir == null) {
+            return 0;
+        }
+        ensureParentDirectory(coldDir);
+        coldDir.mkdirs();
+        File target = new File(coldDir, "cold_" + bufferIndex + ".lz4");
+        File tmp = new File(coldDir, "cold_" + bufferIndex + ".lz4.tmp");
+        try {
+            LZ4Factory factory = LZ4Factory.fastestInstance();
+            LZ4Compressor compressor = factory.fastCompressor();
+            int maxCompressedLength = compressor.maxCompressedLength(block.length);
+            byte[] compressed = new byte[maxCompressedLength + 4];
+            int compressedLength = compressor.compress(block, 0, block.length, compressed, 4, maxCompressedLength);
+            compressed[0] = (byte) (block.length >>> 24);
+            compressed[1] = (byte) (block.length >>> 16);
+            compressed[2] = (byte) (block.length >>> 8);
+            compressed[3] = (byte) block.length;
+            int totalLength = compressedLength + 4;
+            try (FileOutputStream fos = new FileOutputStream(tmp)) {
+                fos.write(compressed, 0, totalLength);
+                fos.flush();
+                fos.getFD().sync();
+            }
+            if (target.exists() && !target.delete()) {
+                tmp.delete();
+                throw new IOException("Failed to delete existing cold file: " + target);
+            }
+            if (!tmp.renameTo(target)) {
+                throw new IOException("Failed to rename cold file " + tmp + " to " + target);
+            }
+            return totalLength;
+        } catch (IOException ex) {
+            tmp.delete();
+            throw new RuntimeException("Failed to write cold block index=" + bufferIndex
+                + " to " + target, ex);
+        }
+    }
+
+    protected byte[] readColdBlock(int bufferIndex) {
+        File coldDir = coldDirectory;
+        if (coldDir == null) {
+            return null;
+        }
+        File target = new File(coldDir, "cold_" + bufferIndex + ".lz4");
+        if (!target.exists()) {
+            return null;
+        }
+        try (FileInputStream fis = new FileInputStream(target);
+             ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[8192];
+            int read;
+            while ((read = fis.read(buf)) != -1) {
+                baos.write(buf, 0, read);
+            }
+            byte[] data = baos.toByteArray();
+            if (data.length < 4) {
+                return null;
+            }
+            int originalLength = ((data[0] & 0xFF) << 24)
+                    | ((data[1] & 0xFF) << 16)
+                    | ((data[2] & 0xFF) << 8)
+                    | (data[3] & 0xFF);
+            if (originalLength <= 0 || originalLength > BLOCK_SIZE * 16) {
+                return null;
+            }
+            byte[] restored = new byte[originalLength];
+            LZ4Factory factory = LZ4Factory.fastestInstance();
+            LZ4SafeDecompressor decompressor = factory.safeDecompressor();
+            decompressor.decompress(data, 4, data.length - 4, restored, 0);
+            return restored;
+        } catch (IOException ex) {
+            throw new RuntimeException("Failed to read cold block index=" + bufferIndex
+                + " from " + target, ex);
+        }
+    }
+
+    protected void deleteColdBlock(int bufferIndex) {
+        File coldDir = coldDirectory;
+        if (coldDir == null) {
+            return;
+        }
+        File target = new File(coldDir, "cold_" + bufferIndex + ".lz4");
+        if (target.exists()) {
+            target.delete();
+        }
+    }
+
+    protected void zeroBlockInMainFile(int bufferIndex) {
+        if (dataFile == null) {
+            return;
+        }
+        long start = (long) bufferIndex * (long) BLOCK_SIZE;
+        ensureParentDirectory(dataFile);
+        syncOpLock.lock();
+        try (RandomAccessFile raf = new RandomAccessFile(dataFile, "rw")) {
+            if (raf.length() >= start + BLOCK_SIZE) {
+                raf.seek(start);
+                raf.write(ZERO_BLOCK_BYTES, 0, BLOCK_SIZE);
+            } else if (raf.length() > start) {
+                raf.seek(start);
+                int rest = (int) (raf.length() - start);
+                raf.write(ZERO_BLOCK_BYTES, 0, rest);
+            }
+        } catch (IOException ex) {
+            throw new RuntimeException("Failed to zero block index=" + bufferIndex
+                + " in " + dataFile, ex);
+        } finally {
+            syncOpLock.unlock();
+        }
+    }
+
     protected ByteBuffer loadBufferWithOffset(long position)  {
         ByteBuffer buf = loadBuffer(position/BLOCK_SIZE);
         buf.position((int) (position%BLOCK_SIZE));
@@ -1572,22 +1900,6 @@ public class DsMemory {
         }
         syncOpLock.lock();
         try {
-            if (wal != null && !dirtyBufferIndices.isEmpty()) {
-                for (Integer idx : dirtyBufferIndices) {
-                    if (idx != null && idx >= 0 && idx < dataBytes.size() && dataBytes.get(idx) != null) {
-                        try {
-                            wal.appendBlockEntry(idx, dataBytes.get(idx));
-                        } catch (IOException ioe) {
-                            throw new RuntimeException("Failed to append WAL for block index=" + idx, ioe);
-                        }
-                    }
-                }
-                try {
-                    wal.fsync();
-                } catch (IOException ioe) {
-                    throw new RuntimeException("Failed to fsync WAL before data write", ioe);
-                }
-            }
             long totalBytes = syncByteSize();
             ensureParentDirectory(dataFile);
             try (RandomAccessFile raf = new RandomAccessFile(dataFile, "rw")) {
@@ -1630,13 +1942,6 @@ public class DsMemory {
                     }
                 }
                 dirtyBufferIndices.clear();
-                if (wal != null) {
-                    try {
-                        wal.truncate();
-                    } catch (IOException ioe) {
-                        throw new RuntimeException("Failed to truncate WAL after successful sync", ioe);
-                    }
-                }
             } catch (IOException ex) {
                 throw new RuntimeException(ex);
             }
@@ -1644,10 +1949,12 @@ public class DsMemory {
             syncOpLock.unlock();
         }
     }
-    
+
     /**
-     * 从底层存储加载数据到内存
-     * 确保数据的持久性。
+     * 从底层存储加载数据到内存。
+     *
+     * <p>原 WAL 已移除：dataFile 即为最新 snapshot，启动时直接加载，
+     * binlog 回放由上层 {@link com.q3lives.ds.database.DsDatabaseLocal} 负责。
      */
     public void syncLoad(){
         if (dataFile == null) {
@@ -1681,13 +1988,6 @@ public class DsMemory {
                     long fileLength = dataFile.length();
                     if (fileLength > 0) {
                         highestBufferIndexEverSeen = requiredBlockCount(fileLength) - 1;
-                    }
-                }
-                if (wal != null) {
-                    try {
-                        wal.replayAll(dataBytes, this);
-                    } catch (IOException ioe) {
-                        throw new RuntimeException("Failed to replay WAL during syncLoad", ioe);
                     }
                 }
                 while (dataBuffers.size() < dataBytes.size()) {
@@ -1727,60 +2027,6 @@ public class DsMemory {
         if (parent != null && !parent.exists()) {
             parent.mkdirs();
         }
-    }
-
-    public void forceFlushAllWALAndSync() {
-        syncOpLock.lock();
-        try {
-            if (wal != null && wal.isOpen()) {
-                try {
-                    wal.fsync();
-                } catch (IOException ioe) {
-                    throw new RuntimeException(ioe);
-                }
-            }
-            syncStore();
-        } finally {
-            syncOpLock.unlock();
-        }
-    }
-
-    public int replayWALFromScratch() {
-        syncOpLock.lock();
-        try {
-            bufferLock.lock();
-            try {
-                if (wal == null) return 0;
-                try {
-                    return wal.replayAll(dataBytes, this);
-                } catch (IOException ioe) {
-                    throw new RuntimeException(ioe);
-                }
-            } finally {
-                bufferLock.unlock();
-            }
-        } finally {
-            syncOpLock.unlock();
-        }
-    }
-
-    public void truncateWALNow() {
-        syncOpLock.lock();
-        try {
-            if (wal != null && wal.isOpen()) {
-                try {
-                    wal.truncate();
-                } catch (IOException ioe) {
-                    throw new RuntimeException(ioe);
-                }
-            }
-        } finally {
-            syncOpLock.unlock();
-        }
-    }
-
-    public static void forceResetWALForTest(File dataFile) {
-        DsWAL.forceResetForTest(dataFile);
     }
 
 }

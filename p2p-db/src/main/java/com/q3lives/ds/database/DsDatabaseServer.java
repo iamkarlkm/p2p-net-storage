@@ -1,13 +1,6 @@
 
 package com.q3lives.ds.database;
 
-import com.q3lives.ds.database.adapter.DsTableAdapter;
-import com.q3lives.ds.database.config.DsDatabaseClientConfig;
-import com.q3lives.ds.database.config.DsDatabaseClientConfigLoader;
-import com.q3lives.ds.database.remote.DbEntityRelationsCodec;
-import com.q3lives.ds.database.startup.DsDbClientMetaPrecheck;
-import com.q3lives.ds.database.integration.QueryWrapper;
-import com.q3lives.ds.util.DsPathUtil;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -16,66 +9,80 @@ import java.nio.file.Files;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongConsumer;
+
+import javax.net.p2p.api.P2PCommand;
+import javax.net.p2p.channel.AbstractStreamResponseAdapter;
 import javax.net.p2p.client.AbstractP2PClient;
 import javax.net.p2p.client.P2PClientTcp;
-import javax.net.p2p.channel.AbstractStreamResponseAdapter;
 import javax.net.p2p.error.P2PErrors;
-import javax.net.p2p.model.DbMetaGetRequest;
-import javax.net.p2p.model.DbMetaGetResponse;
-import javax.net.p2p.model.DbRowAllocRequest;
-import javax.net.p2p.model.DbRowAllocResponse;
-import javax.net.p2p.model.DbRowExistsRequest;
-import javax.net.p2p.model.DbRowExistsResponse;
-import javax.net.p2p.model.DbRowRemoveRequest;
-import javax.net.p2p.model.DbRowRemoveResponse;
-import javax.net.p2p.model.DbRowListIdsRequest;
-import javax.net.p2p.model.DbRowListIdsResponse;
-import javax.net.p2p.model.DbColPutRequest;
-import javax.net.p2p.model.DbColPutResponse;
+import javax.net.p2p.model.DbCellValue;
 import javax.net.p2p.model.DbColGetRequest;
 import javax.net.p2p.model.DbColGetResponse;
+import javax.net.p2p.model.DbColPutRequest;
+import javax.net.p2p.model.DbColPutResponse;
 import javax.net.p2p.model.DbColRemoveRequest;
 import javax.net.p2p.model.DbColRemoveResponse;
-import javax.net.p2p.model.DbCellValue;
-import javax.net.p2p.model.DbRowPutRequest;
-import javax.net.p2p.model.DbRowPutResponse;
-import javax.net.p2p.model.DbRowGetRequest;
-import javax.net.p2p.model.DbRowGetResponse;
-import javax.net.p2p.model.DbQuery;
-import javax.net.p2p.model.DbRowCountRequest;
-import javax.net.p2p.model.DbRowCountResponse;
-import javax.net.p2p.model.DbRowExistsByQueryRequest;
-import javax.net.p2p.model.DbRowExistsByQueryResponse;
-import javax.net.p2p.model.DbRowQueryIdsRequest;
-import javax.net.p2p.model.DbRowQueryIdsResponse;
-import javax.net.p2p.model.DbRowQueryIdsStreamRequest;
-import javax.net.p2p.model.DbIndexCreateRequest;
-import javax.net.p2p.model.DbIndexCreateResponse;
-import javax.net.p2p.model.DbIndexDropRequest;
-import javax.net.p2p.model.DbIndexDropResponse;
-import javax.net.p2p.model.DbIndexDef;
-import javax.net.p2p.model.DbIndexListRequest;
-import javax.net.p2p.model.DbIndexListResponse;
-import javax.net.p2p.model.DbIndexInfoRequest;
-import javax.net.p2p.model.DbIndexInfoResponse;
-import javax.net.p2p.model.DbEntityGetRequest;
-import javax.net.p2p.model.DbEntityGetResponse;
 import javax.net.p2p.model.DbEntityExistsRequest;
 import javax.net.p2p.model.DbEntityExistsResponse;
+import javax.net.p2p.model.DbEntityGetRequest;
+import javax.net.p2p.model.DbEntityGetResponse;
 import javax.net.p2p.model.DbEntityPutRequest;
 import javax.net.p2p.model.DbEntityPutResponse;
 import javax.net.p2p.model.DbEntityQueryIdsRequest;
 import javax.net.p2p.model.DbEntityQueryIdsResponse;
 import javax.net.p2p.model.DbEntityRemoveRequest;
 import javax.net.p2p.model.DbEntityRemoveResponse;
+import javax.net.p2p.model.DbIndexCreateRequest;
+import javax.net.p2p.model.DbIndexCreateResponse;
+import javax.net.p2p.model.DbIndexDef;
+import javax.net.p2p.model.DbIndexDropRequest;
+import javax.net.p2p.model.DbIndexDropResponse;
+import javax.net.p2p.model.DbIndexInfoRequest;
+import javax.net.p2p.model.DbIndexInfoResponse;
+import javax.net.p2p.model.DbIndexListRequest;
+import javax.net.p2p.model.DbIndexListResponse;
+import javax.net.p2p.model.DbMetaGetRequest;
+import javax.net.p2p.model.DbMetaGetResponse;
 import javax.net.p2p.model.DbMetaPutRequest;
+import javax.net.p2p.model.DbQuery;
+import javax.net.p2p.model.DbRowAllocRequest;
+import javax.net.p2p.model.DbRowAllocResponse;
+import javax.net.p2p.model.DbRowCountRequest;
+import javax.net.p2p.model.DbRowCountResponse;
+import javax.net.p2p.model.DbRowExistsByQueryRequest;
+import javax.net.p2p.model.DbRowExistsByQueryResponse;
+import javax.net.p2p.model.DbRowExistsRequest;
+import javax.net.p2p.model.DbRowExistsResponse;
+import javax.net.p2p.model.DbRowGetRequest;
+import javax.net.p2p.model.DbRowGetResponse;
+import javax.net.p2p.model.DbRowListIdsRequest;
+import javax.net.p2p.model.DbRowListIdsResponse;
+import javax.net.p2p.model.DbRowPutRequest;
+import javax.net.p2p.model.DbRowPutResponse;
+import javax.net.p2p.model.DbRowQueryIdsRequest;
+import javax.net.p2p.model.DbRowQueryIdsResponse;
+import javax.net.p2p.model.DbRowQueryIdsStreamRequest;
+import javax.net.p2p.model.DbRowRemoveRequest;
+import javax.net.p2p.model.DbRowRemoveResponse;
 import javax.net.p2p.model.DbTableSchema;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.model.StreamP2PWrapper;
-import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.utils.SerializationUtil;
+
 import org.yaml.snakeyaml.Yaml;
+
+import com.q3lives.ds.cluster.DsIdLayout;
+import com.q3lives.ds.cluster.DsNodeRouter;
+import com.q3lives.ds.cluster.DsServerDirectory;
+import com.q3lives.ds.database.adapter.DsTableAdapter;
+import com.q3lives.ds.database.config.DsDatabaseClientConfig;
+import com.q3lives.ds.database.config.DsDatabaseClientConfigLoader;
+import com.q3lives.ds.database.integration.QueryWrapper;
+import com.q3lives.ds.database.remote.DbEntityRelationsCodec;
+import com.q3lives.ds.database.startup.DsDbClientMetaPrecheck;
+import com.q3lives.ds.util.DsPathUtil;
 
 /**
  *
@@ -85,6 +92,12 @@ public class DsDatabaseServer implements AutoCloseable {
     
     private final AbstractP2PClient client;
     private final File localDbRoot;
+    private final int localServerId;
+    private final int localPartitionId;
+    private final DsNodeRouter router;
+    private final DsDatabaseLocal localDb;
+    private final ConcurrentHashMap<Integer,AbstractP2PClient> remoteClients;
+    private final boolean distributedMode;
     
     public DsDatabaseServer(AbstractP2PClient client) {
         this(client, null);
@@ -93,6 +106,72 @@ public class DsDatabaseServer implements AutoCloseable {
     public DsDatabaseServer(AbstractP2PClient client, File localDbRoot) {
         this.client = Objects.requireNonNull(client, "client cannot be null");
         this.localDbRoot = localDbRoot;
+        this.localServerId = 0;
+        this.localPartitionId = 0;
+        this.router = null;
+        this.localDb = null;
+        this.remoteClients = null;
+        this.distributedMode = false;
+    }
+
+    public DsDatabaseServer(int localServerId, int localPartitionId, DsServerDirectory directory, File localDbRoot) {
+        if (localServerId < 0 || localServerId > DsIdLayout.SERVER_ID_MASK) {
+            throw new IllegalArgumentException("localServerId out of range: " + localServerId);
+        }
+        if (localPartitionId < 0 || localPartitionId > DsIdLayout.PARTITION_MASK) {
+            throw new IllegalArgumentException("localPartitionId out of range: " + localPartitionId);
+        }
+        Objects.requireNonNull(directory, "directory cannot be null");
+        this.client = null;
+        this.localServerId = localServerId;
+        this.localPartitionId = localPartitionId;
+        this.router = new DsNodeRouter(directory);
+        this.localDbRoot = localDbRoot;
+        if (localDbRoot != null) {
+            this.localDb = new DsDatabaseLocal(localDbRoot, localServerId, localPartitionId);
+        } else {
+            this.localDb = null;
+        }
+        this.remoteClients = new ConcurrentHashMap<>();
+        this.distributedMode = true;
+    }
+
+    public DsDatabaseLocal localInstanceOrNull() {
+        return localDb;
+    }
+
+    public boolean isLocal(long rowId) {
+        if (!distributedMode) return false;
+        return DsIdLayout.serverId(rowId) == localServerId
+                && DsIdLayout.partitionId(rowId) == localPartitionId;
+    }
+
+    public int localServerId() {
+        return localServerId;
+    }
+
+    public int localPartitionId() {
+        return localPartitionId;
+    }
+
+    private AbstractP2PClient routeClient(int targetServerId) {
+        if (!distributedMode) {
+            return client;
+        }
+        if (targetServerId == localServerId && localDb != null) {
+            throw new IllegalStateException("local serverId requires localDb routing, not remote client");
+        }
+        return remoteClients.computeIfAbsent(targetServerId, sid -> {
+            DsServerDirectory.Endpoint ep = router.endpoint(sid);
+            if (ep == null) {
+                throw new IllegalArgumentException("no endpoint registered for serverId=" + sid);
+            }
+            return new P2PClientTcp(new InetSocketAddress(ep.host(), ep.port()));
+        });
+    }
+
+    public AbstractP2PClient legacyClientOrNull() {
+        return client;
     }
     
     public static DsDatabaseServer load() {
@@ -156,29 +235,41 @@ public class DsDatabaseServer implements AutoCloseable {
     
     public long putTable(DsTableAdapter value, boolean withRelations) throws IOException {
         Objects.requireNonNull(value, "value cannot be null");
-        ByteBuffer buf = value.toBytes();
-        byte[] bytes = new byte[buf.remaining()];
-        buf.get(bytes);
-
-        byte[] relations = withRelations ? DbEntityRelationsCodec.encode(value) : null;
-        DbEntityPutRequest payload = new DbEntityPutRequest(value.getClass().getName(), bytes, withRelations, relations);
-        try {
-            P2PWrapper resp = client.excute(P2PWrapper.build(P2PCommand.DB_ENTITY_PUT, payload));
-            if (resp.getCommand() == P2PCommand.STD_ERROR) {
-                throw P2PErrors.asRuntimeException(resp);
+        if (!distributedMode) {
+            ByteBuffer buf = value.toBytes();
+            byte[] bytes = new byte[buf.remaining()];
+            buf.get(bytes);
+            byte[] relations = withRelations ? DbEntityRelationsCodec.encode(value) : null;
+            DbEntityPutRequest payload = new DbEntityPutRequest(value.getClass().getName(), bytes, withRelations, relations);
+            try {
+                P2PWrapper resp = client.excute(P2PWrapper.build(P2PCommand.DB_ENTITY_PUT, payload));
+                if (resp.getCommand() == P2PCommand.STD_ERROR) {
+                    throw P2PErrors.asRuntimeException(resp);
+                }
+                if (resp.getCommand() != P2PCommand.R_OK_DB_ENTITY_PUT) {
+                    throw new IOException("unexpected response: " + resp.getCommand());
+                }
+                if (!(resp.getData() instanceof DbEntityPutResponse ok)) {
+                    throw new IOException("invalid response payload");
+                }
+                return ok.id;
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IOException(e);
             }
-            if (resp.getCommand() != P2PCommand.R_OK_DB_ENTITY_PUT) {
-                throw new IOException("unexpected response: " + resp.getCommand());
-            }
-            if (!(resp.getData() instanceof DbEntityPutResponse ok)) {
-                throw new IOException("invalid response payload");
-            }
-            return ok.id;
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IOException(e);
         }
+        // Q2=C2 约束：ORM rowId 纯本地自增（不嵌入 serverId/partitionId 三段布局）。
+        // 每个 DsDatabaseServer 分布式实例仅管理自己 localDb 下的本地 ORM 数据；
+        // 跨节点写入由上层显式选择对应 serverId/partitionId 组合的 DsDatabaseServer 实例。
+        if (localDb == null) {
+            throw new IllegalStateException("DB_ENTITY_* in distributed mode requires localDb (localDbRoot configured); cross-node ORM writes require target-server DsDatabaseServer instance");
+        }
+        long newId = localDb.putTable(value, withRelations);
+        if (value.getId() == null || value.getId() == 0L) {
+            value.setId(newId);
+        }
+        return newId;
     }
     
     public long putTableWithRelations(DsTableAdapter value) throws IOException {
@@ -190,29 +281,36 @@ public class DsDatabaseServer implements AutoCloseable {
     }
     
     public <T extends DsTableAdapter> T getTable(Class<T> clazz, long id, boolean withRelations) throws IOException {
-        try {
-            DbEntityGetRequest payload = new DbEntityGetRequest(clazz.getName(), id, withRelations);
-            P2PWrapper resp = client.excute(P2PWrapper.build(P2PCommand.DB_ENTITY_GET, payload));
-            if (resp.getCommand() == P2PCommand.STD_ERROR) {
-                throw P2PErrors.asRuntimeException(resp);
+        if (!distributedMode) {
+            try {
+                DbEntityGetRequest payload = new DbEntityGetRequest(clazz.getName(), id, withRelations);
+                P2PWrapper resp = client.excute(P2PWrapper.build(P2PCommand.DB_ENTITY_GET, payload));
+                if (resp.getCommand() == P2PCommand.STD_ERROR) {
+                    throw P2PErrors.asRuntimeException(resp);
+                }
+                if (resp.getCommand() != P2PCommand.R_OK_DB_ENTITY_GET) {
+                    throw new IOException("unexpected response: " + resp.getCommand());
+                }
+                if (!(resp.getData() instanceof DbEntityGetResponse ok) || ok.bytes == null) {
+                    throw new IOException("invalid response payload");
+                }
+                T obj = clazz.getDeclaredConstructor().newInstance();
+                obj.load(ByteBuffer.wrap(ok.bytes));
+                if (withRelations && ok.relations != null && ok.relations.length > 0) {
+                    DbEntityRelationsCodec.apply(obj, ok.relations);
+                }
+                return obj;
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IOException(e);
             }
-            if (resp.getCommand() != P2PCommand.R_OK_DB_ENTITY_GET) {
-                throw new IOException("unexpected response: " + resp.getCommand());
-            }
-            if (!(resp.getData() instanceof DbEntityGetResponse ok) || ok.bytes == null) {
-                throw new IOException("invalid response payload");
-            }
-            T obj = clazz.getDeclaredConstructor().newInstance();
-            obj.load(ByteBuffer.wrap(ok.bytes));
-            if (withRelations && ok.relations != null && ok.relations.length > 0) {
-                DbEntityRelationsCodec.apply(obj, ok.relations);
-            }
-            return obj;
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IOException(e);
         }
+        // Q2=C2 约束：ORM rowId 纯本地自增 → 分布式实例只读自己 localDb 的本地 rowId
+        if (localDb == null) {
+            throw new IllegalStateException("DB_ENTITY_* in distributed mode requires localDb (localDbRoot configured); cross-node ORM reads require target-server DsDatabaseServer instance");
+        }
+        return localDb.getTable(clazz, id, Long.MAX_VALUE);
     }
 
     public <T extends DsTableAdapter> T getTableWithRelations(Class<T> clazz, long id) throws IOException {
@@ -220,45 +318,59 @@ public class DsDatabaseServer implements AutoCloseable {
     }
 
     public <T extends DsTableAdapter> boolean exists(Class<T> clazz, long id) throws IOException {
-        try {
-            DbEntityExistsRequest payload = new DbEntityExistsRequest(clazz.getName(), id);
-            P2PWrapper resp = client.excute(P2PWrapper.build(P2PCommand.DB_ENTITY_EXISTS, payload));
-            if (resp.getCommand() == P2PCommand.STD_ERROR) {
-                throw P2PErrors.asRuntimeException(resp);
+        if (!distributedMode) {
+            try {
+                DbEntityExistsRequest payload = new DbEntityExistsRequest(clazz.getName(), id);
+                P2PWrapper resp = client.excute(P2PWrapper.build(P2PCommand.DB_ENTITY_EXISTS, payload));
+                if (resp.getCommand() == P2PCommand.STD_ERROR) {
+                    throw P2PErrors.asRuntimeException(resp);
+                }
+                if (resp.getCommand() != P2PCommand.R_OK_DB_ENTITY_EXISTS) {
+                    throw new IOException("unexpected response: " + resp.getCommand());
+                }
+                if (!(resp.getData() instanceof DbEntityExistsResponse ok)) {
+                    throw new IOException("invalid response payload");
+                }
+                return ok.exists;
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IOException(e);
             }
-            if (resp.getCommand() != P2PCommand.R_OK_DB_ENTITY_EXISTS) {
-                throw new IOException("unexpected response: " + resp.getCommand());
-            }
-            if (!(resp.getData() instanceof DbEntityExistsResponse ok)) {
-                throw new IOException("invalid response payload");
-            }
-            return ok.exists;
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IOException(e);
         }
+        // Q2=C2 约束：ORM rowId 纯本地自增 → 分布式实例只查自己 localDb
+        if (localDb == null) {
+            throw new IllegalStateException("DB_ENTITY_* in distributed mode requires localDb (localDbRoot configured); cross-node ORM exists checks require target-server DsDatabaseServer instance");
+        }
+        return localDb.getTable(clazz, id, Long.MAX_VALUE) != null;
     }
 
     public <T extends DsTableAdapter> boolean removeTable(Class<T> clazz, long id, boolean withRelations) throws IOException {
-        try {
-            DbEntityRemoveRequest payload = new DbEntityRemoveRequest(clazz.getName(), id, withRelations);
-            P2PWrapper resp = client.excute(P2PWrapper.build(P2PCommand.DB_ENTITY_REMOVE, payload));
-            if (resp.getCommand() == P2PCommand.STD_ERROR) {
-                throw P2PErrors.asRuntimeException(resp);
+        if (!distributedMode) {
+            try {
+                DbEntityRemoveRequest payload = new DbEntityRemoveRequest(clazz.getName(), id, withRelations);
+                P2PWrapper resp = client.excute(P2PWrapper.build(P2PCommand.DB_ENTITY_REMOVE, payload));
+                if (resp.getCommand() == P2PCommand.STD_ERROR) {
+                    throw P2PErrors.asRuntimeException(resp);
+                }
+                if (resp.getCommand() != P2PCommand.R_OK_DB_ENTITY_REMOVE) {
+                    throw new IOException("unexpected response: " + resp.getCommand());
+                }
+                if (!(resp.getData() instanceof DbEntityRemoveResponse ok)) {
+                    throw new IOException("invalid response payload");
+                }
+                return ok.removed;
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IOException(e);
             }
-            if (resp.getCommand() != P2PCommand.R_OK_DB_ENTITY_REMOVE) {
-                throw new IOException("unexpected response: " + resp.getCommand());
-            }
-            if (!(resp.getData() instanceof DbEntityRemoveResponse ok)) {
-                throw new IOException("invalid response payload");
-            }
-            return ok.removed;
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IOException(e);
         }
+        // Q2=C2 约束：ORM rowId 纯本地自增 → 分布式实例只删自己 localDb
+        if (localDb == null) {
+            throw new IllegalStateException("DB_ENTITY_* in distributed mode requires localDb (localDbRoot configured); cross-node ORM deletes require target-server DsDatabaseServer instance");
+        }
+        return localDb.removeTable(clazz, id, withRelations);
     }
 
     public <T extends DsTableAdapter> boolean removeTableWithRelations(Class<T> clazz, long id) throws IOException {
@@ -267,35 +379,41 @@ public class DsDatabaseServer implements AutoCloseable {
 
     public <T extends DsTableAdapter> List<Long> queryIds(Class<T> clazz, QueryWrapper<?> wrapper, int start, int end) throws IOException {
         Objects.requireNonNull(wrapper, "wrapper cannot be null");
-        try {
-            byte[] wrapperBytes = SerializationUtil.serialize(wrapper);
-            DbEntityQueryIdsRequest payload = new DbEntityQueryIdsRequest(clazz.getName(), wrapperBytes, start, end);
-            P2PWrapper resp = client.excute(P2PWrapper.build(P2PCommand.DB_ENTITY_QUERY_IDS, payload));
-            if (resp.getCommand() == P2PCommand.STD_ERROR) {
-                throw P2PErrors.asRuntimeException(resp);
-            }
-            if (resp.getCommand() != P2PCommand.R_OK_DB_ENTITY_QUERY_IDS) {
-                throw new IOException("unexpected response: " + resp.getCommand());
-            }
-            if (!(resp.getData() instanceof DbEntityQueryIdsResponse ok) || ok.idsBytes == null) {
-                throw new IOException("invalid response payload");
-            }
-            long[] ids = SerializationUtil.deserialize(long[].class, ok.idsBytes);
-            if (ids == null || ids.length == 0) {
-                return Collections.emptyList();
-            }
-            List<Long> out = new java.util.ArrayList<>(ids.length);
-            for (long v : ids) {
-                if (v > 0L) {
-                    out.add(v);
+        if (!distributedMode) {
+            try {
+                byte[] wrapperBytes = SerializationUtil.serialize(wrapper);
+                DbEntityQueryIdsRequest payload = new DbEntityQueryIdsRequest(clazz.getName(), wrapperBytes, start, end);
+                P2PWrapper resp = client.excute(P2PWrapper.build(P2PCommand.DB_ENTITY_QUERY_IDS, payload));
+                if (resp.getCommand() == P2PCommand.STD_ERROR) {
+                    throw P2PErrors.asRuntimeException(resp);
                 }
+                if (resp.getCommand() != P2PCommand.R_OK_DB_ENTITY_QUERY_IDS) {
+                    throw new IOException("unexpected response: " + resp.getCommand());
+                }
+                if (!(resp.getData() instanceof DbEntityQueryIdsResponse ok) || ok.idsBytes == null) {
+                    throw new IOException("invalid response payload");
+                }
+                long[] ids = SerializationUtil.deserialize(long[].class, ok.idsBytes);
+                if (ids == null || ids.length == 0) {
+                    return Collections.emptyList();
+                }
+                List<Long> out = new java.util.ArrayList<>(ids.length);
+                for (long v : ids) {
+                    if (v > 0L) {
+                        out.add(v);
+                    }
+                }
+                return out;
+            } catch (RuntimeException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IOException(e);
             }
-            return out;
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IOException(e);
         }
+        if (localDb == null) {
+            throw new UnsupportedOperationException("queryIds in distributed mode requires fan-out coordinator helper; for local-partition queries, use local GenericManager(Class, DsDatabaseLocal, serverId, partitionId) which routes to localDb candidate scanner directly");
+        }
+        throw new UnsupportedOperationException("queryIds localDb shortcut requires DsDatabaseLocal.queryIds public API — use GenericManager local constructor");
     }
 
     public <T extends DsTableAdapter> DbMetaGetResponse getMeta(Class<T> entityClass, boolean ensureFresh) throws IOException {
@@ -889,6 +1007,35 @@ public class DsDatabaseServer implements AutoCloseable {
     
     @Override
     public void close() {
-        client.close();
+        Exception ex = null;
+        if (!distributedMode) {
+            try {
+                if (client != null) client.close();
+            } catch (Exception e) {
+                ex = e;
+            }
+        } else {
+            if (remoteClients != null) {
+                for (AbstractP2PClient c : remoteClients.values()) {
+                    try {
+                        c.close();
+                    } catch (Exception e) {
+                        if (ex == null) ex = e;
+                    }
+                }
+                remoteClients.clear();
+            }
+            if (localDb != null) {
+                try {
+                    localDb.close();
+                } catch (Exception e) {
+                    if (ex == null) ex = e;
+                }
+            }
+        }
+        if (ex != null) {
+            if (ex instanceof RuntimeException re) throw re;
+            throw new RuntimeException("close failed", ex);
+        }
     }
 }
