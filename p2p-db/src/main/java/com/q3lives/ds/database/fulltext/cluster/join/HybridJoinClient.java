@@ -312,4 +312,96 @@ public final class HybridJoinClient<T extends DsTableAdapter> implements AutoClo
     public void close() {
         try { if (delegate != null) delegate.close(); } catch (Exception ignore) { }
     }
+
+    // ============== P32: 3 个守卫重载（append-only, 不删改原 3 入口） ==============
+
+    /**
+     * P32 Resilience 守卫重载：对应 {@link #searchHybridJoin}，外层包 4 层守卫链。
+     * 链顺序：RateLimiter → CircuitBreaker → Retry → Timeout → 原方法。
+     */
+    public List<HybridHit<T>> searchHybridJoinWithResilience(
+            QueryWrapper<T> orm,
+            List<JoinSpec<?>> joins,
+            String ftQ,
+            Map<Long, String> raw,
+            int K,
+            SearchOptions opt,
+            com.q3lives.ds.database.fulltext.cluster.resilience.ResilienceConfig cfg
+    ) throws IOException {
+        return applyGuards(() -> searchHybridJoin(orm, joins, ftQ, raw, K, opt), cfg);
+    }
+
+    /**
+     * P32 Resilience 守卫重载：对应 {@link #searchHybridJoinWithWeights}。
+     */
+    public List<HybridHit<T>> searchHybridJoinWithWeightsWithResilience(
+            QueryWrapper<T> orm,
+            List<JoinSpec<?>> joins,
+            String ftQ,
+            Map<Long, String> raw,
+            int K,
+            SearchOptions opt,
+            double alpha, double beta,
+            Map<String, Map.Entry<Double, ToDoubleFunction<T>>> colW,
+            com.q3lives.ds.database.fulltext.cluster.resilience.ResilienceConfig cfg
+    ) throws IOException {
+        return applyGuards(() -> searchHybridJoinWithWeights(orm, joins, ftQ, raw, K, opt, alpha, beta, colW), cfg);
+    }
+
+    /**
+     * P32 Resilience 守卫重载：对应 {@link #searchHybridJoinWithLtr}。
+     */
+    public List<HybridHit<T>> searchHybridJoinWithLtrWithResilience(
+            QueryWrapper<T> orm,
+            List<JoinSpec<?>> joins,
+            String ftQ,
+            Map<Long, String> raw,
+            int K,
+            SearchOptions opt,
+            java.util.List<ToDoubleFunction<T>> extractors,
+            double[] ltrModelWeights,
+            com.q3lives.ds.database.fulltext.cluster.resilience.ResilienceConfig cfg
+    ) throws IOException {
+        return applyGuards(() -> searchHybridJoinWithLtr(orm, joins, ftQ, raw, K, opt, extractors, ltrModelWeights), cfg);
+    }
+
+    /**
+     * 4 层守卫链统一编排。RateLimit/CircuitOpen 异常向上层直接抛（不计入 CB），
+     * Retry/Timeout 异常由 RetryGuard 包装。
+     */
+    private List<HybridHit<T>> applyGuards(
+            java.util.concurrent.Callable<List<HybridHit<T>>> body,
+            com.q3lives.ds.database.fulltext.cluster.resilience.ResilienceConfig cfg
+    ) throws IOException {
+        if (cfg == null) {
+            throw new IllegalArgumentException("ResilienceConfig cannot be null");
+        }
+        com.q3lives.ds.database.fulltext.cluster.resilience.RateLimiterGuard rl =
+                new com.q3lives.ds.database.fulltext.cluster.resilience.RateLimiterGuard(cfg.getQps(), cfg.getBurst());
+        com.q3lives.ds.database.fulltext.cluster.resilience.CircuitBreakerGuard cb =
+                new com.q3lives.ds.database.fulltext.cluster.resilience.CircuitBreakerGuard(
+                        cfg.getFailureRateThreshold(), cfg.getSlidingWindowSize(), cfg.getOpenDurationMs());
+        com.q3lives.ds.database.fulltext.cluster.resilience.RetryGuard rt =
+                new com.q3lives.ds.database.fulltext.cluster.resilience.RetryGuard(
+                        cfg.getMaxRetries(), cfg.getBaseDelayMs(),
+                        com.q3lives.ds.database.fulltext.cluster.resilience.RetryGuard.defaultRetryOn());
+        com.q3lives.ds.database.fulltext.cluster.resilience.TimeoutGuard tg =
+                new com.q3lives.ds.database.fulltext.cluster.resilience.TimeoutGuard(cfg.getTimeoutMs());
+        try {
+            return rl.wrap(() -> cb.wrap(() -> rt.wrap(() -> tg.wrap(() -> {
+                try { return body.call(); }
+                catch (IOException ioe) { throw ioe; }
+                catch (RuntimeException re) { throw re; }
+                catch (Exception e) { throw new RuntimeException(e); }
+            }))));
+        } catch (IOException ioe) {
+            throw ioe;
+        } catch (RuntimeException re) {
+            throw re;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        } finally {
+            tg.shutdown();
+        }
+    }
 }
