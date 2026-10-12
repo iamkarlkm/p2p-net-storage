@@ -266,6 +266,31 @@ public final class RedisStringCache {
     }
 
     /**
+     * 库存预减：缺键返回 -1，当前值不足 quantity 返回 -2，否则原子减去 quantity 并返回剩余。
+     *
+     * <p>在条带锁内完成 GET + 比较 + DECRBY，对齐 Redis Lua 防超卖语义。不足时不改写 value。</p>
+     */
+    public long decrByIfEnough(String key, long quantity) throws Exception {
+        Objects.requireNonNull(key, "key");
+        synchronized (getLock(key)) {
+            String current = get(key);
+            if (current == null) {
+                return -1;
+            }
+            long val;
+            try {
+                val = Long.parseLong(current);
+            } catch (NumberFormatException e) {
+                throw new IllegalStateException("ERR value is not an integer or out of range");
+            }
+            if (val < quantity) {
+                return -2;
+            }
+            return incrBy(key, -quantity);
+        }
+    }
+
+    /**
      * 批量获取多个 key（保持入参顺序）。
      */
     public java.util.Map<String, String> mget(String... keys) throws Exception {

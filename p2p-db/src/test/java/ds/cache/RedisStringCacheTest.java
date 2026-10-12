@@ -46,6 +46,24 @@ public class RedisStringCacheTest {
     }
 
     @Test
+    public void testDecrByIfEnough() throws Exception {
+        RedisStringCache cache = new RedisStringCache(TEST_DIR, 128);
+        String key = "test_stock";
+        assertEquals(-1, cache.decrByIfEnough(key, 1));
+
+        cache.set(key, "10");
+        assertEquals(9, cache.decrByIfEnough(key, 1));
+        assertEquals("9", cache.get(key));
+
+        assertEquals(-2, cache.decrByIfEnough(key, 10));
+        assertEquals("9", cache.get(key));
+
+        assertEquals(0, cache.decrByIfEnough(key, 9));
+        assertEquals("0", cache.get(key));
+        assertEquals(-2, cache.decrByIfEnough(key, 1));
+    }
+
+    @Test
     public void testMgetMset() throws Exception {
         RedisStringCache cache = new RedisStringCache(TEST_DIR, 128);
         java.util.Map<String, String> data = new java.util.LinkedHashMap<>();
