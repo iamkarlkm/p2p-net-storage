@@ -291,6 +291,22 @@ public final class RedisStringCache {
     }
 
     /**
+     * 库存回补：键不存在返回 false，否则原子加上 delta 并返回 true。
+     *
+     * <p>在条带锁内完成 EXISTS + INCRBY，对齐 Redis Lua 退票语义。缺键不创建。</p>
+     */
+    public boolean incrByIfExists(String key, long delta) throws Exception {
+        Objects.requireNonNull(key, "key");
+        synchronized (getLock(key)) {
+            if (get(key) == null) {
+                return false;
+            }
+            incrBy(key, delta);
+            return true;
+        }
+    }
+
+    /**
      * 批量获取多个 key（保持入参顺序）。
      */
     public java.util.Map<String, String> mget(String... keys) throws Exception {

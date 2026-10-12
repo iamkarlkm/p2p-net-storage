@@ -64,6 +64,18 @@ public class RedisStringCacheTest {
     }
 
     @Test
+    public void testIncrByIfExists() throws Exception {
+        RedisStringCache cache = new RedisStringCache(TEST_DIR, 128);
+        String key = "test_refund";
+        assertFalse(cache.incrByIfExists(key, 5));
+        assertNull(cache.get(key));
+
+        cache.set(key, "3");
+        assertTrue(cache.incrByIfExists(key, 5));
+        assertEquals("8", cache.get(key));
+    }
+
+    @Test
     public void testMgetMset() throws Exception {
         RedisStringCache cache = new RedisStringCache(TEST_DIR, 128);
         java.util.Map<String, String> data = new java.util.LinkedHashMap<>();
