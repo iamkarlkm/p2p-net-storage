@@ -3,6 +3,7 @@ package com.q3lives.ds.cache;
 import com.q3lives.ds.legacy.db.DbString;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Objects;
 
@@ -307,6 +308,92 @@ public final class RedisStringCache {
     }
 
     /**
+     * Redis SETBIT：设置 offset 位并返回该位原值。缺键创建且 TTL=0。
+     *
+     * <p>位序对齐 Redis：offset 0 为第一个字节的最高位。最大 offset 为 2^24-1（2MB）。</p>
+     */
+    public boolean setBit(String key, long offset, boolean value) throws Exception {
+        Objects.requireNonNull(key, "key");
+        checkBitOffset(offset);
+        synchronized (getLock(key)) {
+            String current = get(key);
+            byte[] bits = decodeBits(current);
+            boolean previous = readBit(bits, offset);
+            bits = ensureBitCapacity(bits, offset);
+            writeBit(bits, offset, value);
+            persistBits(key, bits, current);
+            return previous;
+        }
+    }
+
+    /**
+     * Redis GETBIT：缺键或越出当前长度返回 false。
+     */
+    public boolean getBit(String key, long offset) throws Exception {
+        Objects.requireNonNull(key, "key");
+        checkBitOffset(offset);
+        synchronized (getLock(key)) {
+            String current = get(key);
+            if (current == null) {
+                return false;
+            }
+            return readBit(decodeBits(current), offset);
+        }
+    }
+
+    /**
+     * 一次加锁设置多个位，避免逐位全量拷贝。
+     */
+    public void setBits(String key, long[] offsets, boolean value) throws Exception {
+        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(offsets, "offsets");
+        if (offsets.length == 0) {
+            return;
+        }
+        synchronized (getLock(key)) {
+            String current = get(key);
+            byte[] bits = decodeBits(current);
+            long max = 0;
+            for (long offset : offsets) {
+                checkBitOffset(offset);
+                if (offset > max) {
+                    max = offset;
+                }
+            }
+            bits = ensureBitCapacity(bits, max);
+            for (long offset : offsets) {
+                writeBit(bits, offset, value);
+            }
+            persistBits(key, bits, current);
+        }
+    }
+
+    /**
+     * 所有指定位均为 1 时返回 true；缺键或任一位为 0 返回 false。
+     */
+    public boolean bitsAllSet(String key, long[] offsets) throws Exception {
+        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(offsets, "offsets");
+        if (offsets.length == 0) {
+            return true;
+        }
+        synchronized (getLock(key)) {
+            String current = get(key);
+            if (current == null) {
+                return false;
+            }
+            byte[] bits = decodeBits(current);
+            for (long offset : offsets) {
+                checkBitOffset(offset);
+                if (!readBit(bits, offset)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    /**
      * 批量获取多个 key（保持入参顺序）。
      */
     public java.util.Map<String, String> mget(String... keys) throws Exception {
@@ -393,6 +480,63 @@ public final class RedisStringCache {
                 return false;
             }
             return expire(key, ttlMillis);
+        }
+    }
+
+
+    private static final long MAX_BIT_OFFSET = 16_777_215L;
+
+    private static void checkBitOffset(long offset) {
+        if (offset < 0 || offset > MAX_BIT_OFFSET) {
+            throw new IllegalArgumentException("ERR bit offset is not an integer or out of range");
+        }
+    }
+
+    private static byte[] decodeBits(String current) {
+        if (current == null || current.isEmpty()) {
+            return new byte[0];
+        }
+        return current.getBytes(StandardCharsets.ISO_8859_1);
+    }
+
+    private static byte[] ensureBitCapacity(byte[] bits, long offset) {
+        int byteIndex = (int) (offset >>> 3);
+        if (byteIndex < bits.length) {
+            return bits;
+        }
+        return Arrays.copyOf(bits, byteIndex + 1);
+    }
+
+    private static boolean readBit(byte[] bits, long offset) {
+        int byteIndex = (int) (offset >>> 3);
+        if (byteIndex >= bits.length) {
+            return false;
+        }
+        int mask = 1 << (7 - (int) (offset & 7));
+        return (bits[byteIndex] & mask) != 0;
+    }
+
+    private static void writeBit(byte[] bits, long offset, boolean value) {
+        int byteIndex = (int) (offset >>> 3);
+        int mask = 1 << (7 - (int) (offset & 7));
+        if (value) {
+            bits[byteIndex] |= mask;
+        } else {
+            bits[byteIndex] &= ~mask;
+        }
+    }
+
+    private void persistBits(String key, byte[] bits, String previousValue) throws Exception {
+        String value = new String(bits, StandardCharsets.ISO_8859_1);
+        if (previousValue == null) {
+            set(key, value, 0);
+            return;
+        }
+        long ttl = ttlMillis(key);
+        if (ttl < 0) {
+            set(key, value, 0);
+        } else {
+            set(key, value, ttl);
         }
     }
 
