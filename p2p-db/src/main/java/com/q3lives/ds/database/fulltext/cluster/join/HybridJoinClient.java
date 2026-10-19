@@ -365,6 +365,118 @@ public final class HybridJoinClient<T extends DsTableAdapter> implements AutoClo
         return applyGuards(() -> searchHybridJoinWithLtr(orm, joins, ftQ, raw, K, opt, extractors, ltrModelWeights), cfg);
     }
 
+    // ============== P36: 3 个分布式守卫重载（append-only, 不删改 P31/P32 原 6 入口） ==============
+
+    /** 本节点在分布式 CB 中的槽位（HJC 无集群身份，MVP 固定 0，由 broadcast 扇出到 replicas）。 */
+    private static final int LOCAL_SERVER_ID = 0;
+
+    /**
+     * P36 Distributed Resilience 守卫重载：对应 {@link #searchHybridJoinWithResilience}，
+     * 走 P32 4 层守卫链后再叠加分布式 CB + Adaptive 调参。
+     */
+    public List<HybridHit<T>> searchHybridJoinWithDistributedResilience(
+            QueryWrapper<T> orm,
+            List<JoinSpec<?>> joins,
+            String ftQ,
+            Map<Long, String> raw,
+            int K,
+            SearchOptions opt,
+            com.q3lives.ds.database.fulltext.cluster.resilience.distributed.DistributedResilienceConfig distCfg,
+            com.q3lives.ds.cluster.DsServerDirectory directory
+    ) throws IOException {
+        return applyDistributedGuards(
+                () -> searchHybridJoinWithResilience(orm, joins, ftQ, raw, K, opt, toBaseConfig(distCfg)),
+                distCfg, directory);
+    }
+
+    /**
+     * P36 Distributed Resilience 守卫重载：对应 {@link #searchHybridJoinWithWeightsWithResilience}。
+     */
+    public List<HybridHit<T>> searchHybridJoinWithWeightsWithDistributedResilience(
+            QueryWrapper<T> orm,
+            List<JoinSpec<?>> joins,
+            String ftQ,
+            Map<Long, String> raw,
+            int K,
+            SearchOptions opt,
+            double alpha, double beta,
+            Map<String, Map.Entry<Double, ToDoubleFunction<T>>> colW,
+            com.q3lives.ds.database.fulltext.cluster.resilience.distributed.DistributedResilienceConfig distCfg,
+            com.q3lives.ds.cluster.DsServerDirectory directory
+    ) throws IOException {
+        return applyDistributedGuards(
+                () -> searchHybridJoinWithWeightsWithResilience(
+                        orm, joins, ftQ, raw, K, opt, alpha, beta, colW, toBaseConfig(distCfg)),
+                distCfg, directory);
+    }
+
+    /**
+     * P36 Distributed Resilience 守卫重载：对应 {@link #searchHybridJoinWithLtrWithResilience}。
+     */
+    public List<HybridHit<T>> searchHybridJoinWithLtrWithDistributedResilience(
+            QueryWrapper<T> orm,
+            List<JoinSpec<?>> joins,
+            String ftQ,
+            Map<Long, String> raw,
+            int K,
+            SearchOptions opt,
+            List<ToDoubleFunction<T>> extractors,
+            double[] ltrModelWeights,
+            com.q3lives.ds.database.fulltext.cluster.resilience.distributed.DistributedResilienceConfig distCfg,
+            com.q3lives.ds.cluster.DsServerDirectory directory
+    ) throws IOException {
+        return applyDistributedGuards(
+                () -> searchHybridJoinWithLtrWithResilience(
+                        orm, joins, ftQ, raw, K, opt, extractors, ltrModelWeights, toBaseConfig(distCfg)),
+                distCfg, directory);
+    }
+
+    /** 把 P36 12 字段配置投影回 P32 8 字段基础配置（P32 守卫链使用）。 */
+    private static com.q3lives.ds.database.fulltext.cluster.resilience.ResilienceConfig toBaseConfig(
+            com.q3lives.ds.database.fulltext.cluster.resilience.distributed.DistributedResilienceConfig d
+    ) {
+        if (d == null) {
+            throw new IllegalArgumentException("DistributedResilienceConfig cannot be null");
+        }
+        return com.q3lives.ds.database.fulltext.cluster.resilience.ResilienceConfig.builder()
+                .timeoutMs(d.timeoutMs)
+                .maxRetries(d.maxRetries)
+                .baseDelayMs(d.baseDelayMs)
+                .failureRateThreshold(d.failureRateThreshold)
+                .slidingWindowSize(d.slidingWindowSize)
+                .openDurationMs(d.openDurationMs)
+                .qps(d.qps)
+                .burst(d.burst)
+                .build();
+    }
+
+    /**
+     * 分布式守卫层统一编排：委托 P32 {@link #applyGuards} 后，外层再包一层分布式 CB
+     * （{@code DistributedCircuitBreakerGuard.wrap}），状态变更时跨节点广播。
+     */
+    private List<HybridHit<T>> applyDistributedGuards(
+            java.util.concurrent.Callable<List<HybridHit<T>>> body,
+            com.q3lives.ds.database.fulltext.cluster.resilience.distributed.DistributedResilienceConfig distCfg,
+            com.q3lives.ds.cluster.DsServerDirectory directory
+    ) throws IOException {
+        if (distCfg == null) {
+            throw new IllegalArgumentException("DistributedResilienceConfig cannot be null");
+        }
+        if (directory == null) {
+            throw new IllegalArgumentException("DsServerDirectory cannot be null");
+        }
+        try {
+            return com.q3lives.ds.database.fulltext.cluster.resilience.distributed.DistributedCircuitBreakerGuard
+                    .wrap(LOCAL_SERVER_ID, body, distCfg, directory);
+        } catch (IOException ioe) {
+            throw ioe;
+        } catch (RuntimeException re) {
+            throw re;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     /**
      * 4 层守卫链统一编排。RateLimit/CircuitOpen 异常向上层直接抛（不计入 CB），
      * Retry/Timeout 异常由 RetryGuard 包装。
