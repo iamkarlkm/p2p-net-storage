@@ -1767,6 +1767,31 @@ public class FulltextStore implements AutoCloseable {
         out.addAll(raw);
         return out;
     }
+    /** P42 R4：枚举 termStat 全键集（uid 快照）。只读；P21 既有方法/内嵌类型 0 改（append-only 唯一例外）。 */
+    public Set<Long> weightStoreAllTermKeys() throws IOException {
+        Set<Long> out = new HashSet<>();
+        if (weightStore == null) return out;
+        Set<Long> raw = weightStore.termStatMap.keySet();
+        if (raw == null) return out;
+        out.addAll(raw);
+        return out;
+    }
+    /** P42 R4：导出 tf 键→值全映射（key = mix4(uid,docId,parentId,level)）。只读，bucket 值在包内解出。 */
+    public Map<Long, Integer> weightStoreAllTfEntries() throws IOException {
+        Map<Long, Integer> out = new HashMap<>();
+        if (weightStore == null) return out;
+        Set<Long> keys = weightStore.termFreqInDocMap.keySet();
+        if (keys == null) return out;
+        for (Long key : keys) {
+            if (key == null) continue;
+            Long bucket = weightStore.termFreqInDocMap.get(key);
+            if (bucket == null || bucket == 0L) continue;
+            byte[] data = weightStore.readBucketVal(bucket);
+            if (data == null || data.length < 8) continue;
+            out.put(key, ByteBuffer.wrap(data).getInt(4));
+        }
+        return out;
+    }
     /** FR-6 HC 探针 2：读 termStat（idf + payload），miss 返 null。 */
     public WeightTermStatRow getTermStatForTest(long uid) throws IOException { return weightStore.getTermStat(uid); }
     /** FR-6 HC 探针 3：读 tf（(uid,doc,p,lv) 下出现次数），miss 返 0。 */
