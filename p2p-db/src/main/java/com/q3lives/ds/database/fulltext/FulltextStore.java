@@ -30,6 +30,7 @@ import com.q3lives.ds.collections.DsHashMap;
 import com.q3lives.ds.core.DsFreeRing;
 import com.q3lives.ds.database.fulltext.TermDictStore.FarmHash64;
 import com.q3lives.ds.database.fulltext.TermDictStore.TuRow;
+import com.q3lives.ds.database.fulltext.layered.LayeredInvertedView;
 import com.q3lives.ds.database.index.DsEqIndexStore;
 
 public class FulltextStore implements AutoCloseable {
@@ -751,6 +752,11 @@ public class FulltextStore implements AutoCloseable {
     }
 
     private final WeightStore weightStore;
+    /**
+     * P43 R4：可选挂载的分层倒排只读视图（搜索读路径 stat 列视图优先读面）。null = 未挂载（默认态，与 P21~P42
+     * 字节级同行为）。
+     */
+    private volatile LayeredInvertedView layeredView;
     /** P25 T6：public accessor for WeightStore（只读暴露给测试反射；实际单测直接 st.weightStorePublic() return weightStore；为了不破坏 NG-3 仅测试调用，生产代码不依赖。）。 */
     public final WeightStore weightStorePublic() { return weightStore; }
 
@@ -1792,6 +1798,89 @@ public class FulltextStore implements AutoCloseable {
         }
         return out;
     }
+    // ============ P43 T1-T4 搜索读路径切换（Slice B）：分层倒排视图挂载 + stat 列视图优先（R4/R7/R8） ============
+    /**
+     * P43 R4：挂载分层倒排只读视图。挂载后，搜索读路径的 stat 列点查（idf / tf / docLen）**视图优先**， 视图
+     * miss（{@code hasTerm}/{@code hasDoc} 为 false）自动**回退
+     * WeightStore**，因此对同源快照视图 输出与未挂载时 bit 级全等（R7）。
+     *
+     * <p>
+     * 纯状态位（O(1)）：不触发导出 / 重建 / 任何扫描（R10）；非线程安全（单写者语义）。
+     *
+     * @param view 分层倒排只读视图，非 null
+     * @throws IllegalArgumentException view 为 null，或已挂载（须先
+     * {@link #detachLayeredView()}
+     */
+    public void attachLayeredView(LayeredInvertedView view) {
+        if (view == null) {
+            throw new IllegalArgumentException("layered view null");
+        }
+        if (this.layeredView != null) {
+            throw new IllegalArgumentException("layered view already attached");
+        }
+        this.layeredView = view;
+    }
+
+    /**
+     * P43 R4：卸载视图（幂等；未挂载时 0 副作用）→ 读路径 100% 回退 WeightStore（默认态）。
+     */
+    public void detachLayeredView() {
+        this.layeredView = null;
+    }
+
+    /**
+     * P43 R4：是否已挂载视图（只读状态位）。
+     */
+    public boolean hasLayeredView() {
+        return this.layeredView != null;
+    }
+
+    /**
+     * P43 R8：docLen 视图优先（视图覆盖该 doc → 段 docStat.docLen[level]），否则回退
+     * WeightStore（miss → 0）。
+     */
+    private int viewDocLen(long docId, int level) throws IOException {
+        LayeredInvertedView v = this.layeredView;
+        if (v != null && v.hasDoc(docId)) {
+            return v.docLen(docId, level);
+        }
+        WeightDocStatRow ds = weightStore.getDocStat(docId);
+        return (ds == null) ? 0 : ds.docLen[level];
+    }
+
+    /**
+     * P43 R8：idf 视图优先（视图覆盖该 term → 段 termStat.idf），否则回退 WeightStore（miss →
+     * 0.0）。
+     */
+    private double viewIdf(long uid) throws IOException {
+        LayeredInvertedView v = this.layeredView;
+        if (v != null && v.hasTerm(uid)) {
+            return v.idf(uid);
+        }
+        WeightTermStatRow ts = weightStore.getTermStat(uid);
+        return (ts == null) ? 0.0 : ts.idf;
+    }
+
+    /**
+     * P43 R8：tf 视图优先（视图覆盖该 doc → 段 tf 键 mix4 点查），否则回退 WeightStore（miss → 0）。
+     */
+    private int viewTf(long uid, long docId, long parentId, int level) throws IOException {
+        LayeredInvertedView v = this.layeredView;
+        if (v != null && v.hasDoc(docId)) {
+            return v.tf(uid, docId, parentId, level);
+        }
+        return weightStore.getTf(uid, docId, parentId, level);
+    }
+
+    /**
+     * P43 R8：视图是否覆盖该 term（Step0 idf 缺失判定用；无视图 → false）。
+     */
+    private boolean viewHasTerm(long uid) {
+        LayeredInvertedView v = this.layeredView;
+        return v != null && v.hasTerm(uid);
+    }
+    // ============ P43 增量区结束 ============
+
     /** FR-6 HC 探针 2：读 termStat（idf + payload），miss 返 null。 */
     public WeightTermStatRow getTermStatForTest(long uid) throws IOException { return weightStore.getTermStat(uid); }
     /** FR-6 HC 探针 3：读 tf（(uid,doc,p,lv) 下出现次数），miss 返 0。 */
@@ -2102,7 +2191,10 @@ public class FulltextStore implements AutoCloseable {
         // FR-3 Step0：确保 qUids 有 termStat（idf）；没有就显式 recompute（I/O 线性 ≤10k doc 可接受）
         {
             List<Long> missing = new ArrayList<>();
-            for (long u : qUidsOrder) { if (weightStore.getTermStat(u) == null) missing.add(u); }
+            for (long u : qUidsOrder) {
+                // P43 R7/R8：视图覆盖的 term 视为已有 idf，跳过 recompute（挂载态零重建）。
+                if (!viewHasTerm(u) && weightStore.getTermStat(u) == null) missing.add(u);
+            }
             if (!missing.isEmpty()) recomputeIdfForTerms(missing);
         }
         double avgdl = computeAvgDocLen(LV_DEFAULT);
@@ -2112,8 +2204,8 @@ public class FulltextStore implements AutoCloseable {
             Double override = (options.idfOverrideByUnitId == null) ? null : options.idfOverrideByUnitId.get(u);
             if (override != null) idfMap.put(u, override);
             else {
-                WeightTermStatRow ts = weightStore.getTermStat(u);
-                idfMap.put(u, (ts == null) ? 0.0 : ts.idf);
+                // P43 R7/R8：idf 视图优先（挂载态读段 termStat；未挂载/miss 回退 WeightStore）。
+                idfMap.put(u, viewIdf(u));
             }
         }
         // ================= Step2a: R1 byTerm 召回 doc（IDX2，真实 query term 命中） =================
@@ -2139,7 +2231,8 @@ public class FulltextStore implements AutoCloseable {
                 long cacheKey = FarmHash64.mix4(qUid, docId, 0xDEADL, 0xBEEFL);
                 if (!tfCache.containsKey(cacheKey)) {
                     long pId = docParent.get(docId);
-                    int tf = weightStore.getTf(qUid, docId, pId, LV_DEFAULT);
+                    // P43 R7/R8：tf 视图优先（挂载态读段 tf 键 mix4 点查；未挂载/miss 回退 WeightStore）。
+                    int tf = viewTf(qUid, docId, pId, LV_DEFAULT);
                     if (tf <= 0) tf = 1; // fallback：row 存在但 weightStore 无 tf → 至少 1
                     tfCache.put(cacheKey, tf);
                 }
@@ -2169,15 +2262,16 @@ public class FulltextStore implements AutoCloseable {
         java.util.Map<Long,Double> sortScores = new HashMap<>(candDocSet.size());
         for (long docId : candDocSet) {
             long pId = docParent.getOrDefault(docId, docId * 10L + LV_DEFAULT);
-            WeightDocStatRow ds = weightStore.getDocStat(docId);
-            double docLen = (ds == null) ? 0.0 : (double) ds.docLen[LV_DEFAULT];
+            // P43 R7/R8：docLen 视图优先（挂载态读段 docStat；未挂载/miss 回退 WeightStore）。
+            double docLen = (double) viewDocLen(docId, LV_DEFAULT);
             double sum = 0.0;
             for (long qUid : qUidsOrder) {
                 long cacheKey = FarmHash64.mix4(qUid, docId, 0xDEADL, 0xBEEFL);
                 int tfVal;
                 if (tfCache.containsKey(cacheKey)) tfVal = tfCache.get(cacheKey);
                 else {
-                    tfVal = weightStore.getTf(qUid, docId, pId, LV_DEFAULT);
+                    // P43 R7/R8：tf 视图优先（挂载态读段 tf 键 mix4 点查；未挂载/miss 回退 WeightStore）。
+                    tfVal = viewTf(qUid, docId, pId, LV_DEFAULT);
                     if (tfVal <= 0 && selectByUnitHit(qUid, docId, LV_DEFAULT)) tfVal = 1;
                     tfCache.put(cacheKey, tfVal);
                 }
@@ -2245,7 +2339,10 @@ public class FulltextStore implements AutoCloseable {
             long docId = candList.get(i);
             long pId = docParent.getOrDefault(docId, docId * 10L + LV_DEFAULT);
             long unitIdHit = 0L;
-            for (long u : qUidsOrder) { if (weightStore.getTf(u, docId, pId, LV_DEFAULT) > 0) { unitIdHit = u; break; } }
+            for (long u : qUidsOrder) {
+                // P43 R7/R8：unitIdHit 的 tf 视图优先（与 sortScore 同口径，未挂载/miss 回退 WeightStore）。
+                if (viewTf(u, docId, pId, LV_DEFAULT) > 0) { unitIdHit = u; break; }
+            }
             if (unitIdHit == 0L) for (long u : qUidsOrder) { if (selectByUnitHit(u, docId, LV_DEFAULT)) { unitIdHit = u; break; } }
             out.add(new ScoredDocHit(docId, pId, LV_DEFAULT, 0, unitIdHit,
                     finalScores.getOrDefault(docId, 0.0),
