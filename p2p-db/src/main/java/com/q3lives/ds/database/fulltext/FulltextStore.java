@@ -757,6 +757,12 @@ public class FulltextStore implements AutoCloseable {
      * 字节级同行为）。
      */
     private volatile LayeredInvertedView layeredView;
+    /**
+     * P44 R4/R8：stat 驱逐态（{@code docStatMap}/{@code termFreqInDocMap}/{@code termStatMap}
+     * 映射已卸载）。true 时搜索读路径的 stat 点查 100% 走视图（miss → 0/0.0/0，不触 WeightStore）；
+     * 任意写路径或 {@link #detachLayeredView()} 自动复位为 false。
+     */
+    private volatile boolean statsEvicted;
     /** P25 T6：public accessor for WeightStore（只读暴露给测试反射；实际单测直接 st.weightStorePublic() return weightStore；为了不破坏 NG-3 仅测试调用，生产代码不依赖。）。 */
     public final WeightStore weightStorePublic() { return weightStore; }
 
@@ -1517,6 +1523,7 @@ public class FulltextStore implements AutoCloseable {
      * putDoc 覆盖写前必须调用 clearDoc，以保证旧内容 pair 全部移除，查询不会返回陈旧邻居。
      */
     public void clearDoc(long docId) throws IOException {
+        markStatsDirty();
         if (docId <= 0L) throw new IllegalArgumentException("docId<=0");
         // Step1: collect all rows grouped by (parent, level)
         List<TuRow> allRows = new ArrayList<>();
@@ -1826,6 +1833,10 @@ public class FulltextStore implements AutoCloseable {
      */
     public void detachLayeredView() {
         this.layeredView = null;
+        // P44 §4.1：卸载后回退源必须可用 → 驱逐态自动复位
+        if (this.statsEvicted) {
+            rehydrateLayeredStats();
+        }
     }
 
     /**
@@ -1844,6 +1855,9 @@ public class FulltextStore implements AutoCloseable {
         if (v != null && v.hasDoc(docId)) {
             return v.docLen(docId, level);
         }
+        if (this.statsEvicted) {
+            return 0;
+        }
         WeightDocStatRow ds = weightStore.getDocStat(docId);
         return (ds == null) ? 0 : ds.docLen[level];
     }
@@ -1857,6 +1871,9 @@ public class FulltextStore implements AutoCloseable {
         if (v != null && v.hasTerm(uid)) {
             return v.idf(uid);
         }
+        if (this.statsEvicted) {
+            return 0.0;
+        }
         WeightTermStatRow ts = weightStore.getTermStat(uid);
         return (ts == null) ? 0.0 : ts.idf;
     }
@@ -1869,6 +1886,9 @@ public class FulltextStore implements AutoCloseable {
         if (v != null && v.hasDoc(docId)) {
             return v.tf(uid, docId, parentId, level);
         }
+        if (this.statsEvicted) {
+            return 0;
+        }
         return weightStore.getTf(uid, docId, parentId, level);
     }
 
@@ -1880,6 +1900,82 @@ public class FulltextStore implements AutoCloseable {
         return v != null && v.hasTerm(uid);
     }
     // ============ P43 增量区结束 ============
+
+    // ============ P44 T1-T6 WeightStore stat 驱逐（Slice C：视图全命中时卸载 3 张 stat 表映射） ============
+    /**
+     * P44 R4/R10：驱逐 {@code WeightStore} 的 3 张 stat 表（{@code docStatMap} / {@code termFreqInDocMap} /
+     * {@code termStatMap}）的已映射 buffer，释放其内存占用，兑现「视图替代内存索引」的收益。
+     *
+     * <p>
+     * 前置：已挂载 P43 {@link LayeredInvertedView} 且该视图为同源完整快照；不满足时驱逐后 stat 读会退化为
+     * 0/0.0/0（视图 miss），故未挂载视图时直接拒绝。
+     *
+     * <p>
+     * 驱逐只做 sync 后卸载映射（{@code DsObject.unloadAllMappedBuffers()}）：数据仍在磁盘、0 数据丢失，
+     * 缺失页按需惰性重映射（R10）；期间搜索读路径的 stat 点查 100% 走视图，不触 WeightStore。
+     * 任意写路径或 {@link #detachLayeredView()} 会自动复位驱逐态。
+     *
+     * @throws IllegalArgumentException 未挂载视图（无回退源，驱逐不安全）
+     */
+    public void evictLayeredStats() {
+        if (this.layeredView == null) {
+            throw new IllegalArgumentException("evict requires layered view");
+        }
+        if (this.statsEvicted) {
+            return;
+        }
+        evictWeightStats();
+        this.statsEvicted = true;
+    }
+
+    /**
+     * P44 R4：是否处于 stat 驱逐态（只读状态位；驱逐态下读路径 stat 点查 100% 走视图）。
+     *
+     * @return true = 3 张 stat 表映射已卸载
+     */
+    public boolean isLayeredStatsEvicted() {
+        return this.statsEvicted;
+    }
+
+    /**
+     * P44 R4：退出驱逐态（幂等；未驱逐时 0 副作用）。
+     *
+     * <p>
+     * 驱逐只卸载 mmap 窗口，故「重建」即恢复「视图优先 → WeightStore 回退」语义；缺失页由
+     * {@code DsObject} 在下次访问时惰性重映射（R10，0 数据丢失）。
+     */
+    public void rehydrateLayeredStats() {
+        this.statsEvicted = false;
+    }
+
+    /**
+     * P44 度量探针：3 张 stat 表当前已映射字节合计（驱逐前后对比内存收益；本方法不触发任何映射）。
+     *
+     * @return 三表 {@code getMappedBytes()} 之和（字节）
+     */
+    public long weightStatsMappedBytesForTest() {
+        return weightStore.docStatMap.getMappedBytes()
+                + weightStore.termFreqInDocMap.getMappedBytes()
+                + weightStore.termStatMap.getMappedBytes();
+    }
+
+    /**
+     * P44 R10：卸载 3 张 stat 表的已映射 buffer（先 sync 后释放；数据留盘，可惰性重建）。
+     */
+    private void evictWeightStats() {
+        weightStore.docStatMap.unloadAllMappedBuffers();
+        weightStore.termFreqInDocMap.unloadAllMappedBuffers();
+        weightStore.termStatMap.unloadAllMappedBuffers();
+    }
+
+    /**
+     * P44 §4.1：写路径失效钩子 —— 任意 stat 表写入后驱逐态立即失效，读路径恢复「视图优先 → WeightStore
+     * 回退」，保证既有 DML 语义 0 破坏（正确性优先）。
+     */
+    private void markStatsDirty() {
+        this.statsEvicted = false;
+    }
+    // ============ P44 增量区结束 ============
 
     /** FR-6 HC 探针 2：读 termStat（idf + payload），miss 返 null。 */
     public WeightTermStatRow getTermStatForTest(long uid) throws IOException { return weightStore.getTermStat(uid); }
@@ -2049,10 +2145,18 @@ public class FulltextStore implements AutoCloseable {
     /** 扫描平均文档长度（docLen 平均）：用于 BM25 avgdl（仅 WORD 层；没有文档 → 8.0 fallback）。 */
     double computeAvgDocLen(int level) throws IOException {
         long N = 0L, sumLen = 0L;
+        // P44 R9 例外 1：驱逐态下 WeightStore 映射已卸载，改从视图按 hasDoc 探测累计 docLen；
+        // 未驱逐时保持原口径 0 改（避免 P43 视图回退语义被打乱）。
+        LayeredInvertedView v = this.statsEvicted ? this.layeredView : null;
         for (long dkey = 1; ; dkey++) {
-            WeightDocStatRow s = weightStore.getDocStat(dkey);
-            if (s == null) { if (N > 0 && dkey > N * 2 + 100) break; }
-            else { N++; sumLen += s.docLen[level]; }
+            if (v != null) {
+                if (v.hasDoc(dkey)) { N++; sumLen += v.docLen(dkey, level); }
+                else { if (N > 0 && dkey > N * 2 + 100) break; }
+            } else {
+                WeightDocStatRow s = weightStore.getDocStat(dkey);
+                if (s == null) { if (N > 0 && dkey > N * 2 + 100) break; }
+                else { N++; sumLen += s.docLen[level]; }
+            }
             if (dkey > 1_000_000L) break;
         }
         if (N <= 0L) return 8.0;
@@ -2062,6 +2166,7 @@ public class FulltextStore implements AutoCloseable {
     /** FR-2 ingestDoc 第 5 步：写入 weight（tf + docLen + nTerms）。幂等（覆盖写旧值）。
      *  T1 入口：buildDistForSeq / ingestDoc 各 (doc,p,lv) 完成后调用。 */
     void updateWeightForLevel(long docId, long parentId, int level, List<Long> uidSeq) throws IOException {
+        markStatsDirty();
         if (level < 0 || level > 5) return;
         if (uidSeq == null) uidSeq = Collections.emptyList();
         // 1. tf count
@@ -2079,12 +2184,14 @@ public class FulltextStore implements AutoCloseable {
     }
     /** T4 Step6 weightCleanup：按 (uid,doc,p,lv) 删除 tf + 删除 doc_stat（不删 term_stat，避免全局写放大）。 */
     void weightCleanupForDoc(long docId, List<TuRow> allRows) throws IOException {
+        markStatsDirty();
         if (allRows == null) allRows = Collections.emptyList();
         for (TuRow r : allRows) weightStore.removeTf(r.unit_id(), r.docId, r.parentId, r.level);
         weightStore.removeDocStat(docId);
     }
     /** （可选）显式批量 rebuild IDF：从传入 uids 的 IDX2 关联 doc 估算总 N，对每个 uid 写 idf。 */
     public void recomputeIdfForTerms(List<Long> uids) throws IOException {
+        markStatsDirty();
         if (uids == null || uids.isEmpty()) return;
         // Step1: 收集所有 uids 关联的 unique docId 集合（估算 docCount N，避免 1..1M 线性扫导致磁盘 I/O 爆）
         Set<Long> allDocIds = new HashSet<>();
