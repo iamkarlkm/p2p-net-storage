@@ -13,8 +13,9 @@ import com.q3lives.ds.database.integration.QueryWrapper;
  * GenericManagerRowSource ORM 行源实装（P39 OQ1 DSL v3 聚合执行/合并引擎）。
  *
  * <p>
- * 把一条 minterm（AND 条件列表）翻译成 {@link QueryWrapper}，交由 {@link GenericManager#findList}
- * 取值（本地 / 分布式同一签名，0 改 GenericManager）。执行的 minterm 语义与 DNF 一致：节点间 AND。
+ * 把一条 minterm（AND 条件列表）翻译成 {@link QueryWrapper}，交由
+ * {@link GenericManager#findList} 取值（本地 / 分布式同一签名，0 改 GenericManager）。执行的
+ * minterm 语义与 DNF 一致：节点间 AND。
  *
  * <p>
  * 节点映射：
@@ -23,8 +24,8 @@ import com.q3lives.ds.database.integration.QueryWrapper;
  * KW_BETWEEN→between / KW_IN→in}；其余 op（如 {@code KW_IS} / {@code KW_LIKE}）→
  * {@link UnsupportedOperationException}</li>
  * <li>{@code Kind.IS_NULL → isNull} / {@code Kind.IS_NOT_NULL → isNotNull}</li>
- * <li>{@code Kind.FT} → {@link UnsupportedOperationException}（MVP 边界：FT 条件行源由业务方实现
- * {@link AggRowSource}）</li>
+ * <li>{@code Kind.FT} → {@link UnsupportedOperationException}（MVP 边界：FT
+ * 条件行源由业务方实现 {@link AggRowSource}）</li>
  * </ul>
  *
  * @param <T> ORM 实体类型
@@ -58,10 +59,12 @@ public final class GenericManagerRowSource<T extends DsTableAdapter> implements 
      *
      * @param minterm 条件列表（非 null 非空，无 null 节点）
      * @return 等价的 QueryWrapper
-     * @throws IllegalArgumentException {@code minterm == null / isEmpty / 含 null 节点}
-     * @throws UnsupportedOperationException 含 FT 节点，或 ormOp 为 KW_IS / KW_LIKE 等未映射 op
+     * @throws IllegalArgumentException
+     * {@code minterm == null / isEmpty / 含 null 节点}
+     * @throws UnsupportedOperationException 含 FT 节点，或 ormOp 为 KW_IS / KW_LIKE
+     * 等未映射 op
      */
-    static <T extends DsTableAdapter> QueryWrapper<T> toWrapper(List<ConditionNode> minterm) {
+    public static <T extends DsTableAdapter> QueryWrapper<T> toWrapper(List<ConditionNode> minterm) {
         if (minterm == null) {
             throw new IllegalArgumentException("minterm cannot be null");
         }
@@ -77,7 +80,7 @@ public final class GenericManagerRowSource<T extends DsTableAdapter> implements 
             if (n.kind == ConditionNode.Kind.FT) {
                 throw new UnsupportedOperationException(
                         "MVP 边界：GenericManagerRowSource 不支持 FT 条件（请自行实现 AggRowSource）: FT("
-                                + n.ftQuery + ")");
+                        + n.ftQuery + ")");
             }
             if (n.kind == ConditionNode.Kind.IS_NULL) {
                 w.isNull(n.ormCol);
