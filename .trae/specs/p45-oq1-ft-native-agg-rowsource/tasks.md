@@ -91,7 +91,7 @@ mvn -o -pl p2p-db surefire:test "-Dtest=ds.P31_*,ds.P32_*,ds.P33_*,ds.P34_*,ds.P
 
 - [x] `git add` `FulltextAggRowSource.java`（新）+ 测试 6 文件 + `GenericManagerRowSource.java`（Q1=A 1 词可见性）+ spec.md + tasks.md（→ commit `e76d062`，10 files / 2409 insertions / 8 deletions）
 - [x] `git commit`（P45 T1-T6 + Gate C 5/5 closure）→ `e76d062`
-- [ ] `git push origin main`（含本条 Roadmap `OQ12-㉔` 挂出增量 commit）
+- [x] `git push origin main`（含本条 Roadmap `OQ12-㉔` 挂出增量 commit `7a76960`）
 
 ---
 
