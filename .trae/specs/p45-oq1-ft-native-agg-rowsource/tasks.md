@@ -81,7 +81,7 @@ mvn -o -pl p2p-db surefire:test "-Dtest=ds.P31_*,ds.P32_*,ds.P33_*,ds.P34_*,ds.P
 - [x] ⓪ 9Y 自检 9 项全 `[x]`（spec.md 顶部清单，逐项附实锤测试名）—— `P45_T5` 9/9 0F0E
 - [x] ① spec.md 回填 Gate C 9Y + §10 实装偏差表 + 签批区
 - [x] ② tasks.md 回填 Gate 三状态 + 实跑 TR 数字
-- [ ] ③ Roadmap `docs/dsdb-design-status-and-roadmap.md`：`OQ12-㉓` 候选项 ① 划除 + 挂出 `OQ12-㉔`（列存/服务端聚合下推）
+- [x] ③ Roadmap `docs/dsdb-design-status-and-roadmap.md`：`OQ12-㉓` 候选项 ① 划除（引用 `e76d062`）+ 挂出独立 `⏳ OQ12-㉔`（列存/服务端聚合下推 为 ①，②compaction 后台调度器 / ③跨段词网聚合 顺延）
 - [x] ④ Project Memory 追加 P45 交付摘要 + 教训
 - [x] ⑤ 红线审计（新包 `rowsource/` + 1 类 + 6 测试文件）—— 实锤：rowsource=1 主类 + P45 主文件 `FulltextAggRowSource.java` + 6 测试类；GenericManagerRowSource 仅 `toWrapper` 可见性 1 词
 
@@ -89,9 +89,9 @@ mvn -o -pl p2p-db surefire:test "-Dtest=ds.P31_*,ds.P32_*,ds.P33_*,ds.P34_*,ds.P
 
 ## Stage 5: 交付（commit + push）
 
-- [ ] `git add` `FulltextAggRowSource.java`（新）+ 测试 6 文件 + `GenericManagerRowSource.java`（Q1=A 1 词可见性）+ spec.md + tasks.md + Roadmap + Memory
-- [ ] `git commit`（P45 T1-T6 + Gate C 5/5 closure）
-- [ ] `git push origin main`
+- [x] `git add` `FulltextAggRowSource.java`（新）+ 测试 6 文件 + `GenericManagerRowSource.java`（Q1=A 1 词可见性）+ spec.md + tasks.md（→ commit `e76d062`，10 files / 2409 insertions / 8 deletions）
+- [x] `git commit`（P45 T1-T6 + Gate C 5/5 closure）→ `e76d062`
+- [ ] `git push origin main`（含本条 Roadmap `OQ12-㉔` 挂出增量 commit）
 
 ---
 
