@@ -1,4 +1,4 @@
-# P48 OQ12-㉖③ Compaction 调度与写路径自动挂钩（写路径装饰器 / 阈值触发 / 0 新线程）—— tasks.md（**REV1 Gate A 已批准 2026-10-30；Gate B/C 已闭环，待 Stage 5 交付**）
+# P48 OQ12-㉖③ Compaction 调度与写路径自动挂钩（写路径装饰器 / 阈值触发 / 0 新线程）—— tasks.md（**REV1 Gate A 已批准 2026-10-30；Gate B/C 已闭环；Stage 5 已交付 `b57f7aa`**）
 
 ## Gate 三状态
 - [x] **Gate A**（Spec+Tasks 签批）→ ✅ 用户已批准 2026-10-30（OQ12-㉖③ + **§0 Q0=③ / Q1=A / Q2=`autocompact/`**）
@@ -48,7 +48,7 @@
 
 ---
 
-## Stage 3: Gate B（拆 4 批全量回归，待执行）
+## Stage 3: Gate B（拆 4 批全量回归）✅ 已闭环
 
 ### 3.1 命令（每批前清理 `target\tmp` + 仓库根 `.tmp` + C 盘残留；改源码/测试后先 `test-compile`）
 
@@ -95,11 +95,12 @@ mvn -o -pl p2p-db surefire:test "-Dtest=ds.P31_*,ds.P32_*,ds.P33_*,ds.P34_*,ds.P
 
 ---
 
-## Stage 5: 交付（commit + push，待完成）
+## Stage 5: 交付（commit + push）✅ 已完成
 
-- [ ] `git add` P48 源码 3 类 + 测试 6 文件 + spec.md + tasks.md + Roadmap + Memory
-- [ ] `git commit`（P48 T1-T6 + Gate C 5/5 closure）
-- [ ] `git push origin main`
+- [x] `git add` P48 源码 3 类 + 测试 6 文件 + spec.md + tasks.md + Roadmap（**仅 P48 相关路径，未用 `git add -A`**）
+- [x] `git commit -F`（commit `b57f7aa`：P48 T1-T6 + Gate C 5/5 closure，12 files / 1840 insertions）
+- [x] `git push origin main`（`d430812..b57f7aa  main -> main`）
+- [x] Project Memory 追加 P48 交付摘要 + 教训（仓库外路径，不入 git）
 
 ---
 
