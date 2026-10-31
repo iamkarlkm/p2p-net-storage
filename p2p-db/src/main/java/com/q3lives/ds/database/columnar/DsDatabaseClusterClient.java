@@ -7,6 +7,7 @@ import com.q3lives.ds.cluster.DsServerDirectory;
 import com.q3lives.ds.collections.DsHashMap;
 import com.q3lives.ds.collections.DsHashMapIdAllocator;
 import com.q3lives.ds.collections.DsHashSet;
+import com.q3lives.ds.database.columnar.pushdown.DbQueryToQueryWrapper;
 import com.q3lives.ds.database.schema.DynamicIndexUtil;
 import java.io.File;
 import java.io.IOException;
@@ -38,9 +39,10 @@ import javax.net.p2p.utils.SerializationUtil;
 /**
  * 分布式数据库集群客户端。
  *
- * <p>持有本地节点信息、分区管理器与 rowId 分配器。对本地 rowId 直接调用
- * {@link ColumnarStore}；对远程 rowId 通过 {@link DsNodeRouter} 解析 endpoint，
- * 复用 {@link P2PClientTcp} 发送 DB_NODE_* 命令。</p>
+ * <p>
+ * 持有本地节点信息、分区管理器与 rowId 分配器。对本地 rowId 直接调用 {@link ColumnarStore}；对远程 rowId 通过
+ * {@link DsNodeRouter} 解析 endpoint， 复用 {@link P2PClientTcp} 发送 DB_NODE_*
+ * 命令。</p>
  */
 public class DsDatabaseClusterClient implements AutoCloseable {
 
@@ -154,7 +156,7 @@ public class DsDatabaseClusterClient implements AutoCloseable {
      * 将主节点写入同步 fan-out 到该 rowId 对应 serverId 的所有副本节点。
      */
     private void replicateToReplicas(String entityClassName, long rowId, String logicalName,
-                                     byte[] valueBytes, boolean upsertRow, boolean remove) throws IOException {
+            byte[] valueBytes, boolean upsertRow, boolean remove) throws IOException {
         int primaryServerId = DsIdLayout.serverId(rowId);
         int[] replicas = nodeRouter.getDirectory().replicas(primaryServerId);
         if (replicas == null || replicas.length == 0) {
@@ -193,10 +195,10 @@ public class DsDatabaseClusterClient implements AutoCloseable {
     /**
      * 全集群查询：遍历所有 serverId 与本地分区，聚合后排序并分页返回 rowId 列表。
      *
-     * <p>当前实现按 {@link DsServerDirectory#listServerIds()} 与
-     * {@link DsPartitionRouter#maxPartitionCount()} 推导访问范围，对每个分区调用
-     * 单分区 queryIds，最后做全局排序与 offset/limit 截取。DbQuery 条件暂时透传，
-     * 由各分区本地 ids 集合过滤。</p>
+     * <p>
+     * 当前实现按 {@link DsServerDirectory#listServerIds()} 与
+     * {@link DsPartitionRouter#maxPartitionCount()} 推导访问范围，对每个分区调用 单分区
+     * queryIds，最后做全局排序与 offset/limit 截取。DbQuery 条件暂时透传， 由各分区本地 ids 集合过滤。</p>
      */
     public List<Long> queryIds(String entityClassName, DbQuery query, int offset, int limit) throws IOException {
         int[] serverIds = nodeRouter.getDirectory().listServerIds();
@@ -224,6 +226,10 @@ public class DsDatabaseClusterClient implements AutoCloseable {
 
     /**
      * 查询指定分区内的 rowId 列表（anchorRowId 决定节点与分区）。
+     *
+     * <p>
+     * P50 OQ12-㉘②：本地路径与远端一致地施加 {@code query} 谓词过滤（先过滤后分页）； {@code query} 为 null
+     * 或无条件时全量透传（兼容旧行为）。远端分支照旧透传 {@code query}。
      */
     public List<Long> queryIds(String entityClassName, long anchorRowId, DbQuery query, int offset, int limit) throws IOException {
         if (isLocal(anchorRowId)) {
@@ -237,8 +243,10 @@ public class DsDatabaseClusterClient implements AutoCloseable {
                 list.add(idObj);
             }
             list.sort(null);
-            int from = Math.min(offset, list.size());
-            int to = Math.min(from + limit, list.size());
+            // P50 谓词过滤下推（Q1=A）：先过滤后分页；无谓词则全量透传。
+            list = new ArrayList<>(DbQueryToQueryWrapper.filterIdsByPredicate(entityClassName, query, list));
+            int from = Math.min(Math.max(0, offset), list.size());
+            int to = Math.min(from + (limit <= 0 ? 100 : limit), list.size());
             return new ArrayList<>(list.subList(from, to));
         }
         P2PWrapper resp = executeRemote(anchorRowId, P2PCommand.DB_NODE_QUERY_IDS,
