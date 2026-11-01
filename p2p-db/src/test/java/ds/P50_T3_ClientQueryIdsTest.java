@@ -2,10 +2,13 @@ package ds;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -21,8 +24,10 @@ import com.q3lives.ds.collections.DsHashMapIdAllocator;
 import com.q3lives.ds.collections.DsHashSet;
 import com.q3lives.ds.database.DsDatabaseLocal;
 import com.q3lives.ds.database.adapter.DsTableAdapter;
+import com.q3lives.ds.database.columnar.ColumnarStore;
 import com.q3lives.ds.database.columnar.DsDatabaseClusterClient;
 import com.q3lives.ds.database.columnar.DsPartitionManager;
+import com.q3lives.ds.database.columnar.TableMetaStore;
 import com.q3lives.ds.database.integration.GenericManager;
 import com.q3lives.ds.database.schema.DynamicIndexUtil;
 
@@ -36,9 +41,10 @@ import javax.net.p2p.utils.SerializationUtil;
  * P50 T3：{@link DsDatabaseClusterClient#queryIds} 客户端方法单测 5 TR 0F0E。
  *
  * <p>
- * TR3.1 本地路径谓词生效（先过滤后分页）；TR3.2 远端分支 {@code query} 透传不变（wire round-trip 保真 +
- * 无 endpoint 时确实走远端分支）；TR3.3 isLocal 判定（本地 serverId 命中走本地 / 未命中走远端）；TR3.4
- * offset/limit 边界（0 / ≥size / 负）；TR3.5 异常路径（本地非法谓词 → IAE，远端缺 endpoint → IOException）。
+ * TR3.1 本地路径谓词生效（先过滤后分页）；TR3.2 远端分支 {@code query} 透传不变（wire round-trip 保真 + 无
+ * endpoint 时确实走远端分支）；TR3.3 isLocal 判定（本地 serverId 命中走本地 / 未命中走远端）；TR3.4
+ * offset/limit 边界（0 / ≥size / 负）；TR3.5 异常路径（本地非法谓词 → IAE，远端缺 endpoint →
+ * IOException）。
  */
 public class P50_T3_ClientQueryIdsTest {
 
@@ -66,6 +72,7 @@ public class P50_T3_ClientQueryIdsTest {
     private int sid;
     private long anchor;
     private long[] ids;
+    private final Map<Long, String> tagById = new HashMap<>();
 
     @Before
     public void before() throws Exception {
@@ -130,15 +137,30 @@ public class P50_T3_ClientQueryIdsTest {
     private long save(String tag) {
         Row e = new Row(tag);
         gm.saveOrUpdate(e);
-        return e.getId();
+        long id = e.getId();
+        tagById.put(id, tag);
+        return id;
     }
 
-    private static void registerIds(DsPartitionManager mgr, long anchorRowId, long[] rowIds) throws IOException {
+    private void registerIds(DsPartitionManager mgr, long anchorRowId, long[] rowIds) throws Exception {
         File dbRoot = mgr.getStore(anchorRowId).getDbRoot();
         DsHashSet set = new DsHashSet(DynamicIndexUtil.idsFile(dbRoot, Row.class.getName()));
         for (long id : rowIds) {
             set.add(id);
         }
+        // P52：同一分区根双写列元 + tag 列值，使列扫描下推可读列定义与列值。
+        new TableMetaStore(dbRoot).ensureMeta(Row.class);
+        ColumnarStore cs = new ColumnarStore(dbRoot);
+        for (long id : rowIds) {
+            cs.putValue(Row.class.getName(), "tag", id, pad(tagById.get(id), 16));
+        }
+    }
+
+    private static byte[] pad(String s, int len) {
+        byte[] raw = s == null ? new byte[0] : s.getBytes(StandardCharsets.UTF_8);
+        byte[] out = new byte[len];
+        System.arraycopy(raw, 0, out, 0, Math.min(raw.length, len));
+        return out;
     }
 
     private static void deleteRecursive(File f) {

@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.ToDoubleFunction;
@@ -26,8 +27,10 @@ import com.q3lives.ds.collections.DsHashMapIdAllocator;
 import com.q3lives.ds.collections.DsHashSet;
 import com.q3lives.ds.database.DsDatabaseLocal;
 import com.q3lives.ds.database.adapter.DsTableAdapter;
+import com.q3lives.ds.database.columnar.ColumnarStore;
 import com.q3lives.ds.database.columnar.DsDatabaseClusterClient;
 import com.q3lives.ds.database.columnar.DsPartitionManager;
+import com.q3lives.ds.database.columnar.TableMetaStore;
 import com.q3lives.ds.database.columnar.pushdown.DbQueryToQueryWrapper;
 import com.q3lives.ds.database.fulltext.cluster.agg.AggExecutor;
 import com.q3lives.ds.database.fulltext.cluster.agg.AggResult;
@@ -55,13 +58,20 @@ import javax.net.p2p.utils.SerializationUtil;
  * <p>
  * TR4.1 服务端（{@link DbNodeQueryIdsServerHandler}）过滤结果 ≡ 本地全量物化过滤结果（独立
  * {@link GenericManager#getById} 逐行物化 + 字段比对，R12 谓词语义全等）；TR4.2 与 P46
- * {@link ColumnarAggRowSource} 端到端一致（{@code AggParser.parse → AggExecutor.execute} vs 手算真值，
- * 证明谓词过滤真实生效）；TR4.3 多分区路由（跨 partitionId 的 id 聚合 + 过滤）；TR4.4 强一致契约（过滤命中
- * id 的 {@code getById} 必非 null + 无 ORM 行的伪造 id 必被过滤剔除）。
+ * {@link ColumnarAggRowSource}
+ * 端到端一致（{@code AggParser.parse → AggExecutor.execute} vs 手算真值，
+ * 证明谓词过滤真实生效）；TR4.3 多分区路由（跨 partitionId 的 id 聚合 + 过滤）；TR4.4 强一致契约（过滤命中 id 的
+ * {@code getById} 必非 null + 无 ORM 行的伪造 id 必被过滤剔除）。
  *
  * <p>
  * 双写对齐（绕开根目录不一致）：ORM 行经 {@link GenericManager} 落 {@code p2p.db.home}；列存候选 id 直接
  * 登记进目标分区 ids 集合（{@link DynamicIndexUtil#idsFile}），使服务端/本地过滤命中的 id 与 ORM 行一一对应。
+ *
+ * <p>
+ * P52 起 {@code DB_NODE_QUERY_IDS}
+ * 过滤改走列扫描下推（{@code ColumnScanPushdown}），需分区根具备列元与 列值；故 {@link #registerIds} 在登记
+ * ids 的同时**同根双写**列元（{@link TableMetaStore#ensureMeta}）与 tag/price_txt
+ * 列值（{@link ColumnarStore#putValue}，null 值不写以保 IS_NULL 语义）。断言不变。
  */
 public class P50_T4_E2eEquivalenceTest {
 
@@ -85,7 +95,8 @@ public class P50_T4_E2eEquivalenceTest {
     private static final String DSL = "tag = 'x' AGG(COUNT(price), SUM(price))";
 
     /**
-     * 手算真值（tag='x' 行 price=150/50/200/null）：union=4, COUNT=3, SUM=400（tag='y' 行必须被过滤）。
+     * 手算真值（tag='x' 行 price=150/50/200/null）：union=4, COUNT=3, SUM=400（tag='y'
+     * 行必须被过滤）。
      */
     private static final long EXPECT_UNION = 4L;
     private static final long EXPECT_COUNT = 3L;
@@ -106,6 +117,8 @@ public class P50_T4_E2eEquivalenceTest {
     private long id3;
     private long id4;
     private long id5;
+    private final Map<Long, String> tagById = new HashMap<>();
+    private final Map<Long, String> priceById = new HashMap<>();
 
     @Before
     public void before() throws Exception {
@@ -159,19 +172,44 @@ public class P50_T4_E2eEquivalenceTest {
         e.tag = tag;
         e.priceTxt = priceTxt;
         gm.saveOrUpdate(e);
-        return e.getId();
+        long id = e.getId();
+        tagById.put(id, tag);
+        priceById.put(id, priceTxt);
+        return id;
     }
 
     /**
      * 把 rowId 登记进指定分区（serverId 固定为 {@link #sid}）的实体 ids 集合。
+     *
+     * <p>
+     * P52：同一分区根双写列元 + tag/price_txt 列值，使列扫描下推可读列定义与列值（null 值不写）。</p>
      */
-    private void registerIds(int partitionId, long... rowIds) throws IOException {
+    private void registerIds(int partitionId, long... rowIds) throws Exception {
         long anchor = DsIdLayout.compose(sid, partitionId, 1L);
         File dbRoot = manager.getStore(anchor).getDbRoot();
         DsHashSet set = new DsHashSet(DynamicIndexUtil.idsFile(dbRoot, Row.class.getName()));
         for (long id : rowIds) {
             set.add(id);
         }
+        new TableMetaStore(dbRoot).ensureMeta(Row.class);
+        ColumnarStore cs = new ColumnarStore(dbRoot);
+        for (long id : rowIds) {
+            String tag = tagById.get(id);
+            if (tag != null) {
+                cs.putValue(Row.class.getName(), "tag", id, pad(tag, 16));
+            }
+            String price = priceById.get(id);
+            if (price != null) {
+                cs.putValue(Row.class.getName(), "price_txt", id, pad(price, 16));
+            }
+        }
+    }
+
+    private static byte[] pad(String s, int len) {
+        byte[] raw = s == null ? new byte[0] : s.getBytes(StandardCharsets.UTF_8);
+        byte[] out = new byte[len];
+        System.arraycopy(raw, 0, out, 0, Math.min(raw.length, len));
+        return out;
     }
 
     private long[] serverHits(DbQuery q, int offset, int limit) {

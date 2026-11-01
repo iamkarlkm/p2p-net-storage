@@ -7,7 +7,7 @@ import com.q3lives.ds.cluster.DsServerDirectory;
 import com.q3lives.ds.collections.DsHashMap;
 import com.q3lives.ds.collections.DsHashMapIdAllocator;
 import com.q3lives.ds.collections.DsHashSet;
-import com.q3lives.ds.database.columnar.pushdown.DbQueryToQueryWrapper;
+import com.q3lives.ds.database.columnar.pushdown.ColumnScanPushdown;
 import com.q3lives.ds.database.schema.DynamicIndexUtil;
 import java.io.File;
 import java.io.IOException;
@@ -233,21 +233,9 @@ public class DsDatabaseClusterClient implements AutoCloseable {
      */
     public List<Long> queryIds(String entityClassName, long anchorRowId, DbQuery query, int offset, int limit) throws IOException {
         if (isLocal(anchorRowId)) {
+            // P52 列扫描下推（Q1=A）：本地分支走共享列扫描器，先过滤后分页（无谓词则全量）。
             ColumnarStore store = localManager.getStore(anchorRowId);
-            DsHashSet ids = new DsHashSet(DynamicIndexUtil.idsFile(store.getDbRoot(), entityClassName));
-            ArrayList<Long> list = new ArrayList<>();
-            for (Long idObj : ids) {
-                if (idObj == null || idObj <= 0L) {
-                    continue;
-                }
-                list.add(idObj);
-            }
-            list.sort(null);
-            // P50 谓词过滤下推（Q1=A）：先过滤后分页；无谓词则全量透传。
-            list = new ArrayList<>(DbQueryToQueryWrapper.filterIdsByPredicate(entityClassName, query, list));
-            int from = Math.min(Math.max(0, offset), list.size());
-            int to = Math.min(from + (limit <= 0 ? 100 : limit), list.size());
-            return new ArrayList<>(list.subList(from, to));
+            return ColumnScanPushdown.scan(store.getDbRoot(), entityClassName, query, offset, limit);
         }
         P2PWrapper resp = executeRemote(anchorRowId, P2PCommand.DB_NODE_QUERY_IDS,
                 new DbNodeQueryIdsRequest(entityClassName, anchorRowId, query, offset, limit));

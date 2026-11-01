@@ -34,12 +34,13 @@ import com.q3lives.ds.database.fulltext.layered.LayeredSnapshot;
  * P50 T5：Gatekeeper 9Y 9 TR 0F0E。
  *
  * <p>
- * Y1 ZeroLeak3=3 + 九重递归文件数守恒（segment=5 / parser/v3=5 / agg=6 / compact=5 / groupby=5 /
- * layered=3 / rowsource=2 / sched=3 / autocompact=3 / autoseg=3）；Y2 NG-3 零依赖（新增
- * {@code columnar/pushdown} 仅 JDK + first-party）；Y3 TOPK 铁律（0 触 {@code bucketAccessCounter} /
- * {@code SearchOptions}）；Y4 Facade 单调不减（P21/P37/P40/P47/P48/P49 源码 0 触）+
- * {@link DbQueryToQueryWrapper} 存在 + 受改 handler/client 契约保留；Y5 路由公式 0 改；Y6 P21~P50 编译兼容；
- * Y7 {@code HybridHit} ctor=2；Y8 {@code ShardTransport} 5 方法；Y9 新增源码 0 TODO/FIXME/HACK。
+ * Y1 ZeroLeak3=3 + 九重递归文件数守恒（segment=5 / parser/v3=5 / agg=6 / compact=5 /
+ * groupby=5 / layered=3 / rowsource=2 / sched=3 / autocompact=3 / autoseg=3）；Y2
+ * NG-3 零依赖（新增 {@code columnar/pushdown} 仅 JDK + first-party）；Y3 TOPK 铁律（0 触
+ * {@code bucketAccessCounter} / {@code SearchOptions}）；Y4 Facade
+ * 单调不减（P21/P37/P40/P47/P48/P49 源码 0 触）+ {@link DbQueryToQueryWrapper} 存在 + 受改
+ * handler/client 契约保留；Y5 路由公式 0 改；Y6 P21~P50 编译兼容； Y7 {@code HybridHit}
+ * ctor=2；Y8 {@code ShardTransport} 5 方法；Y9 新增源码 0 TODO/FIXME/HACK。
  */
 public class P50_T5_Gatekeeper9YTest {
 
@@ -99,8 +100,8 @@ public class P50_T5_Gatekeeper9YTest {
         Assert.assertEquals("P48 autocompact/ 源文件数", 3, countJava(AUTO_SRC));
         Assert.assertEquals("P49 autoseg/ 源文件数", 3, countJava(AUTOSEG_SRC));
 
-        // P50 新类落非锁定包 columnar/pushdown（不破坏九重守恒），源码数 = 1。
-        Assert.assertEquals("P50 columnar/pushdown/ 源文件数", 1, countJava(PUSHDOWN_SRC));
+        // P52 起 columnar/pushdown/ 纳入锁定计数（P50 新增 = 1 → P52 增至 2）。
+        Assert.assertEquals("columnar/pushdown/ 源文件数", 2, countJava(PUSHDOWN_SRC));
 
         Assert.assertNotNull("sched 子包资源必须存在",
                 Thread.currentThread().getContextClassLoader().getResource(SCHED_REL));
@@ -117,7 +118,7 @@ public class P50_T5_Gatekeeper9YTest {
     public void y2_Ng3_PushdownImportsJdkAndFirstPartyOnly() throws Exception {
         List<File> javaFiles = new ArrayList<>();
         collectJavaFiles(srcDir(PUSHDOWN_SRC), javaFiles);
-        Assert.assertEquals("pushdown 源文件数应为 1", 1, javaFiles.size());
+        Assert.assertEquals("pushdown 源文件数应为 2", 2, javaFiles.size());
         for (File f : javaFiles) {
             String content = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
             for (String pkg : new String[]{"io.netty", "io.grpc", "javax.net.p2p.client", "p2p.client"}) {

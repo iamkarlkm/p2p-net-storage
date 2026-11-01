@@ -7,7 +7,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -21,7 +23,9 @@ import com.q3lives.ds.cluster.DsPartitionRouter;
 import com.q3lives.ds.collections.DsHashSet;
 import com.q3lives.ds.database.DsDatabaseLocal;
 import com.q3lives.ds.database.adapter.DsTableAdapter;
+import com.q3lives.ds.database.columnar.ColumnarStore;
 import com.q3lives.ds.database.columnar.DsPartitionManager;
+import com.q3lives.ds.database.columnar.TableMetaStore;
 import com.q3lives.ds.database.integration.GenericManager;
 import com.q3lives.ds.database.schema.DynamicIndexUtil;
 
@@ -77,6 +81,7 @@ public class P50_T6_NFR_Test {
     private DbNodeQueryIdsServerHandler handler;
     private int sid;
     private long[] allIds;
+    private final Map<Long, String> tagById = new HashMap<>();
 
     @Before
     public void before() throws Exception {
@@ -134,6 +139,7 @@ public class P50_T6_NFR_Test {
         Row e = new Row();
         e.tag = tag;
         gm.saveOrUpdate(e);
+        tagById.put(e.getId(), tag);
         return e.getId();
     }
 
@@ -145,12 +151,25 @@ public class P50_T6_NFR_Test {
         return out;
     }
 
-    private static void registerIds(DsPartitionManager mgr, long anchorRowId, long[] rowIds) throws IOException {
+    private void registerIds(DsPartitionManager mgr, long anchorRowId, long[] rowIds) throws IOException {
         File dbRoot = mgr.getStore(anchorRowId).getDbRoot();
         DsHashSet set = new DsHashSet(DynamicIndexUtil.idsFile(dbRoot, Row.class.getName()));
         for (long id : rowIds) {
             set.add(id);
         }
+        // P52：同一分区根双写列元 + tag 列值，使列扫描下推可读列定义与列值（断言不变，仅存储机制对齐新路径）。
+        new TableMetaStore(dbRoot).ensureMeta(Row.class);
+        ColumnarStore cs = new ColumnarStore(dbRoot);
+        for (long id : rowIds) {
+            cs.putValue(Row.class.getName(), "tag", id, pad(tagById.get(id), 16));
+        }
+    }
+
+    private static byte[] pad(String s, int len) {
+        byte[] raw = s == null ? new byte[0] : s.getBytes(StandardCharsets.UTF_8);
+        byte[] out = new byte[len];
+        System.arraycopy(raw, 0, out, 0, Math.min(raw.length, len));
+        return out;
     }
 
     private long[] serverHits(DbQuery q) {

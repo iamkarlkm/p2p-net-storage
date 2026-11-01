@@ -26,6 +26,7 @@ import com.q3lives.ds.database.DsDatabaseLocal;
 import com.q3lives.ds.database.adapter.DsTableAdapter;
 import com.q3lives.ds.database.columnar.DsDatabaseClusterClient;
 import com.q3lives.ds.database.columnar.DsPartitionManager;
+import com.q3lives.ds.database.columnar.TableMetaStore;
 import com.q3lives.ds.database.fulltext.cluster.agg.AggExecutor;
 import com.q3lives.ds.database.fulltext.cluster.agg.AggResult;
 import com.q3lives.ds.database.fulltext.cluster.agg.AggRowSource;
@@ -129,6 +130,8 @@ public class P46_T4_E2eColumnarAggTest {
         col = new DsDatabaseClusterClient(sid, manager, allocator, directory);
 
         for (long id : new long[]{id1, id2, id3, id4}) {
+            // P52：同根建立列元，使列扫描下推可读列定义（列值仍由下方 putCol 写入同一分区根）。
+            new TableMetaStore(manager.getStore(id).getDbRoot()).ensureMeta(T4Row.class);
             col.putCol(T4Row.class.getName(), id, "tag", "x".getBytes(StandardCharsets.UTF_8), true);
         }
     }

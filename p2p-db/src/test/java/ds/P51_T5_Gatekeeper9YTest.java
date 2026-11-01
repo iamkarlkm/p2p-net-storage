@@ -34,13 +34,15 @@ import com.q3lives.ds.database.fulltext.layered.LayeredSnapshot;
  * P51 T5：Gatekeeper 9Y 9 TR 0F0E。
  *
  * <p>
- * Y1 ZeroLeak3=3 + 十一重递归文件数守恒（segment=5 / parser/v3=5 / agg=6 / compact=5 / groupby=5 /
- * layered=3 / rowsource=2 / sched=3 / autocompact=3 / autoseg=3 / <b>wordnet=3</b>）；Y2 NG-3 零依赖
- * （新增 {@code fulltext/wordnet} 仅 JDK + first-party）；Y3 TOPK 铁律（<b>去注释后</b> 0 触
- * {@code bucketAccessCounter} / {@code SearchOptions}）；Y4 Facade 单调不减（P37/P40/P42/P47/P48/P49/P50
- * 源码 0 触 + P21 新增 3 accessor 存在且旧签名不消失 + P21 0 依赖 wordnet）；Y5 路由公式 0 改；Y6
- * P21~P51 编译兼容（既有类型 0 改 + {@code wordnet/} 3 类 {@code Class.forName}）；Y7 {@code HybridHit}
- * ctor=2；Y8 {@code ShardTransport} 5 方法；Y9 新增源码 0 TODO/FIXME/HACK。
+ * Y1 ZeroLeak3=3 + 十一重递归文件数守恒（segment=5 / parser/v3=5 / agg=6 / compact=5 /
+ * groupby=5 / layered=3 / rowsource=2 / sched=3 / autocompact=3 / autoseg=3 /
+ * <b>wordnet=3</b>）；Y2 NG-3 零依赖 （新增 {@code fulltext/wordnet} 仅 JDK +
+ * first-party）；Y3 TOPK 铁律（<b>去注释后</b> 0 触 {@code bucketAccessCounter} /
+ * {@code SearchOptions}）；Y4 Facade 单调不减（P37/P40/P42/P47/P48/P49/P50 源码 0 触 +
+ * P21 新增 3 accessor 存在且旧签名不消失 + P21 0 依赖 wordnet）；Y5 路由公式 0 改；Y6 P21~P51
+ * 编译兼容（既有类型 0 改 + {@code wordnet/} 3 类 {@code Class.forName}）；Y7
+ * {@code HybridHit} ctor=2；Y8 {@code ShardTransport} 5 方法；Y9 新增源码 0
+ * TODO/FIXME/HACK。
  */
 public class P51_T5_Gatekeeper9YTest {
 
@@ -104,8 +106,8 @@ public class P51_T5_Gatekeeper9YTest {
         // P51 新类落新兄弟包 fulltext/wordnet（第十一处锁定包），源码数 = 3。
         Assert.assertEquals("P51 wordnet/ 源文件数", 3, countJava(WORDNET_SRC));
 
-        // P50 新类落非锁定包 columnar/pushdown（不破坏守恒），源码数 = 1。
-        Assert.assertEquals("P50 columnar/pushdown/ 源文件数", 1, countJava(PUSHDOWN_SRC));
+        // P52 起 columnar/pushdown/ 纳入锁定计数（P50 新增 = 1 → P52 增至 2）。
+        Assert.assertEquals("columnar/pushdown/ 源文件数", 2, countJava(PUSHDOWN_SRC));
 
         Assert.assertNotNull("sched 子包资源必须存在",
                 Thread.currentThread().getContextClassLoader().getResource(SCHED_REL));
@@ -220,7 +222,7 @@ public class P51_T5_Gatekeeper9YTest {
                 StandardCharsets.UTF_8);
         Assert.assertFalse("P21 FulltextStore 不应依赖 wordnet 新包",
                 fts.contains("WordNetExporter") || fts.contains("WordNetSegmentView")
-                        || fts.contains("WordNetSnapshot") || fts.contains("fulltext.wordnet"));
+                || fts.contains("WordNetSnapshot") || fts.contains("fulltext.wordnet"));
 
         // P48/P49 契约保留。
         Assert.assertEquals("AutoCompactionHook ctor 仍 1 个", 1,
@@ -348,7 +350,8 @@ public class P51_T5_Gatekeeper9YTest {
 
     // ============== helpers ==============
     /**
-     * 剥离块注释（{@code /** ... *}{@code /} 与 {@code /* ... *}{@code /}）与行注释（{@code // ...}）。
+     * 剥离块注释（{@code /** ... *}{@code /} 与
+     * {@code /* ... *}{@code /}）与行注释（{@code // ...}）。
      */
     private static String stripComments(String src) {
         String noBlock = src.replaceAll("(?s)/\\*.*?\\*/", " ");

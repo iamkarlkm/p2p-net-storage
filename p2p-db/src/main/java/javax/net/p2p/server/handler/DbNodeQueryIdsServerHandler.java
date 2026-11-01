@@ -2,13 +2,11 @@ package javax.net.p2p.server.handler;
 
 import com.q3lives.ds.cluster.DsIdLayout;
 import com.q3lives.ds.cluster.DsNodeContext;
-import com.q3lives.ds.collections.DsHashSet;
 import com.q3lives.ds.database.columnar.ColumnarStore;
 import com.q3lives.ds.database.columnar.DsPartitionManager;
-import com.q3lives.ds.database.columnar.pushdown.DbQueryToQueryWrapper;
-import com.q3lives.ds.database.schema.DynamicIndexUtil;
+import com.q3lives.ds.database.columnar.pushdown.ColumnScanPushdown;
 import java.io.File;
-import java.util.ArrayList;
+import java.util.List;
 import javax.net.p2p.api.P2PCommand;
 import javax.net.p2p.error.P2PErrorCode;
 import javax.net.p2p.error.P2PErrors;
@@ -27,9 +25,13 @@ import javax.net.p2p.utils.SerializationUtil;
  * offset/limit 截取后的结果。</p>
  *
  * <p>
- * P50 OQ12-㉘②：当 payload.query 含有效谓词时，先经 {@link DbQueryToQueryWrapper} 复用 ORM
- * 谓词引擎过滤命中 id，再施加 offset/limit（先过滤后分页）；query 为 null 或 无条件时保持全量透传（兼容旧行为）。过滤只读、0
- * 新线程。</p>
+ * P50 OQ12-㉘②：当 payload.query 含有效谓词时，先过滤命中 id 再施加 offset/limit（先过滤后分页）； query 为
+ * null 或无条件时保持全量透传（兼容旧行为）。过滤只读、0 新线程。</p>
+ *
+ * <p>
+ * P52 OQ12-㉚①：过滤段由 ORM「逐 id 全行物化」升级为列扫描下推
+ * {@link ColumnScanPushdown#scan}（列级等值索引候选求交 + 列值残差校验），与 P50 现行为 R12 逐条等价，且输出恒
+ * rowId 升序。</p>
  */
 public class DbNodeQueryIdsServerHandler implements P2PCommandHandler {
 
@@ -61,29 +63,17 @@ public class DbNodeQueryIdsServerHandler implements P2PCommandHandler {
 
             ColumnarStore store = manager.getStore(payload.anchorRowId);
             File dbRoot = store.getDbRoot();
-            DsHashSet ids = new DsHashSet(DynamicIndexUtil.idsFile(dbRoot, payload.entityClassName));
 
             int offset = Math.max(0, payload.offset);
             int limit = payload.limit <= 0 ? 100 : payload.limit;
 
-            ArrayList<Long> list = new ArrayList<>();
-            for (Long idObj : ids) {
-                if (idObj == null || idObj <= 0L) {
-                    continue;
-                }
-                list.add(idObj);
-            }
-            list.sort(null);
+            // P52 列扫描下推（Q1=A）：列索引候选 + 列值残差 → 先过滤后分页；无谓词则全量透传。
+            List<Long> list = ColumnScanPushdown.scan(
+                    dbRoot, payload.entityClassName, payload.query, offset, limit);
 
-            // P50 谓词过滤下推（Q1=A）：先过滤后分页；无谓词则全量透传。
-            list = new ArrayList<>(DbQueryToQueryWrapper.filterIdsByPredicate(
-                    payload.entityClassName, payload.query, list));
-
-            int from = Math.min(offset, list.size());
-            int to = Math.min(from + limit, list.size());
-            long[] out = new long[to - from];
-            for (int i = from; i < to; i++) {
-                out[i - from] = list.get(i);
+            long[] out = new long[list.size()];
+            for (int i = 0; i < list.size(); i++) {
+                out[i] = list.get(i);
             }
             byte[] idsBytes = SerializationUtil.serialize(out);
             return P2PWrapper.build(request.getSeq(), P2PCommand.R_OK_DB_NODE_QUERY_IDS, new DbRowQueryIdsResponse(idsBytes));

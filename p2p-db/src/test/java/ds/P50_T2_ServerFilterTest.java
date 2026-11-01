@@ -2,10 +2,13 @@ package ds;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -19,7 +22,9 @@ import com.q3lives.ds.cluster.DsPartitionRouter;
 import com.q3lives.ds.collections.DsHashSet;
 import com.q3lives.ds.database.DsDatabaseLocal;
 import com.q3lives.ds.database.adapter.DsTableAdapter;
+import com.q3lives.ds.database.columnar.ColumnarStore;
 import com.q3lives.ds.database.columnar.DsPartitionManager;
+import com.q3lives.ds.database.columnar.TableMetaStore;
 import com.q3lives.ds.database.integration.GenericManager;
 import com.q3lives.ds.database.schema.DynamicIndexUtil;
 
@@ -37,13 +42,19 @@ import javax.net.p2p.utils.SerializationUtil;
  * P50 T2：服务端 {@link DbNodeQueryIdsServerHandler} 谓词过滤单测 4 TR 0F0E。
  *
  * <p>
- * 直接构造 {@link DbNodeQueryIdsRequest} 调用真实 handler（经 {@link DsNodeContext} 定位分区），
- * 断言：TR2.1 命中保留 / 未命中剔除；TR2.2 先过滤后分页（offset/limit 施加于过滤后集合）；TR2.3 谓词无命中 → 空
- * {@code long[]}（非 null）；TR2.4 {@code query == null} → 全量透传（兼容旧行为）。
+ * 直接构造 {@link DbNodeQueryIdsRequest} 调用真实 handler（经 {@link DsNodeContext}
+ * 定位分区）， 断言：TR2.1 命中保留 / 未命中剔除；TR2.2 先过滤后分页（offset/limit 施加于过滤后集合）；TR2.3 谓词无命中
+ * → 空 {@code long[]}（非 null）；TR2.4 {@code query == null} → 全量透传（兼容旧行为）。
  *
  * <p>
  * ORM 行经 {@link GenericManager} 落 {@code p2p.db.home}；列存候选 id 直接登记进目标分区 ids 集合（
  * {@link DynamicIndexUtil#idsFile}），保证过滤命中的 id 与 ORM 行一一对应。
+ *
+ * <p>
+ * P52 起 {@code DB_NODE_QUERY_IDS}
+ * 过滤改走列扫描下推（{@code ColumnScanPushdown}），需分区根具备列元与 列值；故本夹具在登记 ids
+ * 的同时**同根双写**列元（{@link TableMetaStore#ensureMeta}）与 tag 列值
+ * （{@link ColumnarStore#putValue}）。断言不变，仅存储机制对齐新路径。
  */
 public class P50_T2_ServerFilterTest {
 
@@ -71,6 +82,7 @@ public class P50_T2_ServerFilterTest {
     private long anchor;
     private long[] ids;
     private DbNodeQueryIdsServerHandler handler;
+    private final Map<Long, String> tagById = new HashMap<>();
 
     @Before
     public void before() throws Exception {
@@ -121,15 +133,30 @@ public class P50_T2_ServerFilterTest {
     private long save(String tag) {
         Row e = new Row(tag);
         gm.saveOrUpdate(e);
-        return e.getId();
+        long id = e.getId();
+        tagById.put(id, tag);
+        return id;
     }
 
-    private static void registerIds(DsPartitionManager mgr, long anchorRowId, long[] rowIds) throws IOException {
+    private void registerIds(DsPartitionManager mgr, long anchorRowId, long[] rowIds) throws Exception {
         File dbRoot = mgr.getStore(anchorRowId).getDbRoot();
         DsHashSet set = new DsHashSet(DynamicIndexUtil.idsFile(dbRoot, Row.class.getName()));
         for (long id : rowIds) {
             set.add(id);
         }
+        // P52：同一分区根双写列元 + tag 列值，使列扫描下推可读列定义与列值。
+        new TableMetaStore(dbRoot).ensureMeta(Row.class);
+        ColumnarStore cs = new ColumnarStore(dbRoot);
+        for (long id : rowIds) {
+            cs.putValue(Row.class.getName(), "tag", id, pad(tagById.get(id), 16));
+        }
+    }
+
+    private static byte[] pad(String s, int len) {
+        byte[] raw = s == null ? new byte[0] : s.getBytes(StandardCharsets.UTF_8);
+        byte[] out = new byte[len];
+        System.arraycopy(raw, 0, out, 0, Math.min(raw.length, len));
+        return out;
     }
 
     private static void deleteRecursive(File f) {
