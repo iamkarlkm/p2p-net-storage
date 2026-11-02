@@ -189,7 +189,9 @@ public final class P2PCommandOrdinals {
             Map.entry("RPC_CONTROL", 179),
             Map.entry("RPC_HEALTH", 180),
             Map.entry("RPC_DISCOVER", 181),
-            Map.entry("RPC_EVENT", 182)
+            Map.entry("RPC_EVENT", 182),
+            Map.entry("DB_ROW_AGG", 183),
+            Map.entry("R_OK_DB_ROW_AGG", 184)
     );
 }
 

@@ -183,5 +183,7 @@ public enum P2PCommand {
     RPC_CONTROL,
     RPC_HEALTH,
     RPC_DISCOVER,
-    RPC_EVENT
+    RPC_EVENT,
+    DB_ROW_AGG,
+    R_OK_DB_ROW_AGG
 }

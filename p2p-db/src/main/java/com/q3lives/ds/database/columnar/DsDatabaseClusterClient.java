@@ -7,6 +7,7 @@ import com.q3lives.ds.cluster.DsServerDirectory;
 import com.q3lives.ds.collections.DsHashMap;
 import com.q3lives.ds.collections.DsHashMapIdAllocator;
 import com.q3lives.ds.collections.DsHashSet;
+import com.q3lives.ds.database.columnar.aggpushdown.ColumnAggPushdown;
 import com.q3lives.ds.database.columnar.pushdown.ColumnScanPushdown;
 import com.q3lives.ds.database.schema.DynamicIndexUtil;
 import java.io.File;
@@ -31,6 +32,8 @@ import javax.net.p2p.model.DbNodeQueryIdsRequest;
 import javax.net.p2p.model.DbNodeReplicateAck;
 import javax.net.p2p.model.DbNodeReplicateFrame;
 import javax.net.p2p.model.DbQuery;
+import javax.net.p2p.model.DbRowAggRequest;
+import javax.net.p2p.model.DbRowAggResponse;
 import javax.net.p2p.model.DbRowQueryIdsResponse;
 import javax.net.p2p.model.P2PWrapper;
 import javax.net.p2p.model.StreamP2PWrapper;
@@ -256,6 +259,47 @@ public class DsDatabaseClusterClient implements AutoCloseable {
             }
         }
         return out;
+    }
+
+    /**
+     * 服务端聚合下推查询（P53 OQ12-㉛②）：对指定分区下发 {@code DB_ROW_AGG}，由服务端在列值上直接算聚合。
+     *
+     * <p>
+     * 本地分支（{@code anchorRowId} 属本节点）：复用 P52 {@link ColumnScanPushdown#filter}
+     * 取命中 id， 经 {@link ColumnAggPushdown#compute} 列值聚合（GROUP BY + 5 聚合 + HAVING
+     * + ORDER BY + 分页）； 远端分支：复用 {@code DB_ROW_AGG} 命令透传请求，服务端
+     * {@code DbRowAggServerHandler} 处理后回传 编码载荷。两侧响应统一为
+     * {@link DbRowAggResponse}（{@code payload} 经
+     * {@link ColumnAggPushdown#decode} 解码为分组结果矩阵）。</p>
+     *
+     * @param anchorRowId 决定节点与分区的锚点 rowId（非 0）
+     * @param request 聚合请求（非 null；{@code entityClassName}/{@code aggs} 由服务端边界校验）
+     * @return 聚合响应（非 null；{@code payload} 可解码为分组结果行）
+     * @throws IllegalArgumentException 参数非法（本地分支：未知列 / 空 aggs 等）
+     * @throws IOException 远端通道异常或响应命令不符
+     */
+    public DbRowAggResponse queryAgg(long anchorRowId, DbRowAggRequest request) throws IOException {
+        if (request == null) {
+            throw new IllegalArgumentException("request cannot be null");
+        }
+        if (isLocal(anchorRowId)) {
+            ColumnarStore store = localManager.getStore(anchorRowId);
+            File dbRoot = store.getDbRoot();
+            DbQuery query = request.query == null ? new DbQuery() : request.query;
+            List<Long> matched = ColumnScanPushdown.filter(dbRoot, request.entityClassName, query);
+            List<Object[]> rows = ColumnAggPushdown.compute(dbRoot, request.entityClassName, matched,
+                    request.aggs, request.groupBy, request.having, request.orderBy,
+                    Math.max(0, request.offset), request.limit);
+            return new DbRowAggResponse(ColumnAggPushdown.encode(rows));
+        }
+        P2PWrapper resp = executeRemote(anchorRowId, P2PCommand.DB_ROW_AGG, request);
+        if (resp.getCommand() == P2PCommand.STD_ERROR) {
+            throw P2PErrors.asRuntimeException(resp);
+        }
+        if (resp.getCommand() != P2PCommand.R_OK_DB_ROW_AGG || !(resp.getData() instanceof DbRowAggResponse ok)) {
+            throw new IOException("unexpected response: " + resp.getCommand());
+        }
+        return ok;
     }
 
     private P2PWrapper executeRemote(long rowId, P2PCommand command, Object payload) throws IOException {

@@ -752,7 +752,14 @@ public enum P2PCommand {
     R_OK_FULLTEXT_SHARD_SEARCH_EXTRAS_ACK(24459, P2PServiceCategory.DS_DB),
 
     FULLTEXT_SHARD_CLOSE(24360, P2PServiceCategory.DS_DB),
-    R_OK_FULLTEXT_SHARD_CLOSE_ACK(24460, P2PServiceCategory.DS_DB);
+
+    R_OK_FULLTEXT_SHARD_CLOSE_ACK(24460, P2PServiceCategory.DS_DB),
+
+    /** P53 OQ12-㉛② 服务端聚合下推请求（DS_DB 空闲段 24048） */
+    DB_ROW_AGG(24048, P2PServiceCategory.DS_DB),
+
+    /** P53 OQ12-㉛② 服务端聚合下推响应 */
+    R_OK_DB_ROW_AGG(24049, P2PServiceCategory.DS_DB);
     /** 命令的数值编码，用于网络传输和序列化 */
     private final int value;
     private final P2PServiceCategory category;
