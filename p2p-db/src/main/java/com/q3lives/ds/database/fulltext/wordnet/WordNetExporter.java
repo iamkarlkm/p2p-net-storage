@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -68,7 +69,17 @@ public final class WordNetExporter {
     private static final int INDEX_REC = 16;
 
     /**
-     * 创建无状态导出器（0 字段、0 资源持有；导出参数全部由 {@link #export} 传入）。
+     * P54 墓碑哨兵 payload：{@code [count 4B = -1]}。
+     *
+     * <p>
+     * 读取端遍历 {@code for (i = 0; i < count; i++)} 对 {@code count = -1} 天然零迭代 →
+     * 返回空， 因此「新→旧首命中 + 短路」命中哨兵即视为<b>键删除</b>（R8）；旧读者亦天然兼容（{@code VERSION=1}
+     * 不升，R5）。
+     */
+    static final byte[] TOMBSTONE_PAYLOAD = {(byte) 0xFF, (byte) 0xFF, (byte) 0xFF, (byte) 0xFF};
+
+    /**
+     * 创建无状态导出器（0 字段、0 资源持有；导出参数全部由 {@link #export} / {@link #exportDelta} 传入）。
      */
     public WordNetExporter() {
     }
@@ -123,11 +134,100 @@ public final class WordNetExporter {
             }
         }
 
+        return writeDataSegment(ft, wordNetRootDir, segId, ft.wordNetAllContextKeys());
+    }
+
+    /**
+     * P54 Q2=A：增量导出——只导出显式给定的变更上下文三元组 {@code (docId,parentId,level)}。
+     *
+     * <p>
+     * 语义与 {@link #export} 完全一致，唯一差异是上下文来源：本方法逐 {@code changedCtx} 三元组枚举
+     * （{@code ctx[0]=docId} / {@code ctx[1]=parentId} / {@code ctx[2]=level}），复用 P21 既有 3 只读
+     * accessor 同款口径。导出器仍保持 0 字段零状态（Δ 变更集由调用方维护，R7 确定性不变）。
+     *
+     * @param ft 源全文存储，非 null
+     * @param wordNetRootDir 词网段根目录，非 null 且非空白
+     * @param segId 新段 id，≥ 0 且尚未登记
+     * @param changedCtx 变更上下文三元组集合，非 null（允许为空 → 0/0/0 合法段）
+     * @return 本次增量导出的不可变快照描述
+     */
+    public WordNetSnapshot exportDelta(FulltextStore ft, String wordNetRootDir, long segId,
+            Collection<long[]> changedCtx) throws IOException {
+        if (ft == null) {
+            throw new IllegalArgumentException("exportDelta ft null");
+        }
+        if (wordNetRootDir == null || wordNetRootDir.trim().isEmpty()) {
+            throw new IllegalArgumentException("exportDelta rootDir null or empty");
+        }
+        if (segId < 0) {
+            throw new IllegalArgumentException("exportDelta segId < 0: " + segId);
+        }
+        if (changedCtx == null) {
+            throw new IllegalArgumentException("exportDelta changedCtx null");
+        }
+        for (long registered : WordNetSegmentView.Store.list(wordNetRootDir)) {
+            if (registered == segId) {
+                throw new IllegalArgumentException("exportDelta segId already registered: " + segId);
+            }
+        }
+        return writeDataSegment(ft, wordNetRootDir, segId, changedCtx);
+    }
+
+    /**
+     * P54 Q3=A：写出墓碑段——对给定 adj/pos 键写入哨兵 payload {@link #TOMBSTONE_PAYLOAD}（{@code count=-1}）。
+     *
+     * <p>
+     * 墓碑段与数据段<b>共享同一词网键空间</b>：叠加视图「新→旧首命中 + 短路」命中哨兵即视为<b>键删除</b>
+     * （R8），并使「段淘汰审计」的键覆盖判定可成立（无需反解 {@code mix4} 哈希）。词网段格式
+     * {@code VERSION=1} 不升（R5）。
+     *
+     * @param wordNetRootDir 词网段根目录，非 null 且非空白
+     * @param segId 新段 id，≥ 0 且尚未登记
+     * @param adjKeys 待墓碑的邻接键（允许 null / 空）
+     * @param posKeys 待墓碑的 positions 键（允许 null / 空）
+     * @return 本次墓碑段的不可变快照描述
+     */
+    public WordNetSnapshot tombstone(String wordNetRootDir, long segId,
+            long[] adjKeys, long[] posKeys) throws IOException {
+        if (wordNetRootDir == null || wordNetRootDir.trim().isEmpty()) {
+            throw new IllegalArgumentException("tombstone rootDir null or empty");
+        }
+        if (segId < 0) {
+            throw new IllegalArgumentException("tombstone segId < 0: " + segId);
+        }
+        if ((adjKeys == null || adjKeys.length == 0) && (posKeys == null || posKeys.length == 0)) {
+            throw new IllegalArgumentException("tombstone adjKeys and posKeys both empty");
+        }
+        for (long registered : WordNetSegmentView.Store.list(wordNetRootDir)) {
+            if (registered == segId) {
+                throw new IllegalArgumentException("tombstone segId already registered: " + segId);
+            }
+        }
+        TreeMap<Long, byte[]> adjByKey = new TreeMap<>();
+        if (adjKeys != null) {
+            for (long k : adjKeys) {
+                adjByKey.put(k, TOMBSTONE_PAYLOAD);
+            }
+        }
+        TreeMap<Long, byte[]> posByKey = new TreeMap<>();
+        if (posKeys != null) {
+            for (long k : posKeys) {
+                posByKey.put(k, TOMBSTONE_PAYLOAD);
+            }
+        }
+        return writeSegment(wordNetRootDir, segId, adjByKey, posByKey, adjByKey.size(), posByKey.size());
+    }
+
+    /**
+     * 逐变更/全量上下文枚举并打包为词网段（{@code export} / {@code exportDelta} 共用）。
+     */
+    private WordNetSnapshot writeDataSegment(FulltextStore ft, String wordNetRootDir, long segId,
+            Iterable<long[]> contexts) throws IOException {
         TreeMap<Long, byte[]> adjByKey = new TreeMap<>();
         TreeMap<Long, byte[]> posByKey = new TreeMap<>();
         long adjCount = 0L;
         long posCount = 0L;
-        for (long[] ctx : ft.wordNetAllContextKeys()) {
+        for (long[] ctx : contexts) {
             long docId = ctx[0];
             long parentId = ctx[1];
             int level = (int) ctx[2];
@@ -155,7 +255,15 @@ public final class WordNetExporter {
                 posCount += spans.size();
             }
         }
+        return writeSegment(wordNetRootDir, segId, adjByKey, posByKey, adjCount, posCount);
+    }
 
+    /**
+     * 列式打包 + 4KB 对齐 + 4×CRC32 + 段头 + {@code .tmp} 原子落盘 + manifest 登记（R9）。
+     */
+    private WordNetSnapshot writeSegment(String wordNetRootDir, long segId,
+            TreeMap<Long, byte[]> adjByKey, TreeMap<Long, byte[]> posByKey,
+            long adjCount, long posCount) throws IOException {
         long[] adjKeys = keysOf(adjByKey);
         long[] posKeys = keysOf(posByKey);
         SegmentColumnCodec.Dynamic adjDyn = SegmentColumnCodec.packDynamic(valuesOf(adjByKey),

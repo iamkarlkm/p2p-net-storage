@@ -8,6 +8,7 @@ import java.nio.MappedByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -31,35 +32,40 @@ import com.q3lives.ds.database.fulltext.segment.SegmentColumnCodec;
  * {@link #distanceBetween} / {@link #topKNeighbors} / {@link #positions}。
  *
  * <p>
- * <b>零重建（R10）</b>：{@link #open} 仅 mmap 段文件 + 解析段头（MAGIC / VERSION 硬校验）+ 逐 section
- * 复算 CRC32，不把段内容读进堆、不建哈希表、不重算任何统计 → 打开代价与段体积无关（逆指标：冷启动
- * P95 ≤ 200ms）。
+ * <b>零重建（R10）</b>：{@link #open} 仅 mmap 段文件 + 解析段头（MAGIC / VERSION 硬校验）+ 逐
+ * section 复算 CRC32，不把段内容读进堆、不建哈希表、不重算任何统计 → 打开代价与段体积无关（逆指标：冷启动 P95 ≤ 200ms）。
  *
  * <p>
- * <b>覆盖语义（R8）</b>：对同一词网键，从新到旧取<b>首个命中段</b>（短路覆盖）；段序由调用方显式给定，
- * 不依赖 manifest 物理行序。{@link #fingerprint()} 随段序变化，可用于审计视图构成。
+ * <b>覆盖语义（R8）</b>：对同一词网键，从新到旧取<b>首个命中段</b>（短路覆盖）；段序由调用方显式给定， 不依赖 manifest
+ * 物理行序。{@link #fingerprint()} 随段序变化，可用于审计视图构成。
  *
  * <p>
  * <b>TOPK 铁律（R3）</b>：本类纯只读数据搬运，0 改 K、0 触 {@code SearchOptions}、0 污染
- * {@code bucketAccessCounter}；TOPK 语义由段内 payload 的 (d↑, R→L) 顺序与去重键 {@code (uid<<1)|dir}
- * 在视图层复现。
+ * {@code bucketAccessCounter}；TOPK 语义由段内 payload 的 (d↑, R→L) 顺序与去重键
+ * {@code (uid<<1)|dir} 在视图层复现。
  *
  * <p>
- * 4 条 IAE 守卫：① rootDir 为 null/空白 ② segIds 为 null ③ segIds 为空 ④ {@code level} ∉ [0,5]；
- * 另由 {@link Store#open} 兜底「段未注册」/「段头非法」IAE。
+ * 4 条 IAE 守卫：① rootDir 为 null/空白 ② segIds 为 null ③ segIds 为空 ④ {@code level} ∉
+ * [0,5]； 另由 {@link Store#open} 兜底「段未注册」/「段头非法」IAE。
  *
  * <p>
- * 红线：本类位于新子包 {@code fulltext.wordnet}（ZeroLeak3=3 永保）；P21 {@code FulltextStore} 仅
- * append-only；P37 {@code segment/} 源码 0 改（仅复用其公开静态编解码工具）；仅 JDK + first-party
+ * 红线：本类位于新子包 {@code fulltext.wordnet}（ZeroLeak3=3 永保）；P21 {@code FulltextStore}
+ * 仅 append-only；P37 {@code segment/} 源码 0 改（仅复用其公开静态编解码工具）；仅 JDK + first-party
  * import（R2 NG-3）。
  */
 public final class WordNetSegmentView implements AutoCloseable {
 
-    /** 分层级数（char/word/phrase/sentence/sentence_block/doc_struct）。 */
+    /**
+     * 分层级数（char/word/phrase/sentence/sentence_block/doc_struct）。
+     */
     private static final int LEVELS = 6;
-    /** 邻接条目定长宽度：{@code [d 4B][dir 4B][uid 8B]}。 */
+    /**
+     * 邻接条目定长宽度：{@code [d 4B][dir 4B][uid 8B]}。
+     */
     private static final int ENTRY_REC = 16;
-    /** positions 命中区间定长宽度：{@code [start 4B][end 4B]}。 */
+    /**
+     * positions 命中区间定长宽度：{@code [start 4B][end 4B]}。
+     */
     private static final int SPAN_REC = 8;
 
     private final long[] segIdsOldToNew;
@@ -108,7 +114,9 @@ public final class WordNetSegmentView implements AutoCloseable {
     /**
      * 在 (docId,parentId,level) 上下文下，读 target 的 1..maxD 内所有邻居（新段优先短路覆盖）。
      *
-     * <p>{@code maxD} 钳制到 [1, {@link FulltextStore#DIST_MAX}]；miss 返回空列表（zero null）。
+     * <p>
+     * {@code maxD} 钳制到 [1, {@link FulltextStore#DIST_MAX}]；miss 返回空列表（zero
+     * null）。
      */
     public List<Neighbor> neighborsWithin(long targetUid, long docId, long parentId, int level, int maxD) {
         checkLevel(level);
@@ -238,6 +246,54 @@ public final class WordNetSegmentView implements AutoCloseable {
     }
 
     /**
+     * P54 Q4：只读审计——返回 {@code segIdsOldToNew} 中被更新段完全覆盖（数据或墓碑）的 segId 列表
+     * （旧→新序，供调用方决策，<b>0 自动删</b>）。
+     *
+     * <p>
+     * 判定：段 i 仅当「其每个 ctx 键出现在某更新段（j&gt;i）的 ctx 键集」且「其每个 pos 键出现在某更新段的 pos
+     * 键集」时视为完全被覆盖。墓碑段（哨兵 payload）的键同样计入覆盖集。
+     *
+     * @param wordNetRootDir 词网段根目录，非 null 且非空白
+     * @param segIdsOldToNew 段 id 序列（旧在前、新在后），非 null 非空且均已登记
+     * @return 完全被覆盖的 segId（保持传入序）
+     */
+    public static long[] auditSuperseded(String wordNetRootDir, long[] segIdsOldToNew) throws IOException {
+        if (wordNetRootDir == null || wordNetRootDir.trim().isEmpty()) {
+            throw new IllegalArgumentException("auditSuperseded rootDir null or empty");
+        }
+        if (segIdsOldToNew == null) {
+            throw new IllegalArgumentException("auditSuperseded segIds null");
+        }
+        if (segIdsOldToNew.length == 0) {
+            throw new IllegalArgumentException("auditSuperseded segIds empty");
+        }
+        return Store.supersededSegments(wordNetRootDir, segIdsOldToNew);
+    }
+
+    /**
+     * P54 Q4/Q5：显式淘汰——先 unregister（重写 manifest 移除）→ 后 delete 段文件（R9' 强不变式）。
+     *
+     * <p>
+     * 淘汰恒由调用方<b>显式</b>触发（0 后台 / 0 定时器 / 0 新线程）；建议先经 {@link #auditSuperseded}
+     * 只读判定可淘汰集。
+     *
+     * @param wordNetRootDir 词网段根目录，非 null 且非空白
+     * @param segIdsToEvict 待淘汰段 id，非 null 非空且均已登记
+     */
+    public static void evict(String wordNetRootDir, long[] segIdsToEvict) throws IOException {
+        if (wordNetRootDir == null || wordNetRootDir.trim().isEmpty()) {
+            throw new IllegalArgumentException("evict rootDir null or empty");
+        }
+        if (segIdsToEvict == null) {
+            throw new IllegalArgumentException("evict segIds null");
+        }
+        if (segIdsToEvict.length == 0) {
+            throw new IllegalArgumentException("evict segIds empty");
+        }
+        Store.evictSegments(wordNetRootDir, segIdsToEvict);
+    }
+
+    /**
      * 关闭全部底层段读取端（幂等）。
      */
     @Override
@@ -289,29 +345,42 @@ public final class WordNetSegmentView implements AutoCloseable {
      * 单个词网段的 mmap 读取端 + 词网段仓库（manifest）静态操作（ZeroLeak3：内嵌类不计 top-level）。
      *
      * <p>
-     * 段文件布局：4KB 头（MAGIC {@code 'D','N','E','T'} + VERSION + 三类计数 + 4 段 offset/len +
-     * 4×CRC32）+ 依次 4KB 对齐的 4 个 section（ctx 邻接索引 / pos 位置索引 / adjVar 邻接动态区 /
-     * posVar 位置动态区）。索引 section 为定长 16B 记录 {@code [key 8B][off 4B][len 4B]} 且按键严格升序，
-     * 因此 {@link SegmentColumnCodec#binarySearchKey} 可直接在 mmap 上 O(log N) 定位；动态区复用
+     * 段文件布局：4KB 头（MAGIC {@code 'D','N','E','T'} + VERSION + 三类计数 + 4 段
+     * offset/len + 4×CRC32）+ 依次 4KB 对齐的 4 个 section（ctx 邻接索引 / pos 位置索引 /
+     * adjVar 邻接动态区 / posVar 位置动态区）。索引 section 为定长 16B 记录
+     * {@code [key 8B][off 4B][len 4B]} 且按键严格升序， 因此
+     * {@link SegmentColumnCodec#binarySearchKey} 可直接在 mmap 上 O(log N) 定位；动态区复用
      * {@link SegmentColumnCodec#readVar} 按需解压。
      *
      * <p>
-     * 资源管理：{@link #close()} 通过反射调用 JDK 内部 unmapper（与 {@code DsObject.unloadBuffer} 同款
-     * 双通道），确保 Windows 下段文件可被立即删除；close 幂等。
+     * 资源管理：{@link #close()} 通过反射调用 JDK 内部 unmapper（与
+     * {@code DsObject.unloadBuffer} 同款 双通道），确保 Windows 下段文件可被立即删除；close 幂等。
      */
     public static final class Store implements AutoCloseable {
 
-        /** 词网段魔数：'D' 'N' 'E' 'T'（独立于 P37 DIDX，R5 段格式 0 变更）。 */
+        /**
+         * 词网段魔数：'D' 'N' 'E' 'T'（独立于 P37 DIDX，R5 段格式 0 变更）。
+         */
         static final byte[] MAGIC = {'D', 'N', 'E', 'T'};
-        /** 词网段格式版本。 */
+        /**
+         * 词网段格式版本。
+         */
         static final int VERSION = 1;
-        /** 段头保留 1 页（4KB 页对齐）。 */
+        /**
+         * 段头保留 1 页（4KB 页对齐）。
+         */
         static final int HEADER_SIZE = 4096;
-        /** 校验和 section 数量（ctx / pos / adjVar / posVar）。 */
+        /**
+         * 校验和 section 数量（ctx / pos / adjVar / posVar）。
+         */
         static final int CRC_SECTIONS = 4;
-        /** 索引记录定长宽度：{@code [key 8B][off 4B][len 4B]}。 */
+        /**
+         * 索引记录定长宽度：{@code [key 8B][off 4B][len 4B]}。
+         */
         static final int REC_SIZE = 16;
-        /** 段头定长字段区字节数（CRC32 之后全部补零）。 */
+        /**
+         * 段头定长字段区字节数（CRC32 之后全部补零）。
+         */
         static final int HEADER_FIXED = 112;
 
         private static final String DIR_NAME = "wordnet";
@@ -356,7 +425,7 @@ public final class WordNetSegmentView implements AutoCloseable {
          * 打开某已注册词网段（mmap + 段头硬校验 + 4×CRC32），零重建。
          *
          * @param wordNetRootDir 词网段根目录，非 null 且非空白
-         * @param segId          段 id，≥ 0 且已注册
+         * @param segId 段 id，≥ 0 且已注册
          */
         static Store open(String wordNetRootDir, long segId) throws IOException {
             File f = segFile(wordNetRootDir, segId);
@@ -500,7 +569,7 @@ public final class WordNetSegmentView implements AutoCloseable {
          * 登记一个已落盘的词网段（写 manifest，不改段内容；段头 MAGIC/VERSION 校验通过方可登记）。
          *
          * @param wordNetRootDir 根目录
-         * @param segId          段 id，≥ 0；对应文件必须已存在
+         * @param segId 段 id，≥ 0；对应文件必须已存在
          */
         static void append(String wordNetRootDir, long segId) throws IOException {
             File f = segFile(wordNetRootDir, segId);
@@ -537,6 +606,119 @@ public final class WordNetSegmentView implements AutoCloseable {
             sb.append(segId).append('\n');
             File manifest = new File(dirOf(wordNetRootDir), MANIFEST_NAME);
             Files.write(manifest.toPath(), sb.toString().getBytes(StandardCharsets.UTF_8));
+        }
+
+        /**
+         * P54 Q4：只读审计——返回「全部键均被某个更新段覆盖（数据或墓碑）」的 segId（保持传入旧→新序）。
+         *
+         * <p>
+         * 实现：逐段 mmap 顺序读键列（{@link #ctxKeys()} / {@link #posKeys()}）；覆盖集以「排序
+         * {@code long[]} + {@link Arrays#binarySearch}」表达（<b>0 建堆哈希表</b>，对齐
+         * R10）。纯只读，
+         * <b>0 删段</b>。
+         */
+        static long[] supersededSegments(String wordNetRootDir, long[] segIdsOldToNew) throws IOException {
+            long[] registered = list(wordNetRootDir);
+            for (long id : segIdsOldToNew) {
+                if (!contains(registered, id)) {
+                    throw new IllegalArgumentException("auditSuperseded segId not registered: " + id);
+                }
+            }
+            int n = segIdsOldToNew.length;
+            long[][] ctxKeys = new long[n][];
+            long[][] posKeys = new long[n][];
+            for (int i = 0; i < n; i++) {
+                Store s = open(wordNetRootDir, segIdsOldToNew[i]);
+                try {
+                    ctxKeys[i] = s.ctxKeys();
+                    posKeys[i] = s.posKeys();
+                } finally {
+                    s.close();
+                }
+            }
+            List<Long> out = new ArrayList<>();
+            for (int i = 0; i + 1 < n; i++) {
+                long[] coverCtx = unionSorted(ctxKeys, i + 1, n);
+                long[] coverPos = unionSorted(posKeys, i + 1, n);
+                if (allCovered(ctxKeys[i], coverCtx) && allCovered(posKeys[i], coverPos)) {
+                    out.add(segIdsOldToNew[i]);
+                }
+            }
+            long[] res = new long[out.size()];
+            for (int i = 0; i < res.length; i++) {
+                res[i] = out.get(i).longValue();
+            }
+            return res;
+        }
+
+        /**
+         * P54 Q4/Q5：显式淘汰——先 unregister（重写 manifest 移除）→ 后 delete 段文件（R9' 强不变式）。
+         *
+         * <p>
+         * 全部 segId 先整体校验均已登记（任一未登记 → IAE，0 部分变更）；随后原子重写 manifest （{@code .tmp}
+         * → {@link Files#move}）移除目标 segId；最后删段文件。崩溃点：① unregister 前崩 → 段仍可见；②
+         * unregister 后 delete 前崩 → 段文件为孤儿（不在 manifest，{@link #list} 不可见）；③
+         * delete 后崩 → 已淘汰。<b>任一时刻 manifest 内 segId ⇔ 段文件存在</b>。
+         */
+        static void evictSegments(String wordNetRootDir, long[] segIdsToEvict) throws IOException {
+            long[] registered = list(wordNetRootDir);
+            for (long id : segIdsToEvict) {
+                if (!contains(registered, id)) {
+                    throw new IllegalArgumentException("evict segId not registered: " + id);
+                }
+            }
+            StringBuilder sb = new StringBuilder(registered.length * 4);
+            for (long id : registered) {
+                if (!contains(segIdsToEvict, id)) {
+                    sb.append(id).append('\n');
+                }
+            }
+            File manifest = new File(dirOf(wordNetRootDir), MANIFEST_NAME);
+            File tmp = new File(manifest.getAbsolutePath() + ".tmp");
+            Files.write(tmp.toPath(), sb.toString().getBytes(StandardCharsets.UTF_8));
+            Files.move(tmp.toPath(), manifest.toPath(), StandardCopyOption.REPLACE_EXISTING);
+            for (long id : segIdsToEvict) {
+                Files.deleteIfExists(segFile(wordNetRootDir, id).toPath());
+            }
+        }
+
+        private static boolean contains(long[] arr, long v) {
+            for (long a : arr) {
+                if (a == v) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
+         * 合并 {@code keys[from..to)} 为单个升序数组（用于覆盖集，0 哈希表）。
+         */
+        private static long[] unionSorted(long[][] keys, int from, int to) {
+            int total = 0;
+            for (int i = from; i < to; i++) {
+                total += keys[i].length;
+            }
+            long[] out = new long[total];
+            int p = 0;
+            for (int i = from; i < to; i++) {
+                System.arraycopy(keys[i], 0, out, p, keys[i].length);
+                p += keys[i].length;
+            }
+            Arrays.sort(out);
+            return out;
+        }
+
+        /**
+         * 判断 {@code keys} 中每个键是否都在升序 {@code cover} 中命中（空 keys 恒 true）。
+         */
+        private static boolean allCovered(long[] keys, long[] cover) {
+            for (long k : keys) {
+                if (Arrays.binarySearch(cover, k) < 0) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         long segId() {
@@ -587,6 +769,30 @@ public final class WordNetSegmentView implements AutoCloseable {
             int off = posCol.getInt(base + 8);
             int len = posCol.getInt(base + 12);
             return SegmentColumnCodec.readVar(posVar, off, len);
+        }
+
+        /**
+         * P54：顺序枚举本段全部 ctx（邻接）键（mmap 键列直读，<b>0 建堆哈希表</b>）；键列严格升序 → 返回有序。
+         */
+        long[] ctxKeys() {
+            ensureOpen();
+            long[] out = new long[(int) ctxCount];
+            for (int i = 0; i < out.length; i++) {
+                out[i] = ctxCol.getLong(i * REC_SIZE);
+            }
+            return out;
+        }
+
+        /**
+         * P54：顺序枚举本段全部 pos（positions）键（mmap 键列直读，<b>0 建堆哈希表</b>）；键列严格升序 → 返回有序。
+         */
+        long[] posKeys() {
+            ensureOpen();
+            long[] out = new long[(int) posRecCount];
+            for (int i = 0; i < out.length; i++) {
+                out[i] = posCol.getLong(i * REC_SIZE);
+            }
+            return out;
         }
 
         @Override
