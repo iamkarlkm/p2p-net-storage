@@ -201,7 +201,7 @@ SyncReceiverStateStore   → DsHashMap (pending-path lock, write_conflict tracki
 - 先本地 partition：`bucket hash(dsHome) % K` 落到不同磁盘路径，解决现在 46 DsMemory 实例同盘 IOPS 打满的问题；
 - 再分布式 partition：引入 `DsShardRouter`（consistent hash 1024 vnode），`DB_ROW_PUT` 客户端先本地 router 找对应 shard → 发对应 P2P endpoint。
 
-**③ 与 p2p-sync 的协同点**：让 SyncMonitorServer 同时监控 DsDb replication lag（`lastAppliedSequenceId` per shard），直接用现有 `recentCompletedUploads` 同构面板展示。
+**③ ✅ 与 p2p-sync 的协同点（2026-11-03 P55 兑现）**：让 SyncMonitorServer 同时监控 DsDb replication lag（`lastAppliedSequenceId` per shard），直接用现有 `recentCompletedUploads` 同构面板展示。已由 P55 落地 `/sync/api/db-stats` 端点 `replica.lag` 字段兑现（= `DsClusterMonitor.replicaLag` 真值，源自 `DsBinlogReplicator.replicationLag()`，消除既有 TODO 占位；同时 `wal.replayLag` 聚合同一真值源）。
 
 ### P2：功能与性能（让 DsDb 真正能跑复杂查询）
 
@@ -405,9 +405,10 @@ SyncReceiverStateStore   → DsHashMap (pending-path lock, write_conflict tracki
   ✅ Step35 回归 34 tests 0F0E：DsMemoryBugFixTest(3) + DsMemoryBulkArrayTest(7) + DsWALCrashRecoveryTest(4) + DsBinlogBasicTest(6) + DsHashMapTest(4) + DsHashSetI64SevereBugTest(5) + DsHashSetTest testBulkOps(1) + OnlineSchemaCompatibilityTest(4) = 34 tests，**0 error 0 fail 0 skip，确认新增 5 处改动不破坏 P0②/P0③/DsBinlog/DsHashMap/DsHashSet 全部核心高频读写主链路与 crash recovery 防线**。
 - **后续 P2 排期（本 P0 完成，留指针）**：未来实现真正「在线 DDL 全量迁移」时，直接用 TableMeta.legacyRowLength 判断处于 compat 阶段的表 → 后台单线程按主键顺序 getTable(旧记录 shorter length) → putEntity(自动 pad longer length) 逐条 rewrite → 完成后 legacyRowLength 置 −1，期间所有读写仍由 load() 三层兼容兜底 0 阻塞，与 P2 MVCC/冷热分层（§五 P2 ②③）可无缝组合。
 
-**② 可观测性增强**
-- 现有 CacheStats 扩展：每个 DsMemory 派生实例挂 Micrometer-like Gauge：`dsdb.cache.hitRate`、`dsdb.wal.replayLag`、`dsdb.txn.latency.p99`、`dsdb.compaction.bytesPerSec`；
-- P2PSyncMonitorServer 增加 `/sync/api/db-stats` endpoint。
+**② ✅ 可观测性增强（2026-11-03 P55 落地，OQ12-㉝①）**
+- ✅ 现有 CacheStats 扩展：新增统一**可观测快照注册表** `com.q3lives.ds.cluster.stats`（`DbStats` 不可变快照 + `DbStatsRegistry` 静态聚合注册表，Micrometer-like 自研轻量实现，**0 外部指标依赖**）：`dsdb.cache.hitRate`（= `coldReadHits/(coldReadHits+coldReadMisses)`）、`dsdb.wal.replayLag`（= `DsBinlogReplicator.replicationLag()` Σ，真值替代占位）、`dsdb.txn.latency.p99`（1024 容量环形缓冲精确采样，`DsTransactionManager.commit` 插桩）、`dsdb.compaction.bytesPerSec`（`CompactionStats.mergedBytes/秒`）；
+- ✅ `P2PSyncMonitorServer` 增加 `/sync/api/db-stats` endpoint（同构既有 `DbClusterHandler` 内嵌 handler；未注册源 → 全 0 快照 + `ok=true`，HTTP 恒 200）；
+- **约束**：0 新外部 dep（NG-3）/ 0 新线程（R10，`snapshot()` 调用即算 pull）/ 0 改 P21~P54 fulltext + `DsMemory` public 面；新包 top-level = 2（ZeroLeak3 ≤3）。验收：P55 own 35 TR 0F0E + Gate B 1064 TR / 1F（已知基线 `P28_T6.tr64`）/ 0E。commit 见 P55 Stage 5。
 
 **③ ✅ 全量备份目录化格式 + 增量 WAL / 硬链接 snapshot / 时间线恢复（2026-08-24 落地实现）**
 - 新增 `DsFullBackup` 工具类：`<dbHome>/backups/full/<backupId>/` 目录化格式，顶层按 role 分为 `bucket_data/`、`index_eq/`、`meta/`、`binlog_fixed/`、`binlog_dyn/`、`binlog_bytes/`，`manifest.yaml` 自描述，硬链接优先、失败回退拷贝；

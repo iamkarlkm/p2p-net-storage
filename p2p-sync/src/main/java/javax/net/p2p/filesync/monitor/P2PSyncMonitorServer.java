@@ -29,6 +29,9 @@ import javax.net.p2p.filesync.sync.P2PSyncStateStore.QueueStage;
 import javax.net.p2p.filesync.sync.PersistentLongQueue;
 import javax.net.p2p.filesync.sync.SyncUploadStatus;
 
+import com.q3lives.ds.cluster.DsClusterMonitor;
+import com.q3lives.ds.cluster.stats.DbStatsRegistry;
+
 import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
@@ -55,6 +58,8 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         this.server.createContext("/sync/api/failed/discard-manual-replicas", new BatchDiscardManualReplicasHandler());
         this.server.createContext("/sync/api/failed/retry-replicas-by-category", new BatchReplicaCategoryActionHandler(true));
         this.server.createContext("/sync/api/failed/discard-replicas-by-category", new BatchReplicaCategoryActionHandler(false));
+        this.server.createContext("/sync/api/db-cluster", new DbClusterHandler());
+        this.server.createContext("/sync/api/db-stats", new DbStatsHandler());
     }
 
     public void start() {
@@ -71,6 +76,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private final class IndexHandler implements HttpHandler {
+
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             byte[] body = indexHtml().getBytes(StandardCharsets.UTF_8);
@@ -84,6 +90,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private final class QueuesHandler implements HttpHandler {
+
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             P2PSyncStateStore store = syncService.getStore();
@@ -94,6 +101,26 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             int limit = parseIntParam(exchange.getRequestURI(), "limit", 200);
             String json = buildQueuesJson(store, limit);
             writeJson(exchange, 200, json);
+        }
+    }
+
+    private final class DbClusterHandler implements HttpHandler {
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            writeJson(exchange, 200, toJson(DsClusterMonitor.snapshotMap()));
+        }
+    }
+
+    private final class DbStatsHandler implements HttpHandler {
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            // Q5/R8 语义：stats 字段恒存在；未注册源 → 全 0 快照 + ok=true（HTTP 恒 200）。
+            Map<String, Object> body = new LinkedHashMap<String, Object>();
+            body.put("ok", Boolean.TRUE);
+            body.put("stats", DbStatsRegistry.snapshot().toMap());
+            writeJson(exchange, 200, toJson(body));
         }
     }
 
@@ -131,14 +158,14 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             boolean ok;
             if (replica != null && !replica.isBlank()) {
                 ok = retry
-                    ? store.retryFailedReplica(t, directory, fileId, replica)
-                    : store.discardFailedReplica(t, directory, fileId, replica);
+                        ? store.retryFailedReplica(t, directory, fileId, replica)
+                        : store.discardFailedReplica(t, directory, fileId, replica);
             } else {
                 ok = retry ? store.retryFailed(t, directory, fileId) : store.discardFailed(t, directory, fileId);
             }
             long recordedAtMillis = System.currentTimeMillis();
             recordOperatorAction(singleActionName(retry, replica), ok, 1, ok ? 1 : 0, t, directory, fileId, replica, null,
-                ok ? "manual_action_applied" : "not_found");
+                    ok ? "manual_action_applied" : "not_found");
             Map<String, Object> body = new LinkedHashMap<String, Object>();
             body.put("ok", Boolean.valueOf(ok));
             body.put("recordedAtMillis", Long.valueOf(recordedAtMillis));
@@ -150,6 +177,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private final class BatchRetryAutoRecoverableReplicasHandler implements HttpHandler {
+
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             P2PSyncStateStore store = syncService.getStore();
@@ -165,12 +193,13 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             body.put("recordedAtMillis", Long.valueOf(result.recordedAtMillis));
             appendBatchReplicaSummary(body, result);
             recordOperatorAction("RETRY_AUTO_RECOVERABLE_REPLICAS", true, result.touchedFileCount, result.touchedReplicaCount,
-                null, false, 0L, null, null, batchActionMessage("batch_retry_auto_recoverable", result), result);
+                    null, false, 0L, null, null, batchActionMessage("batch_retry_auto_recoverable", result), result);
             writeJson(exchange, 200, toJson(body));
         }
     }
 
     private final class BatchDiscardManualReplicasHandler implements HttpHandler {
+
         @Override
         public void handle(HttpExchange exchange) throws IOException {
             P2PSyncStateStore store = syncService.getStore();
@@ -186,7 +215,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             body.put("recordedAtMillis", Long.valueOf(result.recordedAtMillis));
             appendBatchReplicaSummary(body, result);
             recordOperatorAction("DISCARD_MANUAL_REPLICAS", true, result.touchedFileCount, result.touchedReplicaCount,
-                null, false, 0L, null, null, batchActionMessage("batch_discard_manual", result), result);
+                    null, false, 0L, null, null, batchActionMessage("batch_discard_manual", result), result);
             writeJson(exchange, 200, toJson(body));
         }
     }
@@ -212,8 +241,8 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
                 return;
             }
             BatchReplicaActionResult result = retry
-                ? retryReplicasByCategory(store, categories)
-                : discardReplicasByCategory(store, categories);
+                    ? retryReplicasByCategory(store, categories)
+                    : discardReplicasByCategory(store, categories);
             Map<String, Object> body = new LinkedHashMap<String, Object>();
             body.put("ok", Boolean.TRUE);
             body.put("categories", new ArrayList<String>(categories));
@@ -222,16 +251,16 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             body.put("recordedAtMillis", Long.valueOf(result.recordedAtMillis));
             appendBatchReplicaSummary(body, result);
             recordOperatorAction(retry ? "RETRY_REPLICAS_BY_CATEGORY" : "DISCARD_REPLICAS_BY_CATEGORY",
-                true,
-                result.touchedFileCount,
-                result.touchedReplicaCount,
-                null,
-                false,
-                0L,
-                null,
-                categories,
-                batchActionMessage("batch_category_action", result),
-                result);
+                    true,
+                    result.touchedFileCount,
+                    result.touchedReplicaCount,
+                    null,
+                    false,
+                    0L,
+                    null,
+                    categories,
+                    batchActionMessage("batch_category_action", result),
+                    result);
             writeJson(exchange, 200, toJson(body));
         }
     }
@@ -435,20 +464,20 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     private Map<String, Object> queueMatrixToMap(P2PSyncStateStore store) {
         List<Map<String, Object>> items = new ArrayList<Map<String, Object>>();
         items.add(queueMatrixRow("file_create", "文件新增",
-            store.queueRef(QueueKey.FILE_CREATE, QueueStage.ACTIVE).size(),
-            store.queueRef(QueueKey.FILE_CREATE, QueueStage.FAILED).size()));
+                store.queueRef(QueueKey.FILE_CREATE, QueueStage.ACTIVE).size(),
+                store.queueRef(QueueKey.FILE_CREATE, QueueStage.FAILED).size()));
         items.add(queueMatrixRow("file_modify", "文件修改",
-            store.queueRef(QueueKey.FILE_MODIFY, QueueStage.ACTIVE).size(),
-            store.queueRef(QueueKey.FILE_MODIFY, QueueStage.FAILED).size()));
+                store.queueRef(QueueKey.FILE_MODIFY, QueueStage.ACTIVE).size(),
+                store.queueRef(QueueKey.FILE_MODIFY, QueueStage.FAILED).size()));
         items.add(queueMatrixRow("file_delete", "文件删除",
-            store.queueRef(QueueKey.FILE_DELETE, QueueStage.ACTIVE).size(),
-            store.queueRef(QueueKey.FILE_DELETE, QueueStage.FAILED).size()));
+                store.queueRef(QueueKey.FILE_DELETE, QueueStage.ACTIVE).size(),
+                store.queueRef(QueueKey.FILE_DELETE, QueueStage.FAILED).size()));
         items.add(queueMatrixRow("dir_create", "目录新增",
-            store.queueRef(QueueKey.DIR_CREATE, QueueStage.ACTIVE).size(),
-            store.queueRef(QueueKey.DIR_CREATE, QueueStage.FAILED).size()));
+                store.queueRef(QueueKey.DIR_CREATE, QueueStage.ACTIVE).size(),
+                store.queueRef(QueueKey.DIR_CREATE, QueueStage.FAILED).size()));
         items.add(queueMatrixRow("dir_delete", "目录删除",
-            store.queueRef(QueueKey.DIR_DELETE, QueueStage.ACTIVE).size(),
-            store.queueRef(QueueKey.DIR_DELETE, QueueStage.FAILED).size()));
+                store.queueRef(QueueKey.DIR_DELETE, QueueStage.ACTIVE).size(),
+                store.queueRef(QueueKey.DIR_DELETE, QueueStage.FAILED).size()));
         Map<String, Object> out = new LinkedHashMap<String, Object>();
         out.put("size", Integer.valueOf(items.size()));
         out.put("items", items);
@@ -704,32 +733,32 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         body.put("clearedOutstandingReplicaCount", Integer.valueOf(result.clearedOutstandingReplicaCount));
         body.put("clearedReplicaCategorySummary", result.clearedReplicaCategorySummary == null ? "" : result.clearedReplicaCategorySummary);
         body.put("clearedReplicaCategoryItems", result.clearedReplicaCategoryItems == null
-            ? Collections.emptyList()
-            : result.clearedReplicaCategoryItems);
+                ? Collections.emptyList()
+                : result.clearedReplicaCategoryItems);
         body.put("clearedFailedItemsPreview", result.clearedFailedItemsPreview == null
-            ? Collections.emptyList()
-            : result.clearedFailedItemsPreview);
+                ? Collections.emptyList()
+                : result.clearedFailedItemsPreview);
         body.put("remainingFailedItemCount", Integer.valueOf(result.remainingFailedItemCount));
         body.put("remainingOutstandingReplicaCount", Integer.valueOf(result.remainingOutstandingReplicaCount));
         body.put("remainingReplicaCategorySummary", result.remainingReplicaCategorySummary == null ? "" : result.remainingReplicaCategorySummary);
         body.put("remainingReplicaCategoryItems", result.remainingReplicaCategoryItems == null
-            ? Collections.emptyList()
-            : result.remainingReplicaCategoryItems);
+                ? Collections.emptyList()
+                : result.remainingReplicaCategoryItems);
         body.put("remainingFailedItemsPreview", result.remainingFailedItemsPreview == null
-            ? Collections.emptyList()
-            : result.remainingFailedItemsPreview);
+                ? Collections.emptyList()
+                : result.remainingFailedItemsPreview);
     }
 
     private String batchActionMessage(String prefix, BatchReplicaActionResult result) {
         return prefix
-            + " clearedFailedItems=" + result.clearedFailedItemCount
-            + " clearedOutstandingReplicas=" + result.clearedOutstandingReplicaCount
-            + " clearedCategories=" + (result.clearedReplicaCategorySummary == null ? "" : result.clearedReplicaCategorySummary)
-            + " clearedPreviewPaths=" + (result.clearedFailedPathsSummary == null ? "" : result.clearedFailedPathsSummary)
-            + " remainingFailedItems=" + result.remainingFailedItemCount
-            + " remainingOutstandingReplicas=" + result.remainingOutstandingReplicaCount
-            + " remainingCategories=" + (result.remainingReplicaCategorySummary == null ? "" : result.remainingReplicaCategorySummary)
-            + " previewPaths=" + (result.remainingFailedPathsSummary == null ? "" : result.remainingFailedPathsSummary);
+                + " clearedFailedItems=" + result.clearedFailedItemCount
+                + " clearedOutstandingReplicas=" + result.clearedOutstandingReplicaCount
+                + " clearedCategories=" + (result.clearedReplicaCategorySummary == null ? "" : result.clearedReplicaCategorySummary)
+                + " clearedPreviewPaths=" + (result.clearedFailedPathsSummary == null ? "" : result.clearedFailedPathsSummary)
+                + " remainingFailedItems=" + result.remainingFailedItemCount
+                + " remainingOutstandingReplicas=" + result.remainingOutstandingReplicaCount
+                + " remainingCategories=" + (result.remainingReplicaCategorySummary == null ? "" : result.remainingReplicaCategorySummary)
+                + " previewPaths=" + (result.remainingFailedPathsSummary == null ? "" : result.remainingFailedPathsSummary);
     }
 
     private Map<String, Object> operatorActionTimelineItem(P2PSyncStateStore store, MonitorActionRecord record) {
@@ -782,26 +811,26 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private void recordOperatorAction(String action, boolean success, int touchedFileCount, int touchedReplicaCount,
-                                      FileSyncEventType type, boolean directory, long fileId, String replica,
-                                      Set<String> categories, String message) {
+            FileSyncEventType type, boolean directory, long fileId, String replica,
+            Set<String> categories, String message) {
         recordOperatorAction(action, success, touchedFileCount, touchedReplicaCount, type, directory, fileId, replica, categories, message, null);
     }
 
     private void recordOperatorAction(String action, boolean success, int touchedFileCount, int touchedReplicaCount,
-                                      FileSyncEventType type, boolean directory, long fileId, String replica,
-                                      Set<String> categories, String message, BatchReplicaActionResult result) {
+            FileSyncEventType type, boolean directory, long fileId, String replica,
+            Set<String> categories, String message, BatchReplicaActionResult result) {
         long now = System.currentTimeMillis();
         List<String> categoryList = categories == null || categories.isEmpty()
-            ? Collections.<String>emptyList()
-            : new ArrayList<String>(categories);
+                ? Collections.<String>emptyList()
+                : new ArrayList<String>(categories);
         recentOperatorActions.addFirst(new MonitorActionRecord(action, success, touchedFileCount, touchedReplicaCount,
-            type, directory, fileId, replica, categoryList, now, message,
-            result == null ? 0 : result.clearedFailedItemCount,
-            result == null ? 0 : result.clearedOutstandingReplicaCount,
-            result == null ? "" : result.clearedReplicaCategorySummary,
-            result == null ? 0 : result.remainingFailedItemCount,
-            result == null ? 0 : result.remainingOutstandingReplicaCount,
-            result == null ? "" : result.remainingReplicaCategorySummary));
+                type, directory, fileId, replica, categoryList, now, message,
+                result == null ? 0 : result.clearedFailedItemCount,
+                result == null ? 0 : result.clearedOutstandingReplicaCount,
+                result == null ? "" : result.clearedReplicaCategorySummary,
+                result == null ? 0 : result.remainingFailedItemCount,
+                result == null ? 0 : result.remainingOutstandingReplicaCount,
+                result == null ? "" : result.remainingReplicaCategorySummary));
         while (recentOperatorActions.size() > MAX_RECENT_OPERATOR_ACTIONS) {
             recentOperatorActions.pollLast();
         }
@@ -1609,11 +1638,11 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             return "CONFLICT";
         }
         if ("stale".equals(raw) || "replicas_pending".equals(raw) || raw.contains("stale") || raw.contains("pending")
-            || raw.contains("checksum") || raw.contains("length_mismatch")) {
+                || raw.contains("checksum") || raw.contains("length_mismatch")) {
             return "STATE_MISMATCH";
         }
         if (raw.contains("network") || raw.contains("timeout") || raw.contains("connection")
-            || raw.contains("refused") || raw.contains("unreachable")) {
+                || raw.contains("refused") || raw.contains("unreachable")) {
             return "NETWORK";
         }
         return "OTHER";
@@ -1628,11 +1657,11 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             return "MANUAL_RETRY_OR_DISCARD";
         }
         if ("stale".equals(raw) || "replicas_pending".equals(raw) || raw.contains("pending")
-            || raw.contains("checksum") || raw.contains("length_mismatch")) {
+                || raw.contains("checksum") || raw.contains("length_mismatch")) {
             return "RETRY_AFTER_STATE_CHECK";
         }
         if (raw.contains("network") || raw.contains("timeout") || raw.contains("connection")
-            || raw.contains("refused") || raw.contains("unreachable")) {
+                || raw.contains("refused") || raw.contains("unreachable")) {
             return "RESTORE_CONNECTIVITY_AND_RETRY";
         }
         if ("retry_scheduled".equals(raw)) {
@@ -1719,8 +1748,8 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             return "该项仍可恢复，优先执行重试并继续观察副本收敛。";
         }
         if ("RETRY_NETWORK_REPLICAS".equals(action) || "MANUAL_RETRY_OR_DISCARD_REPLICAS".equals(action)
-            || "VERIFY_STATE_THEN_RETRY".equals(action) || "WAIT_AUTO_RETRY".equals(action)
-            || "INSPECT_REPLICA_DETAIL".equals(action)) {
+                || "VERIFY_STATE_THEN_RETRY".equals(action) || "WAIT_AUTO_RETRY".equals(action)
+                || "INSPECT_REPLICA_DETAIL".equals(action)) {
             String category = firstReplicaCategory(replicaCategoryCounts);
             return operatorHintForReplicaCategory(category == null ? "" : category);
         }
@@ -1912,7 +1941,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             return "";
         }
         return String.valueOf(item.get("fileId")) + "|" + String.valueOf(item.get("path")) + "|"
-            + String.valueOf(item.get("type")) + "|" + String.valueOf(item.get("dir"));
+                + String.valueOf(item.get("type")) + "|" + String.valueOf(item.get("dir"));
     }
 
     private void discardReplicasByCategory(BatchReplicaActionResult result, P2PSyncStateStore store, PersistentLongQueue set, FileSyncEventType type, boolean dir, Set<String> categories) {
@@ -1931,8 +1960,8 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
                 continue;
             }
             int updated = retry
-                ? store.retryFailedReplicas(type, dir, fileId, labels)
-                : store.discardFailedReplicas(type, dir, fileId, labels);
+                    ? store.retryFailedReplicas(type, dir, fileId, labels)
+                    : store.discardFailedReplicas(type, dir, fileId, labels);
             if (updated > 0) {
                 result.touchedFileCount++;
                 result.touchedReplicaCount += updated;
@@ -2138,12 +2167,12 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             return false;
         }
         return !P2PSyncStateStore.REPLICA_ACKED.equals(status)
-            && !P2PSyncStateStore.REPLICA_DISCARDED.equals(status);
+                && !P2PSyncStateStore.REPLICA_DISCARDED.equals(status);
     }
 
     private boolean isReplicaScheduledStatus(String status) {
         return P2PSyncStateStore.REPLICA_TARGETED.equals(status)
-            || P2PSyncStateStore.REPLICA_RETRY.equals(status);
+                || P2PSyncStateStore.REPLICA_RETRY.equals(status);
     }
 
     private void addCount(Map<String, Integer> counts, String key, int delta) {
@@ -2156,717 +2185,717 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
 
     private static String indexHtml() {
         return "<!doctype html>\n"
-            + "<html>\n"
-            + "<head>\n"
-            + "  <meta charset=\"utf-8\"/>\n"
-            + "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>\n"
-            + "  <title>p2p-sync monitor</title>\n"
-            + "  <style>\n"
-            + "    body{font-family:system-ui,Arial; margin:16px;}\n"
-            + "    table{border-collapse:collapse; width:100%; margin:12px 0;}\n"
-            + "    th,td{border:1px solid #ddd; padding:6px 8px; font-size:12px;}\n"
-            + "    th{background:#f6f6f6; text-align:left;}\n"
-            + "    .page{display:flex; flex-direction:column; gap:20px;}\n"
-            + "    .section{display:flex; flex-direction:column; gap:12px;}\n"
-            + "    .section h3{margin:0; font-size:16px;}\n"
-            + "    .row{display:flex; gap:16px; flex-wrap:wrap;}\n"
-            + "    .card{flex:1 1 420px; border:1px solid #ddd; padding:12px;}\n"
-            + "    .summary-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px;}\n"
-            + "    .summary-card{border:1px solid #d9dde7; border-radius:8px; padding:12px; background:#fafcff;}\n"
-            + "    .summary-card.warn{background:#fff9f2; border-color:#f3c78a;}\n"
-            + "    .summary-card.ok{background:#f4fbf6; border-color:#9fd4a8;}\n"
-            + "    .summary-title{font-size:12px; color:#445; margin-bottom:6px;}\n"
-            + "    .summary-value{font-size:24px; font-weight:700; color:#112; margin-bottom:4px;}\n"
-            + "    .summary-meta{font-size:12px; color:#556; line-height:1.5; word-break:break-word;}\n"
-            + "    .cockpit-grid{display:grid; grid-template-columns:1.3fr 1fr; gap:16px; align-items:start;}\n"
-            + "    .cockpit-stack{display:flex; flex-direction:column; gap:16px;}\n"
-            + "    .focus-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px;}\n"
-            + "    .focus-card{border:1px solid #d9dde7; border-radius:8px; padding:12px; background:#fff;}\n"
-            + "    .focus-card h4{margin:0 0 8px 0; font-size:14px;}\n"
-            + "    .focus-meta{font-size:12px; color:#556; line-height:1.5; word-break:break-word;}\n"
-            + "    .action-panel{display:flex; flex-direction:column; gap:12px;}\n"
-            + "    .action-row{display:flex; flex-wrap:wrap; gap:8px;}\n"
-            + "    .action-note{font-size:12px; color:#556; line-height:1.5;}\n"
-            + "    .btn{padding:4px 8px; border:1px solid #666; background:#fff; cursor:pointer;}\n"
-            + "  </style>\n"
-            + "</head>\n"
-            + "<body>\n"
-            + "  <h2>p2p-sync 队列监控</h2>\n"
-            + "  <div>\n"
-            + "    <button class=\"btn\" onclick=\"reload()\">刷新</button>\n"
-            + "    <button class=\"btn\" data-batch-action=\"retry-auto-recoverable-replicas\">批量重试可自动恢复副本</button>\n"
-            + "    <button class=\"btn\" data-batch-action=\"discard-manual-replicas\">批量放弃人工介入副本</button>\n"
-            + "    <button class=\"btn\" data-batch-action=\"retry-network-replicas\">批量重试 NETWORK 副本</button>\n"
-            + "    <button class=\"btn\" data-batch-action=\"discard-conflict-retry-limit-replicas\">批量放弃 CONFLICT/RETRY_LIMIT 副本</button>\n"
-            + "  </div>\n"
-            + "  <div id=\"content\"></div>\n"
-            + "  <script>\n"
-            + "    async function reload(){\n"
-            + "      const res = await fetch('/sync/api/queues?limit=200');\n"
-            + "      const data = await res.json();\n"
-            + "      if(!data.ok){document.getElementById('content').innerText = data.message || 'error';return;}\n"
-            + "      render(data.queues, data.queueMatrix, data.healthSummary, data.failureTrend, data.recoverySuccessSummary, data.failureSummary, data.failureRecoverySummary, data.replicaRecoverySummary, data.replicaFailureSummary, data.replicaFailureCategorySummary, data.hotFailedItems, data.recentOperatorActions, data.recentTimeline, data.timelineRiskSummary, data.stalledUploads, data.stalledReplicaHotspots, data.uploads, data.uploadPolicy, data.retryPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
-            + "    }\n"
-            + "    function esc(s){return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}\n"
-            + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
-            + "    function renderQueue(title, q){\n"
-            + "      let html = '<div class=\"card\"><h3>'+esc(title)+' (size='+q.size+')</h3>';\n"
-            + "      html += '<table><tr><th>fileId</th><th>dir</th><th>type</th><th>path</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>replicaRecoveryClass</th><th>replicas</th><th>replicaCategories</th><th>replicaReasons</th><th>outstandingReplicas</th><th>failedAtMillis</th><th>lastRetriedAtMillis</th><th>reason</th><th>action</th></tr>';\n"
-            + "      for(const it of q.items){\n"
-            + "        const reason = it.reason ? esc(it.reason) : '';\n"
-            + "        const retryable = !!it.retryable;\n"
-            + "        const retryState = retryable ? 'yes' : 'capped';\n"
-            + "        let action = '';\n"
-            + "        if(reason){\n"
-            + "          action = '<button class=\"btn\" data-action=\"retry\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">重试(覆盖同步)</button> ' +\n"
-            + "                   '<button class=\"btn\" data-action=\"discard\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">放弃</button>';\n"
-            + "          if(it.replicaStates){\n"
-            + "            for(const replica of it.replicaStates){\n"
-            + "              if(replica && isReplicaActionable(replica.status)){\n"
-            + "                action += '<br/><button class=\"btn\" data-action=\"retry\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\" data-replica=\"'+escAttr(replica.label)+'\">重试副本:'+esc(replica.label)+'</button> ';\n"
-            + "                action += '<button class=\"btn\" data-action=\"discard\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\" data-replica=\"'+escAttr(replica.label)+'\">放弃副本:'+esc(replica.label)+'</button>';\n"
-            + "              }\n"
-            + "            }\n"
-            + "          }\n"
-            + "        }\n"
-            + "        const outstandingReplicas = (it.outstandingReplicaCount || 0) + ' (auto=' + (it.autoRecoverableReplicaCount || 0) + ', manual=' + (it.manualReplicaCount || 0) + ')';\n"
-            + "        html += '<tr><td>'+it.fileId+'</td><td>'+it.dir+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.path)+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+retryState+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaRecoveryClass || '')+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+esc(it.replicaCategorySummary || '')+'</td><td>'+esc(it.replicaReasonSummary || '')+'</td><td>'+esc(outstandingReplicas)+'</td><td>'+it.failedAtMillis+'</td><td>'+it.lastRetriedAtMillis+'</td><td>'+reason+'</td><td>'+action+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderUploads(u){\n"
-            + "      let html = '<div class=\"card\"><h3>上传中 (size='+u.size+')</h3>';\n"
-            + "      html += '<table><tr><th>path</th><th>replica</th><th>phase</th><th>size</th><th>segmented</th><th>resumedUpload</th><th>resumedSegments</th><th>progress</th><th>lastProgressAtMillis</th><th>stalledMillis</th></tr>';\n"
-            + "      for(const it of u.items){\n"
-            + "        const progress = it.totalSegments > 0 ? (it.uploadedSegments + '/' + it.totalSegments) : '-';\n"
-            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.replicaLabel || '')+'</td><td>'+esc(it.phase)+'</td><td>'+it.fileSize+'</td><td>'+it.segmented+'</td><td>'+it.resumedUpload+'</td><td>'+it.resumedSegments+'</td><td>'+progress+'</td><td>'+it.lastProgressAtMillis+'</td><td>'+it.stalledMillis+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderUploadHistory(title, u){\n"
-            + "      let html = '<div class=\"card\"><h3>'+esc(title)+' (size='+u.size+')</h3>';\n"
-            + "      html += '<table><tr><th>path</th><th>replica</th><th>phase</th><th>size</th><th>resumedUpload</th><th>resumedSegments</th><th>progress</th><th>lastProgressAtMillis</th><th>stalledMillis</th><th>recommendedAction</th><th>operatorHint</th><th>message</th></tr>';\n"
-            + "      for(const it of u.items){\n"
-            + "        const progress = it.totalSegments > 0 ? (it.uploadedSegments + '/' + it.totalSegments) : '-';\n"
-            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.replicaLabel || '')+'</td><td>'+esc(it.phase)+'</td><td>'+it.fileSize+'</td><td>'+it.resumedUpload+'</td><td>'+it.resumedSegments+'</td><td>'+progress+'</td><td>'+it.lastProgressAtMillis+'</td><td>'+it.stalledMillis+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td><td>'+esc(it.message)+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderStalledUploads(u){\n"
-            + "      let html = '<div id=\"stalled-uploads\" class=\"card\"><h3>卡住上传 (size='+u.size+')</h3>';\n"
-            + "      html += '<table><tr><th>path</th><th>replica</th><th>phase</th><th>size</th><th>resumedUpload</th><th>resumedSegments</th><th>progress</th><th>lastProgressAtMillis</th><th>stalledMillis</th><th>message</th></tr>';\n"
-            + "      for(const it of u.items){\n"
-            + "        const progress = it.totalSegments > 0 ? (it.uploadedSegments + '/' + it.totalSegments) : '-';\n"
-            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.replicaLabel || '')+'</td><td>'+esc(it.phase)+'</td><td>'+it.fileSize+'</td><td>'+it.resumedUpload+'</td><td>'+it.resumedSegments+'</td><td>'+progress+'</td><td>'+it.lastProgressAtMillis+'</td><td>'+it.stalledMillis+'</td><td>'+esc(it.message)+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderResumedReplicaHotspots(u){\n"
-            + "      let html = '<div id=\"resumed-replica-hotspots\" class=\"card\"><h3>恢复副本热点 (size='+u.size+')</h3>';\n"
-            + "      html += '<table><tr><th>replica</th><th>count</th><th>resumedSegments</th><th>topPath</th></tr>';\n"
-            + "      for(const it of u.items){\n"
-            + "        html += '<tr><td>'+esc(it.replicaLabel || '')+'</td><td>'+it.count+'</td><td>'+it.resumedSegments+'</td><td>'+esc(it.topPath || '')+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderStalledReplicaHotspots(u){\n"
-            + "      let html = '<div class=\"card\"><h3>卡住副本热点 (size='+u.size+')</h3>';\n"
-            + "      html += '<table><tr><th>replica</th><th>count</th><th>maxStalledMillis</th><th>topPath</th><th>recommendedAction</th><th>operatorHint</th></tr>';\n"
-            + "      for(const it of u.items){\n"
-            + "        html += '<tr><td>'+esc(it.replicaLabel || '')+'</td><td>'+it.count+'</td><td>'+it.maxStalledMillis+'</td><td>'+esc(it.topPath || '')+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderFailureTrend(t){\n"
-            + "      let html = '<div class=\"card\"><h3>失败趋势</h3>';\n"
-            + "      html += '<table><tr><th>recentFailedCount</th><th>failedLast5MinutesCount</th><th>failedLast60MinutesCount</th><th>outstandingFailedCount</th><th>latestFailedAtMillis</th></tr>';\n"
-            + "      html += '<tr><td>'+t.recentFailedCount+'</td><td>'+t.failedLast5MinutesCount+'</td><td>'+t.failedLast60MinutesCount+'</td><td>'+t.outstandingFailedCount+'</td><td>'+t.latestFailedAtMillis+'</td></tr>';\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderRecoverySuccessSummary(s){\n"
-            + "      let html = '<div class=\"card\"><h3>恢复成功率</h3>';\n"
-            + "      html += '<table><tr><th>completedCount</th><th>failedCount</th><th>totalCount</th><th>successRatePercent</th><th>avgCompletedDurationMillis</th><th>avgFailedDurationMillis</th><th>lastCompletedAtMillis</th><th>lastFailedAtMillis</th></tr>';\n"
-            + "      html += '<tr><td>'+s.completedCount+'</td><td>'+s.failedCount+'</td><td>'+s.totalCount+'</td><td>'+s.successRatePercent+'</td><td>'+s.avgCompletedDurationMillis+'</td><td>'+s.avgFailedDurationMillis+'</td><td>'+s.lastCompletedAtMillis+'</td><td>'+s.lastFailedAtMillis+'</td></tr>';\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function formatDeltaSummary(it){\n"
-            + "      return 'failedItems=' + (it.clearedFailedItemCount || 0)\n"
-            + "        + ', outstandingReplicas=' + (it.clearedOutstandingReplicaCount || 0)\n"
-            + "        + ', categories=' + (it.clearedReplicaCategorySummary || '');\n"
-            + "    }\n"
-            + "    function formatRemainingSummary(it){\n"
-            + "      return 'failedItems=' + (it.remainingFailedItemCount || 0)\n"
-            + "        + ', outstandingReplicas=' + (it.remainingOutstandingReplicaCount || 0)\n"
-            + "        + ', categories=' + (it.remainingReplicaCategorySummary || '');\n"
-            + "    }\n"
-            + "    function renderTimeline(t){\n"
-            + "      let html = '<div class=\"card\"><h3>最近操作时间线 (size='+t.size+')</h3>';\n"
-            + "      html += '<table><tr><th>path</th><th>phase</th><th>riskLevel</th><th>riskScore</th><th>focusReason</th><th>cleared</th><th>remaining</th><th>updatedAtMillis</th><th>message</th></tr>';\n"
-            + "      for(const it of t.items){\n"
-            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.phase)+'</td><td>'+esc(it.riskLevel || '')+'</td><td>'+esc(it.riskScore || 0)+'</td><td>'+esc(it.focusReason || '')+'</td><td>'+esc(formatDeltaSummary(it))+'</td><td>'+esc(formatRemainingSummary(it))+'</td><td>'+it.updatedAtMillis+'</td><td>'+esc(it.message)+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderRecentOperatorActions(a){\n"
-            + "      let html = '<div class=\"card\"><h3>最近运维动作 (size='+a.size+')</h3>';\n"
-            + "      html += '<table><tr><th>action</th><th>success</th><th>type</th><th>dir</th><th>fileId</th><th>replica</th><th>categories</th><th>touchedFiles</th><th>touchedReplicas</th><th>cleared</th><th>remaining</th><th>updatedAtMillis</th><th>message</th></tr>';\n"
-            + "      for(const it of a.items){\n"
-            + "        const categories = Array.isArray(it.categories) ? it.categories.join(',') : '';\n"
-            + "        html += '<tr><td>'+esc(it.action)+'</td><td>'+it.success+'</td><td>'+esc(it.type || '')+'</td><td>'+it.dir+'</td><td>'+esc(it.fileId || '')+'</td><td>'+esc(it.replica || '')+'</td><td>'+esc(categories)+'</td><td>'+it.touchedFileCount+'</td><td>'+it.touchedReplicaCount+'</td><td>'+esc(formatDeltaSummary(it))+'</td><td>'+esc(formatRemainingSummary(it))+'</td><td>'+it.updatedAtMillis+'</td><td>'+esc(it.message || '')+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderSection(title, body){\n"
-            + "      return '<section class=\"section\"><h3>'+esc(title)+'</h3><div class=\"row\">'+body+'</div></section>';\n"
-            + "    }\n"
-            + "    function summaryCount(items, key, expected){\n"
-            + "      if(!Array.isArray(items)){return 0;}\n"
-            + "      for(const it of items){\n"
-            + "        if(it && it[key] === expected){\n"
-            + "          return it.count || 0;\n"
-            + "        }\n"
-            + "      }\n"
-            + "      return 0;\n"
-            + "    }\n"
-            + "    function renderSummaryCard(title, value, meta, tone){\n"
-            + "      let cls = 'summary-card';\n"
-            + "      if(tone){ cls += ' ' + tone; }\n"
-            + "      return '<div class=\"'+cls+'\"><div class=\"summary-title\">'+esc(title)+'</div><div class=\"summary-value\">'+esc(String(value))+'</div><div class=\"summary-meta\">'+esc(meta || '')+'</div></div>';\n"
-            + "    }\n"
-            + "    function renderFocusCard(title, value, meta, actionHtml, tone){\n"
-            + "      let cls = 'focus-card';\n"
-            + "      if(tone){ cls += ' ' + tone; }\n"
-            + "      let html = '<div class=\"'+cls+'\"><h4>'+esc(title)+'</h4><div class=\"summary-value\">'+esc(String(value || '-'))+'</div><div class=\"focus-meta\">'+esc(meta || '')+'</div>';\n"
-            + "      if(actionHtml){ html += '<div class=\"action-row\">'+actionHtml+'</div>'; }\n"
-            + "      html += '</div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function normalizeTimelineCategory(topFocusReason){\n"
-            + "      const text = String(topFocusReason || '');\n"
-            + "      if(text.indexOf('CONFLICT') >= 0){ return 'CONFLICT'; }\n"
-            + "      if(text.indexOf('RETRY_LIMIT') >= 0){ return 'RETRY_LIMIT'; }\n"
-            + "      if(text.indexOf('NETWORK') >= 0){ return 'NETWORK'; }\n"
-            + "      if(text.indexOf('STATE_CHECK') >= 0 || text.indexOf('STATE_MISMATCH') >= 0){ return 'STATE_MISMATCH'; }\n"
-            + "      return '';\n"
-            + "    }\n"
-            + "    function hotItemMatchesTimeline(it, timelineRiskSummary){\n"
-            + "      if(!it || !timelineRiskSummary){ return false; }\n"
-            + "      const topPath = timelineRiskSummary.topPath || '';\n"
-            + "      const topCategory = normalizeTimelineCategory(timelineRiskSummary.topFocusReason || '');\n"
-            + "      if(topPath && it.path === topPath){ return true; }\n"
-            + "      if(topCategory){\n"
-            + "        const categorySummary = String(it.replicaCategorySummary || '');\n"
-            + "        const reason = String(it.reason || '');\n"
-            + "        const focusReason = String(it.focusReason || '');\n"
-            + "        if(categorySummary.indexOf(topCategory) >= 0 || reason.indexOf(topCategory.toLowerCase()) >= 0 || focusReason.indexOf(topCategory) >= 0){\n"
-            + "          return true;\n"
-            + "        }\n"
-            + "      }\n"
-            + "      return false;\n"
-            + "    }\n"
-            + "    function pickLinkedHotItem(hotFailedItems, timelineRiskSummary){\n"
-            + "      const hotItems = Array.isArray(hotFailedItems && hotFailedItems.items) ? hotFailedItems.items : [];\n"
-            + "      for(const it of hotItems){\n"
-            + "        if(hotItemMatchesTimeline(it, timelineRiskSummary)){\n"
-            + "          return it;\n"
-            + "        }\n"
-            + "      }\n"
-            + "      return hotItems.length > 0 ? hotItems[0] : null;\n"
-            + "    }\n"
-            + "    function renderTimelineHotspotLink(hotFailedItems, timelineRiskSummary){\n"
-            + "      const linked = pickLinkedHotItem(hotFailedItems, timelineRiskSummary);\n"
-            + "      if(!linked){\n"
-            + "        return '<div class=\"card\"><h3>关联处置</h3><div class=\"action-note\">暂无可关联的热点失败项。</div></div>';\n"
-            + "      }\n"
-            + "      const timelineMeta = timelineRiskSummary && timelineRiskSummary.topRiskLevel\n"
-            + "        ? ('timeline=' + (timelineRiskSummary.topRiskLevel || '-') + '/' + (timelineRiskSummary.topFocusReason || '') + ', path=' + (timelineRiskSummary.topPath || ''))\n"
-            + "        : 'timeline=无高风险事件';\n"
-            + "      const hotMeta = 'hot=' + (linked.priorityLevel || '') + '/' + (linked.priorityScore || 0)\n"
-            + "        + ', action=' + (linked.recommendedAction || '')\n"
-            + "        + ', hint=' + (linked.operatorHint || '');\n"
-            + "      return renderFocusCard('关联处置', linked.path || '-', timelineMeta + ', ' + hotMeta, renderHotFailedItemActionButtons(linked), 'warn');\n"
-            + "    }\n"
-            + "    function remainingCategoryNextStep(summary){\n"
-            + "      const text = String(summary || '');\n"
-            + "      if(text.indexOf('NETWORK') >= 0){ return '优先执行 NETWORK 重试'; }\n"
-            + "      if(text.indexOf('CONFLICT') >= 0 || text.indexOf('RETRY_LIMIT') >= 0){ return '优先人工重试或放弃 CONFLICT/RETRY_LIMIT'; }\n"
-            + "      if(text.indexOf('STATE_MISMATCH') >= 0){ return '先校验状态再重试 STATE_MISMATCH'; }\n"
-            + "      return '回到失败类别入口继续批量处置';\n"
-            + "    }\n"
-            + "    function renderRemainingCategoryActionButtons(summary){\n"
-            + "      const text = String(summary || '');\n"
-            + "      const buttons = [];\n"
-            + "      if(text.indexOf('NETWORK') >= 0){\n"
-            + "        buttons.push('<button class=\"btn\" data-category-action=\"retry\" data-category=\"NETWORK\">继续重试 NETWORK</button>');\n"
-            + "      }\n"
-            + "      if(text.indexOf('CONFLICT') >= 0){\n"
-            + "        buttons.push('<button class=\"btn\" data-category-action=\"retry\" data-category=\"CONFLICT\">人工重试 CONFLICT</button>');\n"
-            + "        buttons.push('<button class=\"btn\" data-category-action=\"discard\" data-category=\"CONFLICT\">放弃 CONFLICT</button>');\n"
-            + "      }\n"
-            + "      if(text.indexOf('RETRY_LIMIT') >= 0){\n"
-            + "        buttons.push('<button class=\"btn\" data-category-action=\"retry\" data-category=\"RETRY_LIMIT\">人工重试 RETRY_LIMIT</button>');\n"
-            + "        buttons.push('<button class=\"btn\" data-category-action=\"discard\" data-category=\"RETRY_LIMIT\">放弃 RETRY_LIMIT</button>');\n"
-            + "      }\n"
-            + "      if(text.indexOf('STATE_MISMATCH') >= 0){\n"
-            + "        buttons.push('<button class=\"btn\" data-category-action=\"retry\" data-category=\"STATE_MISMATCH\">校验后重试 STATE_MISMATCH</button>');\n"
-            + "      }\n"
-            + "      return buttons.length > 0 ? '<div class=\"action-row\">' + buttons.join(' ') + '</div>' : '';\n"
-            + "    }\n"
-            + "    function renderRemainingFailureSample(lastBatchResult, linkedHot, firstAction){\n"
-            + "      const previewItems = Array.isArray(lastBatchResult && lastBatchResult.remainingFailedItemsPreview) ? lastBatchResult.remainingFailedItemsPreview : [];\n"
-            + "      const sample = previewItems.length > 0 ? previewItems[0] : linkedHot;\n"
-            + "      const remainingSummary = firstAction ? (firstAction.remainingReplicaCategorySummary || '') : (lastBatchResult && lastBatchResult.remainingReplicaCategorySummary) || '';\n"
-            + "      if(!sample && !remainingSummary){\n"
-            + "        return renderFocusCard('5. 剩余失败样本', '无剩余样本', '当前没有 remainingFailedItemsPreview 或剩余类别。', '', 'ok');\n"
-            + "      }\n"
-            + "      const value = sample ? (sample.path || '-') : '无明确样本';\n"
-            + "      let meta = 'remainingCategories=' + (remainingSummary || '');\n"
-            + "      if(sample){\n"
-            + "        meta += ', focus=' + (sample.focusReason || '') + ', action=' + (sample.recommendedAction || '') + ', hint=' + (sample.operatorHint || '');\n"
-            + "      }\n"
-            + "      meta += ', next=' + remainingCategoryNextStep(remainingSummary);\n"
-            + "      const sampleActions = sample ? renderHotFailedItemActionButtons(sample) : '';\n"
-            + "      const categoryActions = renderRemainingCategoryActionButtons(remainingSummary);\n"
-            + "      const actionHtml = sampleActions + (sampleActions && categoryActions ? ' ' : '') + categoryActions;\n"
-            + "      return renderFocusCard('5. 剩余失败样本', value, meta, actionHtml, remainingSummary ? 'warn' : 'ok');\n"
-            + "    }\n"
-            + "    function operatorActionDigest(firstAction, lastBatchResult, linkedHot){\n"
-            + "      const previewItems = Array.isArray(lastBatchResult && lastBatchResult.remainingFailedItemsPreview) ? lastBatchResult.remainingFailedItemsPreview : [];\n"
-            + "      const sample = previewItems.length > 0 ? previewItems[0] : linkedHot;\n"
-            + "      const previewPaths = (lastBatchResult && lastBatchResult.remainingFailedPathsSummary) || (sample && sample.path) || '';\n"
-            + "      const remainingSummary = firstAction ? (firstAction.remainingReplicaCategorySummary || '') : (lastBatchResult && lastBatchResult.remainingReplicaCategorySummary) || '';\n"
-            + "      const result = {value:'继续观察', summary:'暂无运维动作', tone:'ok', actionHtml:'', remainingSummary:remainingSummary, previewPaths:previewPaths};\n"
-            + "      const sampleActions = sample ? renderHotFailedItemActionButtons(sample) : '';\n"
-            + "      const categoryActions = renderRemainingCategoryActionButtons(remainingSummary);\n"
-            + "      if(firstAction){\n"
-            + "        const remainingFailedItems = firstAction.remainingFailedItemCount || 0;\n"
-            + "        const remainingOutstandingReplicas = firstAction.remainingOutstandingReplicaCount || 0;\n"
-            + "        result.summary = 'action=' + (firstAction.action || '-') + ', cleared=' + formatDeltaSummary(firstAction) + ', remaining=' + formatRemainingSummary(firstAction);\n"
-            + "        if(previewPaths){ result.summary += ', preview=' + previewPaths; }\n"
-            + "        if(remainingFailedItems > 0 || remainingOutstandingReplicas > 0){\n"
-            + "          result.value = '继续收口';\n"
-            + "          result.tone = 'warn';\n"
-            + "          result.summary += ', next=' + remainingCategoryNextStep(remainingSummary);\n"
-            + "          result.actionHtml = sampleActions + (sampleActions && categoryActions ? ' ' : '') + categoryActions;\n"
-            + "        } else if(firstAction.success){\n"
-            + "          result.value = '已收口';\n"
-            + "          result.tone = 'ok';\n"
-            + "          result.summary += ', next=当前批次已完成收口';\n"
-            + "        } else {\n"
-            + "          result.value = '动作失败';\n"
-            + "          result.tone = 'warn';\n"
-            + "          result.summary += ', next=回到失败类别入口继续批量处置';\n"
-            + "          result.actionHtml = sampleActions || categoryActions;\n"
-            + "        }\n"
-            + "      } else if(sample || remainingSummary){\n"
-            + "        result.summary = 'remainingCategories=' + (remainingSummary || '');\n"
-            + "        if(previewPaths){ result.summary += ', preview=' + previewPaths; }\n"
-            + "        result.summary += ', next=' + remainingCategoryNextStep(remainingSummary);\n"
-            + "        result.tone = remainingSummary ? 'warn' : 'ok';\n"
-            + "        result.actionHtml = sampleActions + (sampleActions && categoryActions ? ' ' : '') + categoryActions;\n"
-            + "      }\n"
-            + "      return result;\n"
-            + "    }\n"
-            + "    function renderOperatorActionDigestCard(firstAction, lastBatchResult, linkedHot){\n"
-            + "      const digest = operatorActionDigest(firstAction, lastBatchResult, linkedHot);\n"
-            + "      return renderFocusCard('最近运维动作摘要', digest.value, digest.summary, digest.actionHtml, digest.tone);\n"
-            + "    }\n"
-            + "    function renderClosureOutcomeCard(lastBatchResult, linkedHot, firstAction){\n"
-            + "      const digest = operatorActionDigest(firstAction, lastBatchResult, linkedHot);\n"
-            + "      return renderFocusCard('3. 收口与后续动作', digest.value, digest.summary, digest.actionHtml, digest.tone);\n"
-            + "    }\n"
-            + "    function renderFailureActionFlow(replicaFailureCategorySummary, hotFailedItems, recentOperatorActions, timelineRiskSummary, lastBatchResult){\n"
-            + "      const categoryItems = Array.isArray(replicaFailureCategorySummary && replicaFailureCategorySummary.items) ? replicaFailureCategorySummary.items : [];\n"
-            + "      const operatorItems = Array.isArray(recentOperatorActions && recentOperatorActions.items) ? recentOperatorActions.items : [];\n"
-            + "      const firstCategory = categoryItems.length > 0 ? categoryItems[0] : null;\n"
-            + "      const linkedHot = pickLinkedHotItem(hotFailedItems, timelineRiskSummary);\n"
-            + "      const firstAction = operatorItems.length > 0 ? operatorItems[0] : null;\n"
-            + "      let html = '<div class=\"card\"><h3>处置链路</h3><div class=\"focus-grid\">';\n"
-            + "      html += renderFocusCard('1. 失败类别入口', firstCategory ? (firstCategory.reason || '-') : '-', firstCategory ? ('count=' + (firstCategory.count || 0) + ', action=' + (firstCategory.recommendedAction || '') + ', hint=' + (firstCategory.operatorHint || '')) : '暂无副本失败类别', firstCategory ? renderReplicaCategoryActionButtons(firstCategory) : '', firstCategory ? 'warn' : 'ok');\n"
-            + "      html += renderFocusCard('2. 热点失败落点', linkedHot ? (linkedHot.path || '-') : '-', linkedHot ? ('priority=' + (linkedHot.priorityLevel || '') + '/' + (linkedHot.priorityScore || 0) + ', focus=' + (linkedHot.focusReason || '') + ', action=' + (linkedHot.recommendedAction || '')) : '暂无热点失败项', linkedHot ? renderHotFailedItemActionButtons(linkedHot) : '', linkedHot ? 'warn' : 'ok');\n"
-            + "      html += renderClosureOutcomeCard(lastBatchResult, linkedHot, firstAction);\n"
-            + "      html += '</div><div class=\"action-note\">先按类别选择批量动作，再查看关联热点失败项，最后用最近运维动作的 cleared/remaining 判断是否真正收口。</div></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderActionOutcomeGuidance(linkedHot, firstAction){\n"
-            + "      let title = '4. 下一步建议';\n"
-            + "      let value = '继续观察';\n"
-            + "      let meta = '暂无最新运维动作，先从失败类别入口或关联热点失败项发起处置。';\n"
-            + "      let tone = 'ok';\n"
-            + "      let actionHtml = linkedHot ? renderHotFailedItemActionButtons(linkedHot) : '';\n"
-            + "      if(firstAction){\n"
-            + "        const remainingFailedItems = firstAction.remainingFailedItemCount || 0;\n"
-            + "        const remainingOutstandingReplicas = firstAction.remainingOutstandingReplicaCount || 0;\n"
-            + "        if(remainingFailedItems > 0 || remainingOutstandingReplicas > 0){\n"
-            + "          value = '继续收口';\n"
-            + "          tone = 'warn';\n"
-            + "          meta = 'remaining=' + formatRemainingSummary(firstAction);\n"
-            + "          actionHtml += renderRemainingCategoryActionButtons(firstAction.remainingReplicaCategorySummary || '');\n"
-            + "          if(linkedHot){\n"
-            + "            meta += ', next=' + (linkedHot.recommendedAction || '') + ', hint=' + (linkedHot.operatorHint || '');\n"
-            + "          } else {\n"
-            + "            meta += ', next=回到失败类别入口继续批量处置';\n"
-            + "          }\n"
-            + "        } else if(firstAction.success){\n"
-            + "          value = '已收口';\n"
-            + "          tone = 'ok';\n"
-            + "          meta = 'cleared=' + formatDeltaSummary(firstAction) + ', remaining=' + formatRemainingSummary(firstAction) + ', 当前批次已完成收口。';\n"
-            + "          actionHtml = '';\n"
-            + "        } else {\n"
-            + "          value = '动作失败';\n"
-            + "          tone = 'warn';\n"
-            + "          meta = '最近运维动作未成功，建议回到关联热点失败项重新选择动作。';\n"
-            + "        }\n"
-            + "      }\n"
-            + "      return renderFocusCard(title, value, meta, actionHtml, tone);\n"
-            + "    }\n"
-            + "    function renderQuickActions(replicaRecoverySummary, timelineRiskSummary, hotFailedItems){\n"
-            + "      const firstHot = pickLinkedHotItem(hotFailedItems, timelineRiskSummary);\n"
-            + "      let html = '<div class=\"card\"><h3>快速动作</h3><div class=\"action-panel\">';\n"
-            + "      html += '<div class=\"action-note\">先处理高风险副本和热点失败；人工重试/放弃不受自动重试上限约束。</div>';\n"
-            + "      html += '<div class=\"action-row\">';\n"
-            + "      html += '<button class=\"btn\" data-batch-action=\"retry-auto-recoverable-replicas\">批量重试可自动恢复副本</button>';\n"
-            + "      html += '<button class=\"btn\" data-batch-action=\"retry-network-replicas\">批量重试 NETWORK 副本</button>';\n"
-            + "      html += '<button class=\"btn\" data-batch-action=\"discard-manual-replicas\">批量放弃人工介入副本</button>';\n"
-            + "      html += '<button class=\"btn\" data-batch-action=\"discard-conflict-retry-limit-replicas\">批量放弃 CONFLICT/RETRY_LIMIT 副本</button>';\n"
-            + "      html += '</div>';\n"
-            + "      if(firstHot){\n"
-            + "        html += '<div class=\"action-note\">关联热点建议：'+esc(firstHot.path || '-')+' | '+esc(firstHot.recommendedAction || '')+' | '+esc(firstHot.operatorHint || '')+'</div>';\n"
-            + "        html += '<div class=\"action-row\">'+renderHotFailedItemActionButtons(firstHot)+'</div>';\n"
-            + "      }\n"
-            + "      if(timelineRiskSummary && timelineRiskSummary.topRiskLevel){\n"
-            + "        html += '<div class=\"action-note\">时间线风险焦点：'+esc(timelineRiskSummary.topRiskLevel || '-')+' / '+esc(timelineRiskSummary.topFocusReason || '')+' / '+esc(timelineRiskSummary.topPath || '')+'</div>';\n"
-            + "      }\n"
-            + "      html += '<div class=\"action-note\">副本待处置：'+((replicaRecoverySummary && replicaRecoverySummary.totalOutstandingReplicas) || 0)+'，优先收口 manual 与 NETWORK 场景。</div>';\n"
-            + "      html += '</div></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderCockpitFocus(healthSummary, hotFailedItems, recentOperatorActions, timelineRiskSummary){\n"
-            + "      const hotItems = Array.isArray(hotFailedItems && hotFailedItems.items) ? hotFailedItems.items : [];\n"
-            + "      const operatorItems = Array.isArray(recentOperatorActions && recentOperatorActions.items) ? recentOperatorActions.items : [];\n"
-            + "      const firstHot = pickLinkedHotItem(hotFailedItems, timelineRiskSummary);\n"
-            + "      const firstAction = operatorItems.length > 0 ? operatorItems[0] : null;\n"
-            + "      const lastBatchResult = window.lastBatchResult || null;\n"
-            + "      const stalledCount = healthSummary && healthSummary.stalledUploadCount ? healthSummary.stalledUploadCount : 0;\n"
-            + "      const resumedCount = healthSummary && healthSummary.resumedUploadCount ? healthSummary.resumedUploadCount : 0;\n"
-            + "      const stalledMeta = stalledCount > 0 ? ('maxStalledMillis=' + (healthSummary.maxStalledMillis || 0) + ', path=' + (healthSummary.topStalledPath || '') + ', replica=' + (healthSummary.topStalledReplicaLabel || '') + ', replicas=' + (healthSummary.stalledReplicaSummary || '') + ', action=' + (healthSummary.stalledRecommendedAction || '') + ', hint=' + (healthSummary.stalledOperatorHint || '')) : '暂无卡住上传';\n"
-            + "      const resumedMeta = resumedCount > 0 ? ('resumedSegments=' + (healthSummary.resumedSegmentCount || 0) + ', path=' + (healthSummary.topResumedPath || '') + ', replica=' + (healthSummary.topResumedReplicaLabel || '') + ', topResumedSegments=' + (healthSummary.topResumedSegments || 0) + ', replicas=' + (healthSummary.resumedReplicaSummary || '')) : '暂无恢复上传';\n"
-            + "      const stalledAction = stalledCount > 0 ? '<button class=\"btn\" data-scroll=\"stalled-uploads\">查看卡住上传</button>' : '';\n"
-            + "      const resumedAction = resumedCount > 0 ? '<button class=\"btn\" data-scroll=\"resumed-replica-hotspots\">查看恢复热点</button>' : '';\n"
-            + "      let html = '<div class=\"card\"><h3>焦点事件</h3><div class=\"focus-grid\">';\n"
-            + "      html += renderFocusCard('热点失败项', firstHot ? (firstHot.path || '-') : '-', firstHot ? ('priority=' + (firstHot.priorityLevel || '') + '/' + (firstHot.priorityScore || 0) + ', focus=' + (firstHot.focusReason || '') + ', action=' + (firstHot.recommendedAction || '')) : '暂无热点失败项', firstHot ? renderHotFailedItemActionButtons(firstHot) : '', firstHot ? 'warn' : 'ok');\n"
-            + "      html += renderFocusCard('时间线高风险事件', timelineRiskSummary && timelineRiskSummary.topRiskLevel ? (timelineRiskSummary.topRiskLevel || '-') : '-', timelineRiskSummary && timelineRiskSummary.topRiskLevel ? ('score=' + (timelineRiskSummary.topRiskScore || 0) + ', phase=' + (timelineRiskSummary.topPhase || '') + ', path=' + (timelineRiskSummary.topPath || '') + ', focus=' + (timelineRiskSummary.topFocusReason || '')) : '暂无时间线高风险事件', '', timelineRiskSummary && ((timelineRiskSummary.criticalCount || 0) > 0 || (timelineRiskSummary.highCount || 0) > 0) ? 'warn' : 'ok');\n"
-            + "      html += renderFocusCard('卡住上传焦点', stalledCount, stalledMeta, stalledAction, stalledCount > 0 ? 'warn' : 'ok');\n"
-            + "      html += renderFocusCard('恢复上传焦点', resumedCount, resumedMeta, resumedAction, resumedCount > 0 ? 'warn' : 'ok');\n"
-            + "      html += renderTimelineHotspotLink(hotFailedItems, timelineRiskSummary);\n"
-            + "      html += renderOperatorActionDigestCard(firstAction, lastBatchResult, firstHot);\n"
-            + "      html += '</div></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderOpsCockpit(healthSummary, failureTrend, recoverySuccessSummary, replicaRecoverySummary, hotFailedItems, recentOperatorActions, recentTimeline, timelineRiskSummary){\n"
-            + "      const replicaRecoveryItems = Array.isArray(replicaRecoverySummary && replicaRecoverySummary.items) ? replicaRecoverySummary.items : [];\n"
-            + "      const hotItems = Array.isArray(hotFailedItems && hotFailedItems.items) ? hotFailedItems.items : [];\n"
-            + "      const operatorItems = Array.isArray(recentOperatorActions && recentOperatorActions.items) ? recentOperatorActions.items : [];\n"
-            + "      const firstHot = hotItems.length > 0 ? hotItems[0] : null;\n"
-            + "      const firstAction = operatorItems.length > 0 ? operatorItems[0] : null;\n"
-            + "      const digest = operatorActionDigest(firstAction, window.lastBatchResult || null, firstHot);\n"
-            + "      const autoRecoverable = summaryCount(replicaRecoveryItems, 'recoveryClass', 'AUTO_RECOVERABLE');\n"
-            + "      const manualIntervention = summaryCount(replicaRecoveryItems, 'recoveryClass', 'MANUAL_INTERVENTION');\n"
-            + "      let html = '<div class=\"card\"><h3>风险总览</h3><div class=\"summary-grid\">';\n"
-            + "      html += renderSummaryCard('失败总量', healthSummary.failedCount || 0, 'active=' + (healthSummary.activeCount || 0) + ', uploading=' + (healthSummary.uploadingCount || 0), (healthSummary.failedCount || 0) > 0 ? 'warn' : 'ok');\n"
-            + "      html += renderSummaryCard('副本待处置', replicaRecoverySummary.totalOutstandingReplicas || 0, 'auto=' + autoRecoverable + ', manual=' + manualIntervention, (replicaRecoverySummary.totalOutstandingReplicas || 0) > 0 ? 'warn' : 'ok');\n"
-            + "      html += renderSummaryCard('卡住上传', healthSummary.stalledUploadCount || 0, (healthSummary.stalledUploadCount || 0) > 0 ? ('maxStalledMillis=' + (healthSummary.maxStalledMillis || 0) + ', path=' + (healthSummary.topStalledPath || '') + ', replica=' + (healthSummary.topStalledReplicaLabel || '') + ', replicas=' + (healthSummary.stalledReplicaSummary || '') + ', action=' + (healthSummary.stalledRecommendedAction || '') + ', hint=' + (healthSummary.stalledOperatorHint || '')) : '暂无卡住上传', (healthSummary.stalledUploadCount || 0) > 0 ? 'warn' : 'ok');\n"
-            + "      html += renderSummaryCard('恢复上传', healthSummary.resumedUploadCount || 0, (healthSummary.resumedUploadCount || 0) > 0 ? ('resumedSegments=' + (healthSummary.resumedSegmentCount || 0) + ', path=' + (healthSummary.topResumedPath || '') + ', replica=' + (healthSummary.topResumedReplicaLabel || '') + ', topResumedSegments=' + (healthSummary.topResumedSegments || 0) + ', replicas=' + (healthSummary.resumedReplicaSummary || '')) : '暂无恢复上传', (healthSummary.resumedUploadCount || 0) > 0 ? 'warn' : 'ok');\n"
-            + "      html += renderSummaryCard('近 5 分钟失败', failureTrend.failedLast5MinutesCount || 0, '60m=' + (failureTrend.failedLast60MinutesCount || 0) + ', outstanding=' + (failureTrend.outstandingFailedCount || 0), (failureTrend.failedLast5MinutesCount || 0) > 0 ? 'warn' : 'ok');\n"
-            + "      html += renderSummaryCard('恢复成功率', (recoverySuccessSummary.successRatePercent || 0) + '%', 'completed=' + (recoverySuccessSummary.completedCount || 0) + ', failed=' + (recoverySuccessSummary.failedCount || 0), (recoverySuccessSummary.successRatePercent || 0) >= 80 ? 'ok' : 'warn');\n"
-            + "      html += renderSummaryCard('热点失败焦点', firstHot ? (firstHot.path || '-') : '-', firstHot ? ('priority=' + (firstHot.priorityLevel || '') + '/' + (firstHot.priorityScore || 0) + ', focus=' + (firstHot.focusReason || '') + ', action=' + (firstHot.recommendedAction || '')) : '暂无热点失败', firstHot ? 'warn' : 'ok');\n"
-            + "      html += renderSummaryCard('最近运维动作摘要', digest.value, digest.summary, digest.tone);\n"
-            + "      html += renderSummaryCard('时间线风险焦点', (timelineRiskSummary && timelineRiskSummary.topRiskLevel) ? timelineRiskSummary.topRiskLevel : '-', (timelineRiskSummary && timelineRiskSummary.topRiskLevel) ? ('score=' + (timelineRiskSummary.topRiskScore || 0) + ', phase=' + (timelineRiskSummary.topPhase || '') + ', path=' + (timelineRiskSummary.topPath || '') + ', focus=' + (timelineRiskSummary.topFocusReason || '')) : '暂无时间线风险事件', (timelineRiskSummary && ((timelineRiskSummary.criticalCount || 0) > 0 || (timelineRiskSummary.highCount || 0) > 0)) ? 'warn' : 'ok');\n"
-            + "      html += '</div></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderQueueMatrix(m){\n"
-            + "      let html = '<div class=\"card\"><h3>队列类型矩阵 (size='+m.size+')</h3>';\n"
-            + "      html += '<table><tr><th>label</th><th>activeCount</th><th>failedCount</th></tr>';\n"
-            + "      for(const it of m.items){\n"
-            + "        html += '<tr><td>'+esc(it.label)+'</td><td>'+it.activeCount+'</td><td>'+it.failedCount+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderFailureRecoverySummary(s){\n"
-            + "      let html = '<div class=\"card\"><h3>恢复分级汇总 (size='+s.size+', total='+s.totalFailedItems+')</h3>';\n"
-            + "      html += '<table><tr><th>recoveryClass</th><th>count</th></tr>';\n"
-            + "      for(const it of s.items){\n"
-            + "        html += '<tr><td>'+esc(it.recoveryClass)+'</td><td>'+it.count+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderReplicaRecoverySummary(s){\n"
-            + "      let html = '<div class=\"card\"><h3>副本恢复分级汇总 (size='+s.size+', outstanding='+s.totalOutstandingReplicas+')</h3>';\n"
-            + "      html += '<table><tr><th>recoveryClass</th><th>count</th></tr>';\n"
-            + "      for(const it of s.items){\n"
-            + "        html += '<tr><td>'+esc(it.recoveryClass)+'</td><td>'+it.count+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderReplicaFailureSummary(s){\n"
-            + "      let html = '<div class=\"card\"><h3>副本失败原因汇总 (size='+s.size+', outstanding='+s.totalOutstandingReplicas+')</h3>';\n"
-            + "      html += '<table><tr><th>reason</th><th>count</th></tr>';\n"
-            + "      for(const it of s.items){\n"
-            + "        html += '<tr><td>'+esc(it.reason)+'</td><td>'+it.count+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderReplicaFailureCategorySummary(s){\n"
-            + "      let html = '<div class=\"card\"><h3>副本失败类别汇总 (size='+s.size+', outstanding='+s.totalOutstandingReplicas+')</h3>';\n"
-            + "      html += '<table><tr><th>category</th><th>count</th><th>recommendedAction</th><th>operatorHint</th><th>action</th></tr>';\n"
-            + "      for(const it of s.items){\n"
-            + "        html += '<tr><td>'+esc(it.reason)+'</td><td>'+it.count+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td><td>'+renderReplicaCategoryActionButtons(it)+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderHotFailedItems(h){\n"
-            + "      let html = '<div class=\"card\"><h3>热点失败项 (size='+h.size+')</h3>';\n"
-            + "      html += '<table><tr><th>path</th><th>type</th><th>priorityLevel</th><th>priorityScore</th><th>focusReason</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>replicaRecoveryClass</th><th>replicas</th><th>replicaCategories</th><th>replicaReasons</th><th>outstandingReplicas</th><th>failedAtMillis</th><th>reason</th><th>recommendedAction</th><th>operatorHint</th><th>action</th></tr>';\n"
-            + "      for(const it of h.items){\n"
-            + "        const outstandingReplicas = (it.outstandingReplicaCount || 0) + ' (auto=' + (it.autoRecoverableReplicaCount || 0) + ', manual=' + (it.manualReplicaCount || 0) + ')';\n"
-            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.priorityLevel || '')+'</td><td>'+esc(it.priorityScore || 0)+'</td><td>'+esc(it.focusReason || '')+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+(it.retryable ? 'yes' : 'capped')+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaRecoveryClass || '')+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+esc(it.replicaCategorySummary || '')+'</td><td>'+esc(it.replicaReasonSummary || '')+'</td><td>'+esc(outstandingReplicas)+'</td><td>'+it.failedAtMillis+'</td><td>'+esc(it.reason)+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td><td>'+renderHotFailedItemActionButtons(it)+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderBatchResultPreview(b){\n"
-            + "      if(!b || !Array.isArray(b.remainingFailedItemsPreview) || b.remainingFailedItemsPreview.length === 0){\n"
-            + "        return '';\n"
-            + "      }\n"
-            + "      let html = '<div class=\"card\"><h3>本次批量动作剩余失败预览</h3>';\n"
-            + "      html += '<p>clearedFailedItems=' + (b.clearedFailedItemCount || 0) + ', clearedOutstandingReplicas=' + (b.clearedOutstandingReplicaCount || 0) + ', clearedCategories=' + esc(b.clearedReplicaCategorySummary || '') + '</p>';\n"
-            + "      html += '<p>remainingFailedItems='+ (b.remainingFailedItemCount || 0) + ', remainingOutstandingReplicas=' + (b.remainingOutstandingReplicaCount || 0) + ', remainingCategories=' + esc(b.remainingReplicaCategorySummary || '') + '</p>';\n"
-            + "      if(Array.isArray(b.clearedFailedItemsPreview) && b.clearedFailedItemsPreview.length > 0){\n"
-            + "        html += '<p>clearedPreviewPaths=' + esc((b.clearedFailedItemsPreview || []).map(it => it.path || '').filter(Boolean).join(',')) + '</p>';\n"
-            + "      }\n"
-            + "      html += '<table><tr><th>path</th><th>type</th><th>priorityLevel</th><th>priorityScore</th><th>focusReason</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>replicaRecoveryClass</th><th>replicas</th><th>replicaCategories</th><th>replicaReasons</th><th>outstandingReplicas</th><th>failedAtMillis</th><th>reason</th><th>recommendedAction</th><th>operatorHint</th><th>action</th></tr>';\n"
-            + "      for(const it of b.remainingFailedItemsPreview){\n"
-            + "        const outstandingReplicas = (it.outstandingReplicaCount || 0) + ' (auto=' + (it.autoRecoverableReplicaCount || 0) + ', manual=' + (it.manualReplicaCount || 0) + ')';\n"
-            + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.priorityLevel || '')+'</td><td>'+esc(it.priorityScore || 0)+'</td><td>'+esc(it.focusReason || '')+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+(it.retryable ? 'yes' : 'capped')+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaRecoveryClass || '')+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+esc(it.replicaCategorySummary || '')+'</td><td>'+esc(it.replicaReasonSummary || '')+'</td><td>'+esc(outstandingReplicas)+'</td><td>'+it.failedAtMillis+'</td><td>'+esc(it.reason)+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td><td>'+renderHotFailedItemActionButtons(it)+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderHealthSummary(h){\n"
-            + "      let html = '<div class=\"card\"><h3>队列健康概览</h3>';\n"
-            + "      html += '<table><tr><th>activeCount</th><th>failedCount</th><th>uploadingCount</th><th>stalledUploadCount</th><th>maxStalledMillis</th><th>topStalledPath</th><th>topStalledReplicaLabel</th><th>stalledReplicaSummary</th><th>stalledRecommendedAction</th><th>stalledOperatorHint</th><th>resumedUploadCount</th><th>resumedSegmentCount</th><th>topResumedPath</th><th>topResumedReplicaLabel</th><th>topResumedSegments</th><th>resumedReplicaSummary</th><th>oldestFailedAtMillis</th><th>maxRetryCount</th></tr>';\n"
-            + "      html += '<tr><td>'+h.activeCount+'</td><td>'+h.failedCount+'</td><td>'+h.uploadingCount+'</td><td>'+h.stalledUploadCount+'</td><td>'+h.maxStalledMillis+'</td><td>'+esc(h.topStalledPath || '')+'</td><td>'+esc(h.topStalledReplicaLabel || '')+'</td><td>'+esc(h.stalledReplicaSummary || '')+'</td><td>'+esc(h.stalledRecommendedAction || '')+'</td><td>'+esc(h.stalledOperatorHint || '')+'</td><td>'+h.resumedUploadCount+'</td><td>'+h.resumedSegmentCount+'</td><td>'+esc(h.topResumedPath || '')+'</td><td>'+esc(h.topResumedReplicaLabel || '')+'</td><td>'+h.topResumedSegments+'</td><td>'+esc(h.resumedReplicaSummary || '')+'</td><td>'+h.oldestFailedAtMillis+'</td><td>'+h.maxRetryCount+'</td></tr>';\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderFailureSummary(s){\n"
-            + "      let html = '<div class=\"card\"><h3>失败原因汇总 (size='+s.size+', total='+s.totalFailedItems+')</h3>';\n"
-            + "      html += '<table><tr><th>reason</th><th>count</th><th>recommendedAction</th><th>operatorHint</th></tr>';\n"
-            + "      for(const it of s.items){\n"
-            + "        html += '<tr><td>'+esc(it.reason)+'</td><td>'+it.count+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td></tr>';\n"
-            + "      }\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderRetryPolicy(r){\n"
-            + "      let html = '<div class=\"card\"><h3>重试策略</h3>';\n"
-            + "      html += '<table><tr><th>autoRetryMode</th><th>maxRetryCount</th><th>retryBackoffMillis</th><th>manualRetryUnrestricted</th></tr>';\n"
-            + "      html += '<tr><td>'+esc(r.autoRetryMode)+'</td><td>'+r.maxRetryCount+'</td><td>'+r.retryBackoffMillis+'</td><td>'+r.manualRetryUnrestricted+'</td></tr>';\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderUploadPolicy(p){\n"
-            + "      let html = '<div class=\"card\"><h3>上传策略</h3>';\n"
-            + "      html += '<table><tr><th>mode</th><th>uploadBlockSizeBytes</th><th>resumeSupported</th><th>historyRetention</th></tr>';\n"
-            + "      html += '<tr><td>'+esc(p.mode)+'</td><td>'+p.uploadBlockSizeBytes+'</td><td>'+p.resumeSupported+'</td><td>'+esc(p.historyRetention)+'</td></tr>';\n"
-            + "      html += '</table></div>';\n"
-            + "      return html;\n"
-            + "    }\n"
-            + "    function renderReplicaCategoryActionButtons(it){\n"
-            + "      const category = it.reason || '';\n"
-            + "      const action = it.recommendedAction || '';\n"
-            + "      if(action === 'RETRY_NETWORK_REPLICAS' || action === 'VERIFY_STATE_THEN_RETRY'){\n"
-            + "        return '<button class=\"btn\" data-category-action=\"retry\" data-category=\"'+escAttr(category)+'\">建议重试</button>';\n"
-            + "      }\n"
-            + "      if(action === 'MANUAL_RETRY_OR_DISCARD_REPLICAS'){\n"
-            + "        return '<button class=\"btn\" data-category-action=\"retry\" data-category=\"'+escAttr(category)+'\">建议重试</button> ' +\n"
-            + "               '<button class=\"btn\" data-category-action=\"discard\" data-category=\"'+escAttr(category)+'\">建议放弃</button>';\n"
-            + "      }\n"
-            + "      return '';\n"
-            + "    }\n"
-            + "    function renderHotFailedItemActionButtons(it){\n"
-            + "      const action = it.recommendedAction || '';\n"
-            + "      const baseRetry = '<button class=\"btn\" data-action=\"retry\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">建议重试</button>';\n"
-            + "      const baseDiscard = '<button class=\"btn\" data-action=\"discard\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">建议放弃</button>';\n"
-            + "      if(action === 'RETRY_FAILED_ITEM' || action === 'VERIFY_STATE_THEN_RETRY' || action === 'RESTORE_CONNECTIVITY_AND_RETRY'){\n"
-            + "        return baseRetry;\n"
-            + "      }\n"
-            + "      if(action === 'MANUAL_RETRY_OR_DISCARD' || action === 'MANUAL_RETRY_OR_DISCARD_REPLICAS'){\n"
-            + "        return baseRetry + ' ' + baseDiscard;\n"
-            + "      }\n"
-            + "      return '';\n"
-            + "    }\n"
-            + "    function isReplicaActionable(status){\n"
-            + "      return !!status && status !== 'ACKED' && status !== 'DISCARDED';\n"
-            + "    }\n"
-            + "    async function retryIt(fileId, dir, type){\n"
-            + "      let url = '/sync/api/failed/retry?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type);\n"
-            + "      if(arguments.length > 3 && arguments[3]){url += '&replica='+encodeURIComponent(arguments[3]);}\n"
-            + "      await fetch(url, {method:'POST'});\n"
-            + "      await reload();\n"
-            + "    }\n"
-            + "    async function discardIt(fileId, dir, type){\n"
-            + "      let url = '/sync/api/failed/discard?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type);\n"
-            + "      if(arguments.length > 3 && arguments[3]){url += '&replica='+encodeURIComponent(arguments[3]);}\n"
-            + "      await fetch(url, {method:'POST'});\n"
-            + "      await reload();\n"
-            + "    }\n"
-            + "    async function retryAutoRecoverableReplicas(){\n"
-            + "      window.lastBatchResult = await fetch('/sync/api/failed/retry-auto-recoverable-replicas', {method:'POST'}).then(r => r.json());\n"
-            + "      await reload();\n"
-            + "    }\n"
-            + "    async function discardManualReplicas(){\n"
-            + "      window.lastBatchResult = await fetch('/sync/api/failed/discard-manual-replicas', {method:'POST'}).then(r => r.json());\n"
-            + "      await reload();\n"
-            + "    }\n"
-            + "    async function retryReplicasByCategory(category){\n"
-            + "      window.lastBatchResult = await fetch('/sync/api/failed/retry-replicas-by-category?category='+encodeURIComponent(category), {method:'POST'}).then(r => r.json());\n"
-            + "      await reload();\n"
-            + "    }\n"
-            + "    async function discardReplicasByCategory(category){\n"
-            + "      window.lastBatchResult = await fetch('/sync/api/failed/discard-replicas-by-category?category='+encodeURIComponent(category), {method:'POST'}).then(r => r.json());\n"
-            + "      await reload();\n"
-            + "    }\n"
-            + "    function render(queues, queueMatrix, healthSummary, failureTrend, recoverySuccessSummary, failureSummary, failureRecoverySummary, replicaRecoverySummary, replicaFailureSummary, replicaFailureCategorySummary, hotFailedItems, recentOperatorActions, recentTimeline, timelineRiskSummary, stalledUploads, stalledReplicaHotspots, uploads, uploadPolicy, retryPolicy, recentCompletedUploads, recentFailedUploads){\n"
-            + "      const keys = [\n"
-            + "        ['新增(文件)', 'file_create'],\n"
-            + "        ['修改(文件)', 'file_modify'],\n"
-            + "        ['删除(文件)', 'file_delete'],\n"
-            + "        ['新增(目录)', 'dir_create'],\n"
-            + "        ['删除(目录)', 'dir_delete'],\n"
-            + "        ['失败-新增(文件)', 'failed_file_create'],\n"
-            + "        ['失败-修改(文件)', 'failed_file_modify'],\n"
-            + "        ['失败-删除(文件)', 'failed_file_delete'],\n"
-            + "        ['失败-新增(目录)', 'failed_dir_create'],\n"
-            + "        ['失败-删除(目录)', 'failed_dir_delete'],\n"
-            + "      ];\n"
-            + "      let overview = '';\n"
-            + "      const safeHealthSummary = healthSummary || {activeCount:0, failedCount:0, uploadingCount:0, stalledUploadCount:0, maxStalledMillis:0, topStalledPath:'', topStalledReplicaLabel:'', stalledReplicaSummary:'', stalledRecommendedAction:'', stalledOperatorHint:'', resumedUploadCount:0, resumedSegmentCount:0, topResumedPath:'', topResumedReplicaLabel:'', topResumedSegments:0, resumedReplicaSummary:'', oldestFailedAtMillis:0, maxRetryCount:0};\n"
-            + "      const safeFailureTrend = failureTrend || {recentFailedCount:0, failedLast5MinutesCount:0, failedLast60MinutesCount:0, outstandingFailedCount:0, latestFailedAtMillis:0};\n"
-            + "      const safeRecoverySuccessSummary = recoverySuccessSummary || {completedCount:0, failedCount:0, totalCount:0, successRatePercent:0, avgCompletedDurationMillis:0, avgFailedDurationMillis:0, lastCompletedAtMillis:0, lastFailedAtMillis:0};\n"
-            + "      const safeReplicaRecoverySummary = replicaRecoverySummary || {size:0, totalOutstandingReplicas:0, items:[]};\n"
-            + "      const safeHotFailedItems = hotFailedItems || {size:0, items:[]};\n"
-            + "      const safeRecentOperatorActions = recentOperatorActions || {size:0, items:[]};\n"
-            + "      const safeRecentTimeline = recentTimeline || {size:0, items:[]};\n"
-            + "      const safeTimelineRiskSummary = timelineRiskSummary || {criticalCount:0, highCount:0, mediumCount:0, lowCount:0, topRiskLevel:'', topRiskScore:0, topFocusReason:'', topPhase:'', topPath:'', topMessage:''};\n"
-            + "      overview += '<div class=\"cockpit-grid\">';\n"
-            + "      overview += '<div class=\"cockpit-stack\">';\n"
-            + "      overview += renderOpsCockpit(safeHealthSummary, safeFailureTrend, safeRecoverySuccessSummary, safeReplicaRecoverySummary, safeHotFailedItems, safeRecentOperatorActions, safeRecentTimeline, safeTimelineRiskSummary);\n"
-            + "      overview += renderCockpitFocus(safeHealthSummary, safeHotFailedItems, safeRecentOperatorActions, safeTimelineRiskSummary);\n"
-            + "      overview += '</div>';\n"
-            + "      overview += '<div class=\"cockpit-stack\">';\n"
-            + "      overview += renderQuickActions(safeReplicaRecoverySummary, safeTimelineRiskSummary, safeHotFailedItems);\n"
-            + "      overview += renderQueueMatrix(queueMatrix || {size:0, items:[]});\n"
-            + "      overview += '</div>';\n"
-            + "      overview += '</div>';\n"
-            + "      overview += renderHealthSummary(safeHealthSummary);\n"
-            + "      overview += renderFailureTrend(safeFailureTrend);\n"
-            + "      overview += renderRecoverySuccessSummary(safeRecoverySuccessSummary);\n"
-            + "      overview += renderUploadPolicy(uploadPolicy || {mode:'AUTO_SEGMENT_RESUMABLE', uploadBlockSizeBytes:0, resumeSupported:true, historyRetention:'memory_recent'});\n"
-            + "      overview += renderRetryPolicy(retryPolicy || {autoRetryMode:'LIMITED_WITH_BACKOFF', maxRetryCount:0, retryBackoffMillis:0, manualRetryUnrestricted:true});\n"
-            + "      let failed = '';\n"
-            + "      failed += renderFailureActionFlow(replicaFailureCategorySummary || {size:0, totalOutstandingReplicas:0, items:[]}, hotFailedItems || {size:0, items:[]}, recentOperatorActions || {size:0, items:[]}, safeTimelineRiskSummary, window.lastBatchResult || null);\n"
-            + "      failed += renderFailureSummary(failureSummary || {size:0, totalFailedItems:0, items:[]});\n"
-            + "      failed += renderFailureRecoverySummary(failureRecoverySummary || {size:0, totalFailedItems:0, items:[]});\n"
-            + "      failed += renderReplicaRecoverySummary(replicaRecoverySummary || {size:0, totalOutstandingReplicas:0, items:[]});\n"
-            + "      failed += renderReplicaFailureSummary(replicaFailureSummary || {size:0, totalOutstandingReplicas:0, items:[]});\n"
-            + "      failed += renderReplicaFailureCategorySummary(replicaFailureCategorySummary || {size:0, totalOutstandingReplicas:0, items:[]});\n"
-            + "      failed += renderHotFailedItems(hotFailedItems || {size:0, items:[]});\n"
-            + "      failed += renderBatchResultPreview(window.lastBatchResult || null);\n"
-            + "      failed += renderRecentOperatorActions(recentOperatorActions || {size:0, items:[]});\n"
-            + "      failed += renderUploadHistory('最近失败上传', recentFailedUploads || {size:0, items:[]});\n"
-            + "      let upload = '';\n"
-            + "      upload += renderResumedReplicaHotspots(resumedReplicaHotspots || {size:0, items:[]});\n"
-            + "      upload += renderStalledReplicaHotspots(stalledReplicaHotspots || {size:0, items:[]});\n"
-            + "      upload += renderStalledUploads(stalledUploads || {size:0, items:[]});\n"
-            + "      upload += renderUploads(uploads || {size:0, items:[]});\n"
-            + "      upload += renderUploadHistory('最近完成上传', recentCompletedUploads || {size:0, items:[]});\n"
-            + "      upload += renderTimeline(recentTimeline || {size:0, items:[]});\n"
-            + "      let queueDetails = '';\n"
-            + "      for(const [title,key] of keys){\n"
-            + "        queueDetails += renderQueue(title, queues[key]);\n"
-            + "      }\n"
-            + "      let html = '<div class=\"page\">';\n"
-            + "      html += renderSection('总览区', overview);\n"
-            + "      html += renderSection('失败区', failed);\n"
-            + "      html += renderSection('上传区', upload);\n"
-            + "      html += renderSection('队列明细区', queueDetails);\n"
-            + "      html += '</div>';\n"
-            + "      document.getElementById('content').innerHTML = html;\n"
-            + "    }\n"
-            + "    document.addEventListener('click', async function(e){\n"
-            + "      const scrollBtn = e.target.closest('button[data-scroll]');\n"
-            + "      if(scrollBtn){\n"
-            + "        const id = scrollBtn.getAttribute('data-scroll');\n"
-            + "        const el = document.getElementById(id);\n"
-            + "        if(el && el.scrollIntoView){ el.scrollIntoView({behavior:'smooth', block:'start'}); }\n"
-            + "        return;\n"
-            + "      }\n"
-            + "      const batchBtn = e.target.closest('button[data-batch-action]');\n"
-            + "      if(batchBtn){\n"
-            + "        if(batchBtn.getAttribute('data-batch-action') === 'retry-auto-recoverable-replicas'){\n"
-            + "          await retryAutoRecoverableReplicas();\n"
-            + "        } else if(batchBtn.getAttribute('data-batch-action') === 'discard-manual-replicas'){\n"
-            + "          await discardManualReplicas();\n"
-            + "        } else if(batchBtn.getAttribute('data-batch-action') === 'retry-network-replicas'){\n"
-            + "          await retryReplicasByCategory('NETWORK');\n"
-            + "        } else if(batchBtn.getAttribute('data-batch-action') === 'discard-conflict-retry-limit-replicas'){\n"
-            + "          await discardReplicasByCategory('CONFLICT,RETRY_LIMIT');\n"
-            + "        }\n"
-            + "        return;\n"
-            + "      }\n"
-            + "      const categoryBtn = e.target.closest('button[data-category-action]');\n"
-            + "      if(categoryBtn){\n"
-            + "        const category = categoryBtn.getAttribute('data-category');\n"
-            + "        if(categoryBtn.getAttribute('data-category-action') === 'retry'){\n"
-            + "          await retryReplicasByCategory(category);\n"
-            + "        } else if(categoryBtn.getAttribute('data-category-action') === 'discard'){\n"
-            + "          await discardReplicasByCategory(category);\n"
-            + "        }\n"
-            + "        return;\n"
-            + "      }\n"
-            + "      const btn = e.target.closest('button[data-action]');\n"
-            + "      if(!btn){return;}\n"
-            + "      const fileId = btn.getAttribute('data-file-id');\n"
-            + "      const dir = btn.getAttribute('data-dir');\n"
-            + "      const type = btn.getAttribute('data-type');\n"
-            + "      const replica = btn.getAttribute('data-replica');\n"
-            + "      if(btn.getAttribute('data-action') === 'retry'){\n"
-            + "        await retryIt(fileId, dir, type, replica);\n"
-            + "      } else if(btn.getAttribute('data-action') === 'discard'){\n"
-            + "        await discardIt(fileId, dir, type, replica);\n"
-            + "      }\n"
-            + "    });\n"
-            + "    reload();\n"
-            + "  </script>\n"
-            + "</body>\n"
-            + "</html>\n";
+                + "<html>\n"
+                + "<head>\n"
+                + "  <meta charset=\"utf-8\"/>\n"
+                + "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>\n"
+                + "  <title>p2p-sync monitor</title>\n"
+                + "  <style>\n"
+                + "    body{font-family:system-ui,Arial; margin:16px;}\n"
+                + "    table{border-collapse:collapse; width:100%; margin:12px 0;}\n"
+                + "    th,td{border:1px solid #ddd; padding:6px 8px; font-size:12px;}\n"
+                + "    th{background:#f6f6f6; text-align:left;}\n"
+                + "    .page{display:flex; flex-direction:column; gap:20px;}\n"
+                + "    .section{display:flex; flex-direction:column; gap:12px;}\n"
+                + "    .section h3{margin:0; font-size:16px;}\n"
+                + "    .row{display:flex; gap:16px; flex-wrap:wrap;}\n"
+                + "    .card{flex:1 1 420px; border:1px solid #ddd; padding:12px;}\n"
+                + "    .summary-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px;}\n"
+                + "    .summary-card{border:1px solid #d9dde7; border-radius:8px; padding:12px; background:#fafcff;}\n"
+                + "    .summary-card.warn{background:#fff9f2; border-color:#f3c78a;}\n"
+                + "    .summary-card.ok{background:#f4fbf6; border-color:#9fd4a8;}\n"
+                + "    .summary-title{font-size:12px; color:#445; margin-bottom:6px;}\n"
+                + "    .summary-value{font-size:24px; font-weight:700; color:#112; margin-bottom:4px;}\n"
+                + "    .summary-meta{font-size:12px; color:#556; line-height:1.5; word-break:break-word;}\n"
+                + "    .cockpit-grid{display:grid; grid-template-columns:1.3fr 1fr; gap:16px; align-items:start;}\n"
+                + "    .cockpit-stack{display:flex; flex-direction:column; gap:16px;}\n"
+                + "    .focus-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:12px;}\n"
+                + "    .focus-card{border:1px solid #d9dde7; border-radius:8px; padding:12px; background:#fff;}\n"
+                + "    .focus-card h4{margin:0 0 8px 0; font-size:14px;}\n"
+                + "    .focus-meta{font-size:12px; color:#556; line-height:1.5; word-break:break-word;}\n"
+                + "    .action-panel{display:flex; flex-direction:column; gap:12px;}\n"
+                + "    .action-row{display:flex; flex-wrap:wrap; gap:8px;}\n"
+                + "    .action-note{font-size:12px; color:#556; line-height:1.5;}\n"
+                + "    .btn{padding:4px 8px; border:1px solid #666; background:#fff; cursor:pointer;}\n"
+                + "  </style>\n"
+                + "</head>\n"
+                + "<body>\n"
+                + "  <h2>p2p-sync 队列监控</h2>\n"
+                + "  <div>\n"
+                + "    <button class=\"btn\" onclick=\"reload()\">刷新</button>\n"
+                + "    <button class=\"btn\" data-batch-action=\"retry-auto-recoverable-replicas\">批量重试可自动恢复副本</button>\n"
+                + "    <button class=\"btn\" data-batch-action=\"discard-manual-replicas\">批量放弃人工介入副本</button>\n"
+                + "    <button class=\"btn\" data-batch-action=\"retry-network-replicas\">批量重试 NETWORK 副本</button>\n"
+                + "    <button class=\"btn\" data-batch-action=\"discard-conflict-retry-limit-replicas\">批量放弃 CONFLICT/RETRY_LIMIT 副本</button>\n"
+                + "  </div>\n"
+                + "  <div id=\"content\"></div>\n"
+                + "  <script>\n"
+                + "    async function reload(){\n"
+                + "      const res = await fetch('/sync/api/queues?limit=200');\n"
+                + "      const data = await res.json();\n"
+                + "      if(!data.ok){document.getElementById('content').innerText = data.message || 'error';return;}\n"
+                + "      render(data.queues, data.queueMatrix, data.healthSummary, data.failureTrend, data.recoverySuccessSummary, data.failureSummary, data.failureRecoverySummary, data.replicaRecoverySummary, data.replicaFailureSummary, data.replicaFailureCategorySummary, data.hotFailedItems, data.recentOperatorActions, data.recentTimeline, data.timelineRiskSummary, data.stalledUploads, data.stalledReplicaHotspots, data.uploads, data.uploadPolicy, data.retryPolicy, data.recentCompletedUploads, data.recentFailedUploads);\n"
+                + "    }\n"
+                + "    function esc(s){return (s||'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');}\n"
+                + "    function escAttr(s){return esc(s).replaceAll('\"','&quot;').replaceAll(\"'\",'&#39;');}\n"
+                + "    function renderQueue(title, q){\n"
+                + "      let html = '<div class=\"card\"><h3>'+esc(title)+' (size='+q.size+')</h3>';\n"
+                + "      html += '<table><tr><th>fileId</th><th>dir</th><th>type</th><th>path</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>replicaRecoveryClass</th><th>replicas</th><th>replicaCategories</th><th>replicaReasons</th><th>outstandingReplicas</th><th>failedAtMillis</th><th>lastRetriedAtMillis</th><th>reason</th><th>action</th></tr>';\n"
+                + "      for(const it of q.items){\n"
+                + "        const reason = it.reason ? esc(it.reason) : '';\n"
+                + "        const retryable = !!it.retryable;\n"
+                + "        const retryState = retryable ? 'yes' : 'capped';\n"
+                + "        let action = '';\n"
+                + "        if(reason){\n"
+                + "          action = '<button class=\"btn\" data-action=\"retry\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">重试(覆盖同步)</button> ' +\n"
+                + "                   '<button class=\"btn\" data-action=\"discard\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">放弃</button>';\n"
+                + "          if(it.replicaStates){\n"
+                + "            for(const replica of it.replicaStates){\n"
+                + "              if(replica && isReplicaActionable(replica.status)){\n"
+                + "                action += '<br/><button class=\"btn\" data-action=\"retry\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\" data-replica=\"'+escAttr(replica.label)+'\">重试副本:'+esc(replica.label)+'</button> ';\n"
+                + "                action += '<button class=\"btn\" data-action=\"discard\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\" data-replica=\"'+escAttr(replica.label)+'\">放弃副本:'+esc(replica.label)+'</button>';\n"
+                + "              }\n"
+                + "            }\n"
+                + "          }\n"
+                + "        }\n"
+                + "        const outstandingReplicas = (it.outstandingReplicaCount || 0) + ' (auto=' + (it.autoRecoverableReplicaCount || 0) + ', manual=' + (it.manualReplicaCount || 0) + ')';\n"
+                + "        html += '<tr><td>'+it.fileId+'</td><td>'+it.dir+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.path)+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+retryState+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaRecoveryClass || '')+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+esc(it.replicaCategorySummary || '')+'</td><td>'+esc(it.replicaReasonSummary || '')+'</td><td>'+esc(outstandingReplicas)+'</td><td>'+it.failedAtMillis+'</td><td>'+it.lastRetriedAtMillis+'</td><td>'+reason+'</td><td>'+action+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderUploads(u){\n"
+                + "      let html = '<div class=\"card\"><h3>上传中 (size='+u.size+')</h3>';\n"
+                + "      html += '<table><tr><th>path</th><th>replica</th><th>phase</th><th>size</th><th>segmented</th><th>resumedUpload</th><th>resumedSegments</th><th>progress</th><th>lastProgressAtMillis</th><th>stalledMillis</th></tr>';\n"
+                + "      for(const it of u.items){\n"
+                + "        const progress = it.totalSegments > 0 ? (it.uploadedSegments + '/' + it.totalSegments) : '-';\n"
+                + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.replicaLabel || '')+'</td><td>'+esc(it.phase)+'</td><td>'+it.fileSize+'</td><td>'+it.segmented+'</td><td>'+it.resumedUpload+'</td><td>'+it.resumedSegments+'</td><td>'+progress+'</td><td>'+it.lastProgressAtMillis+'</td><td>'+it.stalledMillis+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderUploadHistory(title, u){\n"
+                + "      let html = '<div class=\"card\"><h3>'+esc(title)+' (size='+u.size+')</h3>';\n"
+                + "      html += '<table><tr><th>path</th><th>replica</th><th>phase</th><th>size</th><th>resumedUpload</th><th>resumedSegments</th><th>progress</th><th>lastProgressAtMillis</th><th>stalledMillis</th><th>recommendedAction</th><th>operatorHint</th><th>message</th></tr>';\n"
+                + "      for(const it of u.items){\n"
+                + "        const progress = it.totalSegments > 0 ? (it.uploadedSegments + '/' + it.totalSegments) : '-';\n"
+                + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.replicaLabel || '')+'</td><td>'+esc(it.phase)+'</td><td>'+it.fileSize+'</td><td>'+it.resumedUpload+'</td><td>'+it.resumedSegments+'</td><td>'+progress+'</td><td>'+it.lastProgressAtMillis+'</td><td>'+it.stalledMillis+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td><td>'+esc(it.message)+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderStalledUploads(u){\n"
+                + "      let html = '<div id=\"stalled-uploads\" class=\"card\"><h3>卡住上传 (size='+u.size+')</h3>';\n"
+                + "      html += '<table><tr><th>path</th><th>replica</th><th>phase</th><th>size</th><th>resumedUpload</th><th>resumedSegments</th><th>progress</th><th>lastProgressAtMillis</th><th>stalledMillis</th><th>message</th></tr>';\n"
+                + "      for(const it of u.items){\n"
+                + "        const progress = it.totalSegments > 0 ? (it.uploadedSegments + '/' + it.totalSegments) : '-';\n"
+                + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.replicaLabel || '')+'</td><td>'+esc(it.phase)+'</td><td>'+it.fileSize+'</td><td>'+it.resumedUpload+'</td><td>'+it.resumedSegments+'</td><td>'+progress+'</td><td>'+it.lastProgressAtMillis+'</td><td>'+it.stalledMillis+'</td><td>'+esc(it.message)+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderResumedReplicaHotspots(u){\n"
+                + "      let html = '<div id=\"resumed-replica-hotspots\" class=\"card\"><h3>恢复副本热点 (size='+u.size+')</h3>';\n"
+                + "      html += '<table><tr><th>replica</th><th>count</th><th>resumedSegments</th><th>topPath</th></tr>';\n"
+                + "      for(const it of u.items){\n"
+                + "        html += '<tr><td>'+esc(it.replicaLabel || '')+'</td><td>'+it.count+'</td><td>'+it.resumedSegments+'</td><td>'+esc(it.topPath || '')+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderStalledReplicaHotspots(u){\n"
+                + "      let html = '<div class=\"card\"><h3>卡住副本热点 (size='+u.size+')</h3>';\n"
+                + "      html += '<table><tr><th>replica</th><th>count</th><th>maxStalledMillis</th><th>topPath</th><th>recommendedAction</th><th>operatorHint</th></tr>';\n"
+                + "      for(const it of u.items){\n"
+                + "        html += '<tr><td>'+esc(it.replicaLabel || '')+'</td><td>'+it.count+'</td><td>'+it.maxStalledMillis+'</td><td>'+esc(it.topPath || '')+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderFailureTrend(t){\n"
+                + "      let html = '<div class=\"card\"><h3>失败趋势</h3>';\n"
+                + "      html += '<table><tr><th>recentFailedCount</th><th>failedLast5MinutesCount</th><th>failedLast60MinutesCount</th><th>outstandingFailedCount</th><th>latestFailedAtMillis</th></tr>';\n"
+                + "      html += '<tr><td>'+t.recentFailedCount+'</td><td>'+t.failedLast5MinutesCount+'</td><td>'+t.failedLast60MinutesCount+'</td><td>'+t.outstandingFailedCount+'</td><td>'+t.latestFailedAtMillis+'</td></tr>';\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderRecoverySuccessSummary(s){\n"
+                + "      let html = '<div class=\"card\"><h3>恢复成功率</h3>';\n"
+                + "      html += '<table><tr><th>completedCount</th><th>failedCount</th><th>totalCount</th><th>successRatePercent</th><th>avgCompletedDurationMillis</th><th>avgFailedDurationMillis</th><th>lastCompletedAtMillis</th><th>lastFailedAtMillis</th></tr>';\n"
+                + "      html += '<tr><td>'+s.completedCount+'</td><td>'+s.failedCount+'</td><td>'+s.totalCount+'</td><td>'+s.successRatePercent+'</td><td>'+s.avgCompletedDurationMillis+'</td><td>'+s.avgFailedDurationMillis+'</td><td>'+s.lastCompletedAtMillis+'</td><td>'+s.lastFailedAtMillis+'</td></tr>';\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function formatDeltaSummary(it){\n"
+                + "      return 'failedItems=' + (it.clearedFailedItemCount || 0)\n"
+                + "        + ', outstandingReplicas=' + (it.clearedOutstandingReplicaCount || 0)\n"
+                + "        + ', categories=' + (it.clearedReplicaCategorySummary || '');\n"
+                + "    }\n"
+                + "    function formatRemainingSummary(it){\n"
+                + "      return 'failedItems=' + (it.remainingFailedItemCount || 0)\n"
+                + "        + ', outstandingReplicas=' + (it.remainingOutstandingReplicaCount || 0)\n"
+                + "        + ', categories=' + (it.remainingReplicaCategorySummary || '');\n"
+                + "    }\n"
+                + "    function renderTimeline(t){\n"
+                + "      let html = '<div class=\"card\"><h3>最近操作时间线 (size='+t.size+')</h3>';\n"
+                + "      html += '<table><tr><th>path</th><th>phase</th><th>riskLevel</th><th>riskScore</th><th>focusReason</th><th>cleared</th><th>remaining</th><th>updatedAtMillis</th><th>message</th></tr>';\n"
+                + "      for(const it of t.items){\n"
+                + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.phase)+'</td><td>'+esc(it.riskLevel || '')+'</td><td>'+esc(it.riskScore || 0)+'</td><td>'+esc(it.focusReason || '')+'</td><td>'+esc(formatDeltaSummary(it))+'</td><td>'+esc(formatRemainingSummary(it))+'</td><td>'+it.updatedAtMillis+'</td><td>'+esc(it.message)+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderRecentOperatorActions(a){\n"
+                + "      let html = '<div class=\"card\"><h3>最近运维动作 (size='+a.size+')</h3>';\n"
+                + "      html += '<table><tr><th>action</th><th>success</th><th>type</th><th>dir</th><th>fileId</th><th>replica</th><th>categories</th><th>touchedFiles</th><th>touchedReplicas</th><th>cleared</th><th>remaining</th><th>updatedAtMillis</th><th>message</th></tr>';\n"
+                + "      for(const it of a.items){\n"
+                + "        const categories = Array.isArray(it.categories) ? it.categories.join(',') : '';\n"
+                + "        html += '<tr><td>'+esc(it.action)+'</td><td>'+it.success+'</td><td>'+esc(it.type || '')+'</td><td>'+it.dir+'</td><td>'+esc(it.fileId || '')+'</td><td>'+esc(it.replica || '')+'</td><td>'+esc(categories)+'</td><td>'+it.touchedFileCount+'</td><td>'+it.touchedReplicaCount+'</td><td>'+esc(formatDeltaSummary(it))+'</td><td>'+esc(formatRemainingSummary(it))+'</td><td>'+it.updatedAtMillis+'</td><td>'+esc(it.message || '')+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderSection(title, body){\n"
+                + "      return '<section class=\"section\"><h3>'+esc(title)+'</h3><div class=\"row\">'+body+'</div></section>';\n"
+                + "    }\n"
+                + "    function summaryCount(items, key, expected){\n"
+                + "      if(!Array.isArray(items)){return 0;}\n"
+                + "      for(const it of items){\n"
+                + "        if(it && it[key] === expected){\n"
+                + "          return it.count || 0;\n"
+                + "        }\n"
+                + "      }\n"
+                + "      return 0;\n"
+                + "    }\n"
+                + "    function renderSummaryCard(title, value, meta, tone){\n"
+                + "      let cls = 'summary-card';\n"
+                + "      if(tone){ cls += ' ' + tone; }\n"
+                + "      return '<div class=\"'+cls+'\"><div class=\"summary-title\">'+esc(title)+'</div><div class=\"summary-value\">'+esc(String(value))+'</div><div class=\"summary-meta\">'+esc(meta || '')+'</div></div>';\n"
+                + "    }\n"
+                + "    function renderFocusCard(title, value, meta, actionHtml, tone){\n"
+                + "      let cls = 'focus-card';\n"
+                + "      if(tone){ cls += ' ' + tone; }\n"
+                + "      let html = '<div class=\"'+cls+'\"><h4>'+esc(title)+'</h4><div class=\"summary-value\">'+esc(String(value || '-'))+'</div><div class=\"focus-meta\">'+esc(meta || '')+'</div>';\n"
+                + "      if(actionHtml){ html += '<div class=\"action-row\">'+actionHtml+'</div>'; }\n"
+                + "      html += '</div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function normalizeTimelineCategory(topFocusReason){\n"
+                + "      const text = String(topFocusReason || '');\n"
+                + "      if(text.indexOf('CONFLICT') >= 0){ return 'CONFLICT'; }\n"
+                + "      if(text.indexOf('RETRY_LIMIT') >= 0){ return 'RETRY_LIMIT'; }\n"
+                + "      if(text.indexOf('NETWORK') >= 0){ return 'NETWORK'; }\n"
+                + "      if(text.indexOf('STATE_CHECK') >= 0 || text.indexOf('STATE_MISMATCH') >= 0){ return 'STATE_MISMATCH'; }\n"
+                + "      return '';\n"
+                + "    }\n"
+                + "    function hotItemMatchesTimeline(it, timelineRiskSummary){\n"
+                + "      if(!it || !timelineRiskSummary){ return false; }\n"
+                + "      const topPath = timelineRiskSummary.topPath || '';\n"
+                + "      const topCategory = normalizeTimelineCategory(timelineRiskSummary.topFocusReason || '');\n"
+                + "      if(topPath && it.path === topPath){ return true; }\n"
+                + "      if(topCategory){\n"
+                + "        const categorySummary = String(it.replicaCategorySummary || '');\n"
+                + "        const reason = String(it.reason || '');\n"
+                + "        const focusReason = String(it.focusReason || '');\n"
+                + "        if(categorySummary.indexOf(topCategory) >= 0 || reason.indexOf(topCategory.toLowerCase()) >= 0 || focusReason.indexOf(topCategory) >= 0){\n"
+                + "          return true;\n"
+                + "        }\n"
+                + "      }\n"
+                + "      return false;\n"
+                + "    }\n"
+                + "    function pickLinkedHotItem(hotFailedItems, timelineRiskSummary){\n"
+                + "      const hotItems = Array.isArray(hotFailedItems && hotFailedItems.items) ? hotFailedItems.items : [];\n"
+                + "      for(const it of hotItems){\n"
+                + "        if(hotItemMatchesTimeline(it, timelineRiskSummary)){\n"
+                + "          return it;\n"
+                + "        }\n"
+                + "      }\n"
+                + "      return hotItems.length > 0 ? hotItems[0] : null;\n"
+                + "    }\n"
+                + "    function renderTimelineHotspotLink(hotFailedItems, timelineRiskSummary){\n"
+                + "      const linked = pickLinkedHotItem(hotFailedItems, timelineRiskSummary);\n"
+                + "      if(!linked){\n"
+                + "        return '<div class=\"card\"><h3>关联处置</h3><div class=\"action-note\">暂无可关联的热点失败项。</div></div>';\n"
+                + "      }\n"
+                + "      const timelineMeta = timelineRiskSummary && timelineRiskSummary.topRiskLevel\n"
+                + "        ? ('timeline=' + (timelineRiskSummary.topRiskLevel || '-') + '/' + (timelineRiskSummary.topFocusReason || '') + ', path=' + (timelineRiskSummary.topPath || ''))\n"
+                + "        : 'timeline=无高风险事件';\n"
+                + "      const hotMeta = 'hot=' + (linked.priorityLevel || '') + '/' + (linked.priorityScore || 0)\n"
+                + "        + ', action=' + (linked.recommendedAction || '')\n"
+                + "        + ', hint=' + (linked.operatorHint || '');\n"
+                + "      return renderFocusCard('关联处置', linked.path || '-', timelineMeta + ', ' + hotMeta, renderHotFailedItemActionButtons(linked), 'warn');\n"
+                + "    }\n"
+                + "    function remainingCategoryNextStep(summary){\n"
+                + "      const text = String(summary || '');\n"
+                + "      if(text.indexOf('NETWORK') >= 0){ return '优先执行 NETWORK 重试'; }\n"
+                + "      if(text.indexOf('CONFLICT') >= 0 || text.indexOf('RETRY_LIMIT') >= 0){ return '优先人工重试或放弃 CONFLICT/RETRY_LIMIT'; }\n"
+                + "      if(text.indexOf('STATE_MISMATCH') >= 0){ return '先校验状态再重试 STATE_MISMATCH'; }\n"
+                + "      return '回到失败类别入口继续批量处置';\n"
+                + "    }\n"
+                + "    function renderRemainingCategoryActionButtons(summary){\n"
+                + "      const text = String(summary || '');\n"
+                + "      const buttons = [];\n"
+                + "      if(text.indexOf('NETWORK') >= 0){\n"
+                + "        buttons.push('<button class=\"btn\" data-category-action=\"retry\" data-category=\"NETWORK\">继续重试 NETWORK</button>');\n"
+                + "      }\n"
+                + "      if(text.indexOf('CONFLICT') >= 0){\n"
+                + "        buttons.push('<button class=\"btn\" data-category-action=\"retry\" data-category=\"CONFLICT\">人工重试 CONFLICT</button>');\n"
+                + "        buttons.push('<button class=\"btn\" data-category-action=\"discard\" data-category=\"CONFLICT\">放弃 CONFLICT</button>');\n"
+                + "      }\n"
+                + "      if(text.indexOf('RETRY_LIMIT') >= 0){\n"
+                + "        buttons.push('<button class=\"btn\" data-category-action=\"retry\" data-category=\"RETRY_LIMIT\">人工重试 RETRY_LIMIT</button>');\n"
+                + "        buttons.push('<button class=\"btn\" data-category-action=\"discard\" data-category=\"RETRY_LIMIT\">放弃 RETRY_LIMIT</button>');\n"
+                + "      }\n"
+                + "      if(text.indexOf('STATE_MISMATCH') >= 0){\n"
+                + "        buttons.push('<button class=\"btn\" data-category-action=\"retry\" data-category=\"STATE_MISMATCH\">校验后重试 STATE_MISMATCH</button>');\n"
+                + "      }\n"
+                + "      return buttons.length > 0 ? '<div class=\"action-row\">' + buttons.join(' ') + '</div>' : '';\n"
+                + "    }\n"
+                + "    function renderRemainingFailureSample(lastBatchResult, linkedHot, firstAction){\n"
+                + "      const previewItems = Array.isArray(lastBatchResult && lastBatchResult.remainingFailedItemsPreview) ? lastBatchResult.remainingFailedItemsPreview : [];\n"
+                + "      const sample = previewItems.length > 0 ? previewItems[0] : linkedHot;\n"
+                + "      const remainingSummary = firstAction ? (firstAction.remainingReplicaCategorySummary || '') : (lastBatchResult && lastBatchResult.remainingReplicaCategorySummary) || '';\n"
+                + "      if(!sample && !remainingSummary){\n"
+                + "        return renderFocusCard('5. 剩余失败样本', '无剩余样本', '当前没有 remainingFailedItemsPreview 或剩余类别。', '', 'ok');\n"
+                + "      }\n"
+                + "      const value = sample ? (sample.path || '-') : '无明确样本';\n"
+                + "      let meta = 'remainingCategories=' + (remainingSummary || '');\n"
+                + "      if(sample){\n"
+                + "        meta += ', focus=' + (sample.focusReason || '') + ', action=' + (sample.recommendedAction || '') + ', hint=' + (sample.operatorHint || '');\n"
+                + "      }\n"
+                + "      meta += ', next=' + remainingCategoryNextStep(remainingSummary);\n"
+                + "      const sampleActions = sample ? renderHotFailedItemActionButtons(sample) : '';\n"
+                + "      const categoryActions = renderRemainingCategoryActionButtons(remainingSummary);\n"
+                + "      const actionHtml = sampleActions + (sampleActions && categoryActions ? ' ' : '') + categoryActions;\n"
+                + "      return renderFocusCard('5. 剩余失败样本', value, meta, actionHtml, remainingSummary ? 'warn' : 'ok');\n"
+                + "    }\n"
+                + "    function operatorActionDigest(firstAction, lastBatchResult, linkedHot){\n"
+                + "      const previewItems = Array.isArray(lastBatchResult && lastBatchResult.remainingFailedItemsPreview) ? lastBatchResult.remainingFailedItemsPreview : [];\n"
+                + "      const sample = previewItems.length > 0 ? previewItems[0] : linkedHot;\n"
+                + "      const previewPaths = (lastBatchResult && lastBatchResult.remainingFailedPathsSummary) || (sample && sample.path) || '';\n"
+                + "      const remainingSummary = firstAction ? (firstAction.remainingReplicaCategorySummary || '') : (lastBatchResult && lastBatchResult.remainingReplicaCategorySummary) || '';\n"
+                + "      const result = {value:'继续观察', summary:'暂无运维动作', tone:'ok', actionHtml:'', remainingSummary:remainingSummary, previewPaths:previewPaths};\n"
+                + "      const sampleActions = sample ? renderHotFailedItemActionButtons(sample) : '';\n"
+                + "      const categoryActions = renderRemainingCategoryActionButtons(remainingSummary);\n"
+                + "      if(firstAction){\n"
+                + "        const remainingFailedItems = firstAction.remainingFailedItemCount || 0;\n"
+                + "        const remainingOutstandingReplicas = firstAction.remainingOutstandingReplicaCount || 0;\n"
+                + "        result.summary = 'action=' + (firstAction.action || '-') + ', cleared=' + formatDeltaSummary(firstAction) + ', remaining=' + formatRemainingSummary(firstAction);\n"
+                + "        if(previewPaths){ result.summary += ', preview=' + previewPaths; }\n"
+                + "        if(remainingFailedItems > 0 || remainingOutstandingReplicas > 0){\n"
+                + "          result.value = '继续收口';\n"
+                + "          result.tone = 'warn';\n"
+                + "          result.summary += ', next=' + remainingCategoryNextStep(remainingSummary);\n"
+                + "          result.actionHtml = sampleActions + (sampleActions && categoryActions ? ' ' : '') + categoryActions;\n"
+                + "        } else if(firstAction.success){\n"
+                + "          result.value = '已收口';\n"
+                + "          result.tone = 'ok';\n"
+                + "          result.summary += ', next=当前批次已完成收口';\n"
+                + "        } else {\n"
+                + "          result.value = '动作失败';\n"
+                + "          result.tone = 'warn';\n"
+                + "          result.summary += ', next=回到失败类别入口继续批量处置';\n"
+                + "          result.actionHtml = sampleActions || categoryActions;\n"
+                + "        }\n"
+                + "      } else if(sample || remainingSummary){\n"
+                + "        result.summary = 'remainingCategories=' + (remainingSummary || '');\n"
+                + "        if(previewPaths){ result.summary += ', preview=' + previewPaths; }\n"
+                + "        result.summary += ', next=' + remainingCategoryNextStep(remainingSummary);\n"
+                + "        result.tone = remainingSummary ? 'warn' : 'ok';\n"
+                + "        result.actionHtml = sampleActions + (sampleActions && categoryActions ? ' ' : '') + categoryActions;\n"
+                + "      }\n"
+                + "      return result;\n"
+                + "    }\n"
+                + "    function renderOperatorActionDigestCard(firstAction, lastBatchResult, linkedHot){\n"
+                + "      const digest = operatorActionDigest(firstAction, lastBatchResult, linkedHot);\n"
+                + "      return renderFocusCard('最近运维动作摘要', digest.value, digest.summary, digest.actionHtml, digest.tone);\n"
+                + "    }\n"
+                + "    function renderClosureOutcomeCard(lastBatchResult, linkedHot, firstAction){\n"
+                + "      const digest = operatorActionDigest(firstAction, lastBatchResult, linkedHot);\n"
+                + "      return renderFocusCard('3. 收口与后续动作', digest.value, digest.summary, digest.actionHtml, digest.tone);\n"
+                + "    }\n"
+                + "    function renderFailureActionFlow(replicaFailureCategorySummary, hotFailedItems, recentOperatorActions, timelineRiskSummary, lastBatchResult){\n"
+                + "      const categoryItems = Array.isArray(replicaFailureCategorySummary && replicaFailureCategorySummary.items) ? replicaFailureCategorySummary.items : [];\n"
+                + "      const operatorItems = Array.isArray(recentOperatorActions && recentOperatorActions.items) ? recentOperatorActions.items : [];\n"
+                + "      const firstCategory = categoryItems.length > 0 ? categoryItems[0] : null;\n"
+                + "      const linkedHot = pickLinkedHotItem(hotFailedItems, timelineRiskSummary);\n"
+                + "      const firstAction = operatorItems.length > 0 ? operatorItems[0] : null;\n"
+                + "      let html = '<div class=\"card\"><h3>处置链路</h3><div class=\"focus-grid\">';\n"
+                + "      html += renderFocusCard('1. 失败类别入口', firstCategory ? (firstCategory.reason || '-') : '-', firstCategory ? ('count=' + (firstCategory.count || 0) + ', action=' + (firstCategory.recommendedAction || '') + ', hint=' + (firstCategory.operatorHint || '')) : '暂无副本失败类别', firstCategory ? renderReplicaCategoryActionButtons(firstCategory) : '', firstCategory ? 'warn' : 'ok');\n"
+                + "      html += renderFocusCard('2. 热点失败落点', linkedHot ? (linkedHot.path || '-') : '-', linkedHot ? ('priority=' + (linkedHot.priorityLevel || '') + '/' + (linkedHot.priorityScore || 0) + ', focus=' + (linkedHot.focusReason || '') + ', action=' + (linkedHot.recommendedAction || '')) : '暂无热点失败项', linkedHot ? renderHotFailedItemActionButtons(linkedHot) : '', linkedHot ? 'warn' : 'ok');\n"
+                + "      html += renderClosureOutcomeCard(lastBatchResult, linkedHot, firstAction);\n"
+                + "      html += '</div><div class=\"action-note\">先按类别选择批量动作，再查看关联热点失败项，最后用最近运维动作的 cleared/remaining 判断是否真正收口。</div></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderActionOutcomeGuidance(linkedHot, firstAction){\n"
+                + "      let title = '4. 下一步建议';\n"
+                + "      let value = '继续观察';\n"
+                + "      let meta = '暂无最新运维动作，先从失败类别入口或关联热点失败项发起处置。';\n"
+                + "      let tone = 'ok';\n"
+                + "      let actionHtml = linkedHot ? renderHotFailedItemActionButtons(linkedHot) : '';\n"
+                + "      if(firstAction){\n"
+                + "        const remainingFailedItems = firstAction.remainingFailedItemCount || 0;\n"
+                + "        const remainingOutstandingReplicas = firstAction.remainingOutstandingReplicaCount || 0;\n"
+                + "        if(remainingFailedItems > 0 || remainingOutstandingReplicas > 0){\n"
+                + "          value = '继续收口';\n"
+                + "          tone = 'warn';\n"
+                + "          meta = 'remaining=' + formatRemainingSummary(firstAction);\n"
+                + "          actionHtml += renderRemainingCategoryActionButtons(firstAction.remainingReplicaCategorySummary || '');\n"
+                + "          if(linkedHot){\n"
+                + "            meta += ', next=' + (linkedHot.recommendedAction || '') + ', hint=' + (linkedHot.operatorHint || '');\n"
+                + "          } else {\n"
+                + "            meta += ', next=回到失败类别入口继续批量处置';\n"
+                + "          }\n"
+                + "        } else if(firstAction.success){\n"
+                + "          value = '已收口';\n"
+                + "          tone = 'ok';\n"
+                + "          meta = 'cleared=' + formatDeltaSummary(firstAction) + ', remaining=' + formatRemainingSummary(firstAction) + ', 当前批次已完成收口。';\n"
+                + "          actionHtml = '';\n"
+                + "        } else {\n"
+                + "          value = '动作失败';\n"
+                + "          tone = 'warn';\n"
+                + "          meta = '最近运维动作未成功，建议回到关联热点失败项重新选择动作。';\n"
+                + "        }\n"
+                + "      }\n"
+                + "      return renderFocusCard(title, value, meta, actionHtml, tone);\n"
+                + "    }\n"
+                + "    function renderQuickActions(replicaRecoverySummary, timelineRiskSummary, hotFailedItems){\n"
+                + "      const firstHot = pickLinkedHotItem(hotFailedItems, timelineRiskSummary);\n"
+                + "      let html = '<div class=\"card\"><h3>快速动作</h3><div class=\"action-panel\">';\n"
+                + "      html += '<div class=\"action-note\">先处理高风险副本和热点失败；人工重试/放弃不受自动重试上限约束。</div>';\n"
+                + "      html += '<div class=\"action-row\">';\n"
+                + "      html += '<button class=\"btn\" data-batch-action=\"retry-auto-recoverable-replicas\">批量重试可自动恢复副本</button>';\n"
+                + "      html += '<button class=\"btn\" data-batch-action=\"retry-network-replicas\">批量重试 NETWORK 副本</button>';\n"
+                + "      html += '<button class=\"btn\" data-batch-action=\"discard-manual-replicas\">批量放弃人工介入副本</button>';\n"
+                + "      html += '<button class=\"btn\" data-batch-action=\"discard-conflict-retry-limit-replicas\">批量放弃 CONFLICT/RETRY_LIMIT 副本</button>';\n"
+                + "      html += '</div>';\n"
+                + "      if(firstHot){\n"
+                + "        html += '<div class=\"action-note\">关联热点建议：'+esc(firstHot.path || '-')+' | '+esc(firstHot.recommendedAction || '')+' | '+esc(firstHot.operatorHint || '')+'</div>';\n"
+                + "        html += '<div class=\"action-row\">'+renderHotFailedItemActionButtons(firstHot)+'</div>';\n"
+                + "      }\n"
+                + "      if(timelineRiskSummary && timelineRiskSummary.topRiskLevel){\n"
+                + "        html += '<div class=\"action-note\">时间线风险焦点：'+esc(timelineRiskSummary.topRiskLevel || '-')+' / '+esc(timelineRiskSummary.topFocusReason || '')+' / '+esc(timelineRiskSummary.topPath || '')+'</div>';\n"
+                + "      }\n"
+                + "      html += '<div class=\"action-note\">副本待处置：'+((replicaRecoverySummary && replicaRecoverySummary.totalOutstandingReplicas) || 0)+'，优先收口 manual 与 NETWORK 场景。</div>';\n"
+                + "      html += '</div></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderCockpitFocus(healthSummary, hotFailedItems, recentOperatorActions, timelineRiskSummary){\n"
+                + "      const hotItems = Array.isArray(hotFailedItems && hotFailedItems.items) ? hotFailedItems.items : [];\n"
+                + "      const operatorItems = Array.isArray(recentOperatorActions && recentOperatorActions.items) ? recentOperatorActions.items : [];\n"
+                + "      const firstHot = pickLinkedHotItem(hotFailedItems, timelineRiskSummary);\n"
+                + "      const firstAction = operatorItems.length > 0 ? operatorItems[0] : null;\n"
+                + "      const lastBatchResult = window.lastBatchResult || null;\n"
+                + "      const stalledCount = healthSummary && healthSummary.stalledUploadCount ? healthSummary.stalledUploadCount : 0;\n"
+                + "      const resumedCount = healthSummary && healthSummary.resumedUploadCount ? healthSummary.resumedUploadCount : 0;\n"
+                + "      const stalledMeta = stalledCount > 0 ? ('maxStalledMillis=' + (healthSummary.maxStalledMillis || 0) + ', path=' + (healthSummary.topStalledPath || '') + ', replica=' + (healthSummary.topStalledReplicaLabel || '') + ', replicas=' + (healthSummary.stalledReplicaSummary || '') + ', action=' + (healthSummary.stalledRecommendedAction || '') + ', hint=' + (healthSummary.stalledOperatorHint || '')) : '暂无卡住上传';\n"
+                + "      const resumedMeta = resumedCount > 0 ? ('resumedSegments=' + (healthSummary.resumedSegmentCount || 0) + ', path=' + (healthSummary.topResumedPath || '') + ', replica=' + (healthSummary.topResumedReplicaLabel || '') + ', topResumedSegments=' + (healthSummary.topResumedSegments || 0) + ', replicas=' + (healthSummary.resumedReplicaSummary || '')) : '暂无恢复上传';\n"
+                + "      const stalledAction = stalledCount > 0 ? '<button class=\"btn\" data-scroll=\"stalled-uploads\">查看卡住上传</button>' : '';\n"
+                + "      const resumedAction = resumedCount > 0 ? '<button class=\"btn\" data-scroll=\"resumed-replica-hotspots\">查看恢复热点</button>' : '';\n"
+                + "      let html = '<div class=\"card\"><h3>焦点事件</h3><div class=\"focus-grid\">';\n"
+                + "      html += renderFocusCard('热点失败项', firstHot ? (firstHot.path || '-') : '-', firstHot ? ('priority=' + (firstHot.priorityLevel || '') + '/' + (firstHot.priorityScore || 0) + ', focus=' + (firstHot.focusReason || '') + ', action=' + (firstHot.recommendedAction || '')) : '暂无热点失败项', firstHot ? renderHotFailedItemActionButtons(firstHot) : '', firstHot ? 'warn' : 'ok');\n"
+                + "      html += renderFocusCard('时间线高风险事件', timelineRiskSummary && timelineRiskSummary.topRiskLevel ? (timelineRiskSummary.topRiskLevel || '-') : '-', timelineRiskSummary && timelineRiskSummary.topRiskLevel ? ('score=' + (timelineRiskSummary.topRiskScore || 0) + ', phase=' + (timelineRiskSummary.topPhase || '') + ', path=' + (timelineRiskSummary.topPath || '') + ', focus=' + (timelineRiskSummary.topFocusReason || '')) : '暂无时间线高风险事件', '', timelineRiskSummary && ((timelineRiskSummary.criticalCount || 0) > 0 || (timelineRiskSummary.highCount || 0) > 0) ? 'warn' : 'ok');\n"
+                + "      html += renderFocusCard('卡住上传焦点', stalledCount, stalledMeta, stalledAction, stalledCount > 0 ? 'warn' : 'ok');\n"
+                + "      html += renderFocusCard('恢复上传焦点', resumedCount, resumedMeta, resumedAction, resumedCount > 0 ? 'warn' : 'ok');\n"
+                + "      html += renderTimelineHotspotLink(hotFailedItems, timelineRiskSummary);\n"
+                + "      html += renderOperatorActionDigestCard(firstAction, lastBatchResult, firstHot);\n"
+                + "      html += '</div></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderOpsCockpit(healthSummary, failureTrend, recoverySuccessSummary, replicaRecoverySummary, hotFailedItems, recentOperatorActions, recentTimeline, timelineRiskSummary){\n"
+                + "      const replicaRecoveryItems = Array.isArray(replicaRecoverySummary && replicaRecoverySummary.items) ? replicaRecoverySummary.items : [];\n"
+                + "      const hotItems = Array.isArray(hotFailedItems && hotFailedItems.items) ? hotFailedItems.items : [];\n"
+                + "      const operatorItems = Array.isArray(recentOperatorActions && recentOperatorActions.items) ? recentOperatorActions.items : [];\n"
+                + "      const firstHot = hotItems.length > 0 ? hotItems[0] : null;\n"
+                + "      const firstAction = operatorItems.length > 0 ? operatorItems[0] : null;\n"
+                + "      const digest = operatorActionDigest(firstAction, window.lastBatchResult || null, firstHot);\n"
+                + "      const autoRecoverable = summaryCount(replicaRecoveryItems, 'recoveryClass', 'AUTO_RECOVERABLE');\n"
+                + "      const manualIntervention = summaryCount(replicaRecoveryItems, 'recoveryClass', 'MANUAL_INTERVENTION');\n"
+                + "      let html = '<div class=\"card\"><h3>风险总览</h3><div class=\"summary-grid\">';\n"
+                + "      html += renderSummaryCard('失败总量', healthSummary.failedCount || 0, 'active=' + (healthSummary.activeCount || 0) + ', uploading=' + (healthSummary.uploadingCount || 0), (healthSummary.failedCount || 0) > 0 ? 'warn' : 'ok');\n"
+                + "      html += renderSummaryCard('副本待处置', replicaRecoverySummary.totalOutstandingReplicas || 0, 'auto=' + autoRecoverable + ', manual=' + manualIntervention, (replicaRecoverySummary.totalOutstandingReplicas || 0) > 0 ? 'warn' : 'ok');\n"
+                + "      html += renderSummaryCard('卡住上传', healthSummary.stalledUploadCount || 0, (healthSummary.stalledUploadCount || 0) > 0 ? ('maxStalledMillis=' + (healthSummary.maxStalledMillis || 0) + ', path=' + (healthSummary.topStalledPath || '') + ', replica=' + (healthSummary.topStalledReplicaLabel || '') + ', replicas=' + (healthSummary.stalledReplicaSummary || '') + ', action=' + (healthSummary.stalledRecommendedAction || '') + ', hint=' + (healthSummary.stalledOperatorHint || '')) : '暂无卡住上传', (healthSummary.stalledUploadCount || 0) > 0 ? 'warn' : 'ok');\n"
+                + "      html += renderSummaryCard('恢复上传', healthSummary.resumedUploadCount || 0, (healthSummary.resumedUploadCount || 0) > 0 ? ('resumedSegments=' + (healthSummary.resumedSegmentCount || 0) + ', path=' + (healthSummary.topResumedPath || '') + ', replica=' + (healthSummary.topResumedReplicaLabel || '') + ', topResumedSegments=' + (healthSummary.topResumedSegments || 0) + ', replicas=' + (healthSummary.resumedReplicaSummary || '')) : '暂无恢复上传', (healthSummary.resumedUploadCount || 0) > 0 ? 'warn' : 'ok');\n"
+                + "      html += renderSummaryCard('近 5 分钟失败', failureTrend.failedLast5MinutesCount || 0, '60m=' + (failureTrend.failedLast60MinutesCount || 0) + ', outstanding=' + (failureTrend.outstandingFailedCount || 0), (failureTrend.failedLast5MinutesCount || 0) > 0 ? 'warn' : 'ok');\n"
+                + "      html += renderSummaryCard('恢复成功率', (recoverySuccessSummary.successRatePercent || 0) + '%', 'completed=' + (recoverySuccessSummary.completedCount || 0) + ', failed=' + (recoverySuccessSummary.failedCount || 0), (recoverySuccessSummary.successRatePercent || 0) >= 80 ? 'ok' : 'warn');\n"
+                + "      html += renderSummaryCard('热点失败焦点', firstHot ? (firstHot.path || '-') : '-', firstHot ? ('priority=' + (firstHot.priorityLevel || '') + '/' + (firstHot.priorityScore || 0) + ', focus=' + (firstHot.focusReason || '') + ', action=' + (firstHot.recommendedAction || '')) : '暂无热点失败', firstHot ? 'warn' : 'ok');\n"
+                + "      html += renderSummaryCard('最近运维动作摘要', digest.value, digest.summary, digest.tone);\n"
+                + "      html += renderSummaryCard('时间线风险焦点', (timelineRiskSummary && timelineRiskSummary.topRiskLevel) ? timelineRiskSummary.topRiskLevel : '-', (timelineRiskSummary && timelineRiskSummary.topRiskLevel) ? ('score=' + (timelineRiskSummary.topRiskScore || 0) + ', phase=' + (timelineRiskSummary.topPhase || '') + ', path=' + (timelineRiskSummary.topPath || '') + ', focus=' + (timelineRiskSummary.topFocusReason || '')) : '暂无时间线风险事件', (timelineRiskSummary && ((timelineRiskSummary.criticalCount || 0) > 0 || (timelineRiskSummary.highCount || 0) > 0)) ? 'warn' : 'ok');\n"
+                + "      html += '</div></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderQueueMatrix(m){\n"
+                + "      let html = '<div class=\"card\"><h3>队列类型矩阵 (size='+m.size+')</h3>';\n"
+                + "      html += '<table><tr><th>label</th><th>activeCount</th><th>failedCount</th></tr>';\n"
+                + "      for(const it of m.items){\n"
+                + "        html += '<tr><td>'+esc(it.label)+'</td><td>'+it.activeCount+'</td><td>'+it.failedCount+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderFailureRecoverySummary(s){\n"
+                + "      let html = '<div class=\"card\"><h3>恢复分级汇总 (size='+s.size+', total='+s.totalFailedItems+')</h3>';\n"
+                + "      html += '<table><tr><th>recoveryClass</th><th>count</th></tr>';\n"
+                + "      for(const it of s.items){\n"
+                + "        html += '<tr><td>'+esc(it.recoveryClass)+'</td><td>'+it.count+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderReplicaRecoverySummary(s){\n"
+                + "      let html = '<div class=\"card\"><h3>副本恢复分级汇总 (size='+s.size+', outstanding='+s.totalOutstandingReplicas+')</h3>';\n"
+                + "      html += '<table><tr><th>recoveryClass</th><th>count</th></tr>';\n"
+                + "      for(const it of s.items){\n"
+                + "        html += '<tr><td>'+esc(it.recoveryClass)+'</td><td>'+it.count+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderReplicaFailureSummary(s){\n"
+                + "      let html = '<div class=\"card\"><h3>副本失败原因汇总 (size='+s.size+', outstanding='+s.totalOutstandingReplicas+')</h3>';\n"
+                + "      html += '<table><tr><th>reason</th><th>count</th></tr>';\n"
+                + "      for(const it of s.items){\n"
+                + "        html += '<tr><td>'+esc(it.reason)+'</td><td>'+it.count+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderReplicaFailureCategorySummary(s){\n"
+                + "      let html = '<div class=\"card\"><h3>副本失败类别汇总 (size='+s.size+', outstanding='+s.totalOutstandingReplicas+')</h3>';\n"
+                + "      html += '<table><tr><th>category</th><th>count</th><th>recommendedAction</th><th>operatorHint</th><th>action</th></tr>';\n"
+                + "      for(const it of s.items){\n"
+                + "        html += '<tr><td>'+esc(it.reason)+'</td><td>'+it.count+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td><td>'+renderReplicaCategoryActionButtons(it)+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderHotFailedItems(h){\n"
+                + "      let html = '<div class=\"card\"><h3>热点失败项 (size='+h.size+')</h3>';\n"
+                + "      html += '<table><tr><th>path</th><th>type</th><th>priorityLevel</th><th>priorityScore</th><th>focusReason</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>replicaRecoveryClass</th><th>replicas</th><th>replicaCategories</th><th>replicaReasons</th><th>outstandingReplicas</th><th>failedAtMillis</th><th>reason</th><th>recommendedAction</th><th>operatorHint</th><th>action</th></tr>';\n"
+                + "      for(const it of h.items){\n"
+                + "        const outstandingReplicas = (it.outstandingReplicaCount || 0) + ' (auto=' + (it.autoRecoverableReplicaCount || 0) + ', manual=' + (it.manualReplicaCount || 0) + ')';\n"
+                + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.priorityLevel || '')+'</td><td>'+esc(it.priorityScore || 0)+'</td><td>'+esc(it.focusReason || '')+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+(it.retryable ? 'yes' : 'capped')+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaRecoveryClass || '')+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+esc(it.replicaCategorySummary || '')+'</td><td>'+esc(it.replicaReasonSummary || '')+'</td><td>'+esc(outstandingReplicas)+'</td><td>'+it.failedAtMillis+'</td><td>'+esc(it.reason)+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td><td>'+renderHotFailedItemActionButtons(it)+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderBatchResultPreview(b){\n"
+                + "      if(!b || !Array.isArray(b.remainingFailedItemsPreview) || b.remainingFailedItemsPreview.length === 0){\n"
+                + "        return '';\n"
+                + "      }\n"
+                + "      let html = '<div class=\"card\"><h3>本次批量动作剩余失败预览</h3>';\n"
+                + "      html += '<p>clearedFailedItems=' + (b.clearedFailedItemCount || 0) + ', clearedOutstandingReplicas=' + (b.clearedOutstandingReplicaCount || 0) + ', clearedCategories=' + esc(b.clearedReplicaCategorySummary || '') + '</p>';\n"
+                + "      html += '<p>remainingFailedItems='+ (b.remainingFailedItemCount || 0) + ', remainingOutstandingReplicas=' + (b.remainingOutstandingReplicaCount || 0) + ', remainingCategories=' + esc(b.remainingReplicaCategorySummary || '') + '</p>';\n"
+                + "      if(Array.isArray(b.clearedFailedItemsPreview) && b.clearedFailedItemsPreview.length > 0){\n"
+                + "        html += '<p>clearedPreviewPaths=' + esc((b.clearedFailedItemsPreview || []).map(it => it.path || '').filter(Boolean).join(',')) + '</p>';\n"
+                + "      }\n"
+                + "      html += '<table><tr><th>path</th><th>type</th><th>priorityLevel</th><th>priorityScore</th><th>focusReason</th><th>retryCount</th><th>remainingRetries</th><th>retryable</th><th>recoveryClass</th><th>replicaRecoveryClass</th><th>replicas</th><th>replicaCategories</th><th>replicaReasons</th><th>outstandingReplicas</th><th>failedAtMillis</th><th>reason</th><th>recommendedAction</th><th>operatorHint</th><th>action</th></tr>';\n"
+                + "      for(const it of b.remainingFailedItemsPreview){\n"
+                + "        const outstandingReplicas = (it.outstandingReplicaCount || 0) + ' (auto=' + (it.autoRecoverableReplicaCount || 0) + ', manual=' + (it.manualReplicaCount || 0) + ')';\n"
+                + "        html += '<tr><td>'+esc(it.path)+'</td><td>'+esc(it.type)+'</td><td>'+esc(it.priorityLevel || '')+'</td><td>'+esc(it.priorityScore || 0)+'</td><td>'+esc(it.focusReason || '')+'</td><td>'+it.retryCount+'</td><td>'+it.remainingRetries+'</td><td>'+(it.retryable ? 'yes' : 'capped')+'</td><td>'+esc(it.recoveryClass)+'</td><td>'+esc(it.replicaRecoveryClass || '')+'</td><td>'+esc(it.replicaSummary || '')+'</td><td>'+esc(it.replicaCategorySummary || '')+'</td><td>'+esc(it.replicaReasonSummary || '')+'</td><td>'+esc(outstandingReplicas)+'</td><td>'+it.failedAtMillis+'</td><td>'+esc(it.reason)+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td><td>'+renderHotFailedItemActionButtons(it)+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderHealthSummary(h){\n"
+                + "      let html = '<div class=\"card\"><h3>队列健康概览</h3>';\n"
+                + "      html += '<table><tr><th>activeCount</th><th>failedCount</th><th>uploadingCount</th><th>stalledUploadCount</th><th>maxStalledMillis</th><th>topStalledPath</th><th>topStalledReplicaLabel</th><th>stalledReplicaSummary</th><th>stalledRecommendedAction</th><th>stalledOperatorHint</th><th>resumedUploadCount</th><th>resumedSegmentCount</th><th>topResumedPath</th><th>topResumedReplicaLabel</th><th>topResumedSegments</th><th>resumedReplicaSummary</th><th>oldestFailedAtMillis</th><th>maxRetryCount</th></tr>';\n"
+                + "      html += '<tr><td>'+h.activeCount+'</td><td>'+h.failedCount+'</td><td>'+h.uploadingCount+'</td><td>'+h.stalledUploadCount+'</td><td>'+h.maxStalledMillis+'</td><td>'+esc(h.topStalledPath || '')+'</td><td>'+esc(h.topStalledReplicaLabel || '')+'</td><td>'+esc(h.stalledReplicaSummary || '')+'</td><td>'+esc(h.stalledRecommendedAction || '')+'</td><td>'+esc(h.stalledOperatorHint || '')+'</td><td>'+h.resumedUploadCount+'</td><td>'+h.resumedSegmentCount+'</td><td>'+esc(h.topResumedPath || '')+'</td><td>'+esc(h.topResumedReplicaLabel || '')+'</td><td>'+h.topResumedSegments+'</td><td>'+esc(h.resumedReplicaSummary || '')+'</td><td>'+h.oldestFailedAtMillis+'</td><td>'+h.maxRetryCount+'</td></tr>';\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderFailureSummary(s){\n"
+                + "      let html = '<div class=\"card\"><h3>失败原因汇总 (size='+s.size+', total='+s.totalFailedItems+')</h3>';\n"
+                + "      html += '<table><tr><th>reason</th><th>count</th><th>recommendedAction</th><th>operatorHint</th></tr>';\n"
+                + "      for(const it of s.items){\n"
+                + "        html += '<tr><td>'+esc(it.reason)+'</td><td>'+it.count+'</td><td>'+esc(it.recommendedAction || '')+'</td><td>'+esc(it.operatorHint || '')+'</td></tr>';\n"
+                + "      }\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderRetryPolicy(r){\n"
+                + "      let html = '<div class=\"card\"><h3>重试策略</h3>';\n"
+                + "      html += '<table><tr><th>autoRetryMode</th><th>maxRetryCount</th><th>retryBackoffMillis</th><th>manualRetryUnrestricted</th></tr>';\n"
+                + "      html += '<tr><td>'+esc(r.autoRetryMode)+'</td><td>'+r.maxRetryCount+'</td><td>'+r.retryBackoffMillis+'</td><td>'+r.manualRetryUnrestricted+'</td></tr>';\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderUploadPolicy(p){\n"
+                + "      let html = '<div class=\"card\"><h3>上传策略</h3>';\n"
+                + "      html += '<table><tr><th>mode</th><th>uploadBlockSizeBytes</th><th>resumeSupported</th><th>historyRetention</th></tr>';\n"
+                + "      html += '<tr><td>'+esc(p.mode)+'</td><td>'+p.uploadBlockSizeBytes+'</td><td>'+p.resumeSupported+'</td><td>'+esc(p.historyRetention)+'</td></tr>';\n"
+                + "      html += '</table></div>';\n"
+                + "      return html;\n"
+                + "    }\n"
+                + "    function renderReplicaCategoryActionButtons(it){\n"
+                + "      const category = it.reason || '';\n"
+                + "      const action = it.recommendedAction || '';\n"
+                + "      if(action === 'RETRY_NETWORK_REPLICAS' || action === 'VERIFY_STATE_THEN_RETRY'){\n"
+                + "        return '<button class=\"btn\" data-category-action=\"retry\" data-category=\"'+escAttr(category)+'\">建议重试</button>';\n"
+                + "      }\n"
+                + "      if(action === 'MANUAL_RETRY_OR_DISCARD_REPLICAS'){\n"
+                + "        return '<button class=\"btn\" data-category-action=\"retry\" data-category=\"'+escAttr(category)+'\">建议重试</button> ' +\n"
+                + "               '<button class=\"btn\" data-category-action=\"discard\" data-category=\"'+escAttr(category)+'\">建议放弃</button>';\n"
+                + "      }\n"
+                + "      return '';\n"
+                + "    }\n"
+                + "    function renderHotFailedItemActionButtons(it){\n"
+                + "      const action = it.recommendedAction || '';\n"
+                + "      const baseRetry = '<button class=\"btn\" data-action=\"retry\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">建议重试</button>';\n"
+                + "      const baseDiscard = '<button class=\"btn\" data-action=\"discard\" data-file-id=\"'+escAttr(it.fileId)+'\" data-dir=\"'+it.dir+'\" data-type=\"'+escAttr(it.type)+'\">建议放弃</button>';\n"
+                + "      if(action === 'RETRY_FAILED_ITEM' || action === 'VERIFY_STATE_THEN_RETRY' || action === 'RESTORE_CONNECTIVITY_AND_RETRY'){\n"
+                + "        return baseRetry;\n"
+                + "      }\n"
+                + "      if(action === 'MANUAL_RETRY_OR_DISCARD' || action === 'MANUAL_RETRY_OR_DISCARD_REPLICAS'){\n"
+                + "        return baseRetry + ' ' + baseDiscard;\n"
+                + "      }\n"
+                + "      return '';\n"
+                + "    }\n"
+                + "    function isReplicaActionable(status){\n"
+                + "      return !!status && status !== 'ACKED' && status !== 'DISCARDED';\n"
+                + "    }\n"
+                + "    async function retryIt(fileId, dir, type){\n"
+                + "      let url = '/sync/api/failed/retry?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type);\n"
+                + "      if(arguments.length > 3 && arguments[3]){url += '&replica='+encodeURIComponent(arguments[3]);}\n"
+                + "      await fetch(url, {method:'POST'});\n"
+                + "      await reload();\n"
+                + "    }\n"
+                + "    async function discardIt(fileId, dir, type){\n"
+                + "      let url = '/sync/api/failed/discard?fileId='+fileId+'&dir='+dir+'&type='+encodeURIComponent(type);\n"
+                + "      if(arguments.length > 3 && arguments[3]){url += '&replica='+encodeURIComponent(arguments[3]);}\n"
+                + "      await fetch(url, {method:'POST'});\n"
+                + "      await reload();\n"
+                + "    }\n"
+                + "    async function retryAutoRecoverableReplicas(){\n"
+                + "      window.lastBatchResult = await fetch('/sync/api/failed/retry-auto-recoverable-replicas', {method:'POST'}).then(r => r.json());\n"
+                + "      await reload();\n"
+                + "    }\n"
+                + "    async function discardManualReplicas(){\n"
+                + "      window.lastBatchResult = await fetch('/sync/api/failed/discard-manual-replicas', {method:'POST'}).then(r => r.json());\n"
+                + "      await reload();\n"
+                + "    }\n"
+                + "    async function retryReplicasByCategory(category){\n"
+                + "      window.lastBatchResult = await fetch('/sync/api/failed/retry-replicas-by-category?category='+encodeURIComponent(category), {method:'POST'}).then(r => r.json());\n"
+                + "      await reload();\n"
+                + "    }\n"
+                + "    async function discardReplicasByCategory(category){\n"
+                + "      window.lastBatchResult = await fetch('/sync/api/failed/discard-replicas-by-category?category='+encodeURIComponent(category), {method:'POST'}).then(r => r.json());\n"
+                + "      await reload();\n"
+                + "    }\n"
+                + "    function render(queues, queueMatrix, healthSummary, failureTrend, recoverySuccessSummary, failureSummary, failureRecoverySummary, replicaRecoverySummary, replicaFailureSummary, replicaFailureCategorySummary, hotFailedItems, recentOperatorActions, recentTimeline, timelineRiskSummary, stalledUploads, stalledReplicaHotspots, uploads, uploadPolicy, retryPolicy, recentCompletedUploads, recentFailedUploads){\n"
+                + "      const keys = [\n"
+                + "        ['新增(文件)', 'file_create'],\n"
+                + "        ['修改(文件)', 'file_modify'],\n"
+                + "        ['删除(文件)', 'file_delete'],\n"
+                + "        ['新增(目录)', 'dir_create'],\n"
+                + "        ['删除(目录)', 'dir_delete'],\n"
+                + "        ['失败-新增(文件)', 'failed_file_create'],\n"
+                + "        ['失败-修改(文件)', 'failed_file_modify'],\n"
+                + "        ['失败-删除(文件)', 'failed_file_delete'],\n"
+                + "        ['失败-新增(目录)', 'failed_dir_create'],\n"
+                + "        ['失败-删除(目录)', 'failed_dir_delete'],\n"
+                + "      ];\n"
+                + "      let overview = '';\n"
+                + "      const safeHealthSummary = healthSummary || {activeCount:0, failedCount:0, uploadingCount:0, stalledUploadCount:0, maxStalledMillis:0, topStalledPath:'', topStalledReplicaLabel:'', stalledReplicaSummary:'', stalledRecommendedAction:'', stalledOperatorHint:'', resumedUploadCount:0, resumedSegmentCount:0, topResumedPath:'', topResumedReplicaLabel:'', topResumedSegments:0, resumedReplicaSummary:'', oldestFailedAtMillis:0, maxRetryCount:0};\n"
+                + "      const safeFailureTrend = failureTrend || {recentFailedCount:0, failedLast5MinutesCount:0, failedLast60MinutesCount:0, outstandingFailedCount:0, latestFailedAtMillis:0};\n"
+                + "      const safeRecoverySuccessSummary = recoverySuccessSummary || {completedCount:0, failedCount:0, totalCount:0, successRatePercent:0, avgCompletedDurationMillis:0, avgFailedDurationMillis:0, lastCompletedAtMillis:0, lastFailedAtMillis:0};\n"
+                + "      const safeReplicaRecoverySummary = replicaRecoverySummary || {size:0, totalOutstandingReplicas:0, items:[]};\n"
+                + "      const safeHotFailedItems = hotFailedItems || {size:0, items:[]};\n"
+                + "      const safeRecentOperatorActions = recentOperatorActions || {size:0, items:[]};\n"
+                + "      const safeRecentTimeline = recentTimeline || {size:0, items:[]};\n"
+                + "      const safeTimelineRiskSummary = timelineRiskSummary || {criticalCount:0, highCount:0, mediumCount:0, lowCount:0, topRiskLevel:'', topRiskScore:0, topFocusReason:'', topPhase:'', topPath:'', topMessage:''};\n"
+                + "      overview += '<div class=\"cockpit-grid\">';\n"
+                + "      overview += '<div class=\"cockpit-stack\">';\n"
+                + "      overview += renderOpsCockpit(safeHealthSummary, safeFailureTrend, safeRecoverySuccessSummary, safeReplicaRecoverySummary, safeHotFailedItems, safeRecentOperatorActions, safeRecentTimeline, safeTimelineRiskSummary);\n"
+                + "      overview += renderCockpitFocus(safeHealthSummary, safeHotFailedItems, safeRecentOperatorActions, safeTimelineRiskSummary);\n"
+                + "      overview += '</div>';\n"
+                + "      overview += '<div class=\"cockpit-stack\">';\n"
+                + "      overview += renderQuickActions(safeReplicaRecoverySummary, safeTimelineRiskSummary, safeHotFailedItems);\n"
+                + "      overview += renderQueueMatrix(queueMatrix || {size:0, items:[]});\n"
+                + "      overview += '</div>';\n"
+                + "      overview += '</div>';\n"
+                + "      overview += renderHealthSummary(safeHealthSummary);\n"
+                + "      overview += renderFailureTrend(safeFailureTrend);\n"
+                + "      overview += renderRecoverySuccessSummary(safeRecoverySuccessSummary);\n"
+                + "      overview += renderUploadPolicy(uploadPolicy || {mode:'AUTO_SEGMENT_RESUMABLE', uploadBlockSizeBytes:0, resumeSupported:true, historyRetention:'memory_recent'});\n"
+                + "      overview += renderRetryPolicy(retryPolicy || {autoRetryMode:'LIMITED_WITH_BACKOFF', maxRetryCount:0, retryBackoffMillis:0, manualRetryUnrestricted:true});\n"
+                + "      let failed = '';\n"
+                + "      failed += renderFailureActionFlow(replicaFailureCategorySummary || {size:0, totalOutstandingReplicas:0, items:[]}, hotFailedItems || {size:0, items:[]}, recentOperatorActions || {size:0, items:[]}, safeTimelineRiskSummary, window.lastBatchResult || null);\n"
+                + "      failed += renderFailureSummary(failureSummary || {size:0, totalFailedItems:0, items:[]});\n"
+                + "      failed += renderFailureRecoverySummary(failureRecoverySummary || {size:0, totalFailedItems:0, items:[]});\n"
+                + "      failed += renderReplicaRecoverySummary(replicaRecoverySummary || {size:0, totalOutstandingReplicas:0, items:[]});\n"
+                + "      failed += renderReplicaFailureSummary(replicaFailureSummary || {size:0, totalOutstandingReplicas:0, items:[]});\n"
+                + "      failed += renderReplicaFailureCategorySummary(replicaFailureCategorySummary || {size:0, totalOutstandingReplicas:0, items:[]});\n"
+                + "      failed += renderHotFailedItems(hotFailedItems || {size:0, items:[]});\n"
+                + "      failed += renderBatchResultPreview(window.lastBatchResult || null);\n"
+                + "      failed += renderRecentOperatorActions(recentOperatorActions || {size:0, items:[]});\n"
+                + "      failed += renderUploadHistory('最近失败上传', recentFailedUploads || {size:0, items:[]});\n"
+                + "      let upload = '';\n"
+                + "      upload += renderResumedReplicaHotspots(resumedReplicaHotspots || {size:0, items:[]});\n"
+                + "      upload += renderStalledReplicaHotspots(stalledReplicaHotspots || {size:0, items:[]});\n"
+                + "      upload += renderStalledUploads(stalledUploads || {size:0, items:[]});\n"
+                + "      upload += renderUploads(uploads || {size:0, items:[]});\n"
+                + "      upload += renderUploadHistory('最近完成上传', recentCompletedUploads || {size:0, items:[]});\n"
+                + "      upload += renderTimeline(recentTimeline || {size:0, items:[]});\n"
+                + "      let queueDetails = '';\n"
+                + "      for(const [title,key] of keys){\n"
+                + "        queueDetails += renderQueue(title, queues[key]);\n"
+                + "      }\n"
+                + "      let html = '<div class=\"page\">';\n"
+                + "      html += renderSection('总览区', overview);\n"
+                + "      html += renderSection('失败区', failed);\n"
+                + "      html += renderSection('上传区', upload);\n"
+                + "      html += renderSection('队列明细区', queueDetails);\n"
+                + "      html += '</div>';\n"
+                + "      document.getElementById('content').innerHTML = html;\n"
+                + "    }\n"
+                + "    document.addEventListener('click', async function(e){\n"
+                + "      const scrollBtn = e.target.closest('button[data-scroll]');\n"
+                + "      if(scrollBtn){\n"
+                + "        const id = scrollBtn.getAttribute('data-scroll');\n"
+                + "        const el = document.getElementById(id);\n"
+                + "        if(el && el.scrollIntoView){ el.scrollIntoView({behavior:'smooth', block:'start'}); }\n"
+                + "        return;\n"
+                + "      }\n"
+                + "      const batchBtn = e.target.closest('button[data-batch-action]');\n"
+                + "      if(batchBtn){\n"
+                + "        if(batchBtn.getAttribute('data-batch-action') === 'retry-auto-recoverable-replicas'){\n"
+                + "          await retryAutoRecoverableReplicas();\n"
+                + "        } else if(batchBtn.getAttribute('data-batch-action') === 'discard-manual-replicas'){\n"
+                + "          await discardManualReplicas();\n"
+                + "        } else if(batchBtn.getAttribute('data-batch-action') === 'retry-network-replicas'){\n"
+                + "          await retryReplicasByCategory('NETWORK');\n"
+                + "        } else if(batchBtn.getAttribute('data-batch-action') === 'discard-conflict-retry-limit-replicas'){\n"
+                + "          await discardReplicasByCategory('CONFLICT,RETRY_LIMIT');\n"
+                + "        }\n"
+                + "        return;\n"
+                + "      }\n"
+                + "      const categoryBtn = e.target.closest('button[data-category-action]');\n"
+                + "      if(categoryBtn){\n"
+                + "        const category = categoryBtn.getAttribute('data-category');\n"
+                + "        if(categoryBtn.getAttribute('data-category-action') === 'retry'){\n"
+                + "          await retryReplicasByCategory(category);\n"
+                + "        } else if(categoryBtn.getAttribute('data-category-action') === 'discard'){\n"
+                + "          await discardReplicasByCategory(category);\n"
+                + "        }\n"
+                + "        return;\n"
+                + "      }\n"
+                + "      const btn = e.target.closest('button[data-action]');\n"
+                + "      if(!btn){return;}\n"
+                + "      const fileId = btn.getAttribute('data-file-id');\n"
+                + "      const dir = btn.getAttribute('data-dir');\n"
+                + "      const type = btn.getAttribute('data-type');\n"
+                + "      const replica = btn.getAttribute('data-replica');\n"
+                + "      if(btn.getAttribute('data-action') === 'retry'){\n"
+                + "        await retryIt(fileId, dir, type, replica);\n"
+                + "      } else if(btn.getAttribute('data-action') === 'discard'){\n"
+                + "        await discardIt(fileId, dir, type, replica);\n"
+                + "      }\n"
+                + "    });\n"
+                + "    reload();\n"
+                + "  </script>\n"
+                + "</body>\n"
+                + "</html>\n";
     }
 
     private static String param(URI uri, String key) {
@@ -2876,9 +2905,13 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         }
         for (String part : q.split("&")) {
             int idx = part.indexOf('=');
-            if (idx <= 0) continue;
+            if (idx <= 0) {
+                continue;
+            }
             String k = part.substring(0, idx);
-            if (!k.equals(key)) continue;
+            if (!k.equals(key)) {
+                continue;
+            }
             String v = part.substring(idx + 1);
             return decode(v);
         }
@@ -2887,7 +2920,9 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
 
     private static int parseIntParam(URI uri, String key, int def) {
         String v = param(uri, key);
-        if (v == null) return def;
+        if (v == null) {
+            return def;
+        }
         return (int) parseLong(v, def);
     }
 
@@ -2911,7 +2946,9 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private static String decode(String v) {
-        if (v == null) return null;
+        if (v == null) {
+            return null;
+        }
         try {
             return URLDecoder.decode(v, StandardCharsets.UTF_8);
         } catch (Exception e) {
@@ -2920,17 +2957,27 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private static String toJson(Object v) {
-        if (v == null) return "null";
-        if (v instanceof Boolean) return ((Boolean) v).booleanValue() ? "true" : "false";
-        if (v instanceof Number) return v.toString();
-        if (v instanceof String) return quote((String) v);
+        if (v == null) {
+            return "null";
+        }
+        if (v instanceof Boolean) {
+            return ((Boolean) v).booleanValue() ? "true" : "false";
+        }
+        if (v instanceof Number) {
+            return v.toString();
+        }
+        if (v instanceof String) {
+            return quote((String) v);
+        }
         if (v instanceof Map<?, ?>) {
             Map<?, ?> m = (Map<?, ?>) v;
             StringBuilder sb = new StringBuilder();
             sb.append('{');
             boolean first = true;
             for (Entry<?, ?> e : m.entrySet()) {
-                if (!first) sb.append(',');
+                if (!first) {
+                    sb.append(',');
+                }
                 first = false;
                 sb.append(quote(String.valueOf(e.getKey())));
                 sb.append(':');
@@ -2945,7 +2992,9 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
             sb.append('[');
             boolean first = true;
             for (Object it : list) {
-                if (!first) sb.append(',');
+                if (!first) {
+                    sb.append(',');
+                }
                 first = false;
                 sb.append(toJson(it));
             }
@@ -2977,6 +3026,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private static final class HealthStats {
+
         private int failedCount;
         private int maxRetryCount;
         private long oldestFailedAtMillis;
@@ -3050,6 +3100,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private static final class StalledReplicaHotspot {
+
         private final String replicaLabel;
         private int count;
         private long maxStalledMillis;
@@ -3080,6 +3131,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private static final class ResumedReplicaHotspot {
+
         private final String replicaLabel;
         private int count;
         private int resumedSegments;
@@ -3111,6 +3163,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private static final class BatchReplicaActionResult {
+
         private int touchedFileCount;
         private int touchedReplicaCount;
         private long recordedAtMillis = System.currentTimeMillis();
@@ -3129,6 +3182,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private static final class BatchReplicaSnapshot {
+
         private int failedItemCount;
         private int outstandingReplicaCount;
         private Map<String, Integer> categoryCounts = Collections.emptyMap();
@@ -3136,6 +3190,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private static final class MonitorActionRecord {
+
         private final String action;
         private final boolean success;
         private final int touchedFileCount;
@@ -3155,10 +3210,10 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
         private final String remainingReplicaCategorySummary;
 
         private MonitorActionRecord(String action, boolean success, int touchedFileCount, int touchedReplicaCount,
-                                    FileSyncEventType type, boolean directory, long fileId, String replica,
-                                    List<String> categories, long updatedAtMillis, String message,
-                                    int clearedFailedItemCount, int clearedOutstandingReplicaCount, String clearedReplicaCategorySummary,
-                                    int remainingFailedItemCount, int remainingOutstandingReplicaCount, String remainingReplicaCategorySummary) {
+                FileSyncEventType type, boolean directory, long fileId, String replica,
+                List<String> categories, long updatedAtMillis, String message,
+                int clearedFailedItemCount, int clearedOutstandingReplicaCount, String clearedReplicaCategorySummary,
+                int remainingFailedItemCount, int remainingOutstandingReplicaCount, String remainingReplicaCategorySummary) {
             this.action = action;
             this.success = success;
             this.touchedFileCount = touchedFileCount;
@@ -3180,6 +3235,7 @@ public final class P2PSyncMonitorServer implements AutoCloseable {
     }
 
     private static final class ReplicaRecoveryStats {
+
         private final int outstandingReplicaCount;
         private final int autoRecoverableReplicaCount;
         private final int manualReplicaCount;

@@ -66,6 +66,27 @@ public class DsBinlogReplicator implements AutoCloseable {
         return lastCursorSequence;
     }
 
+    /**
+     * P55 Q3=A：未应用 binlog 序列数（复制 lag）。
+     *
+     * <p>口径 = {@code source.getBinlogStore().getCurrentPosition().sequence() − currentCursorSequence()}；
+     * source 无当前游标（返回 null）或本副本尚未定位游标时返回 0，且不为负（钳制到 0）。
+     *
+     * @return 未应用序列数，≥ 0
+     * @throws IOException 读取 source 当前 binlog 位置失败
+     */
+    public long replicationLag() throws IOException {
+        if (lastCursorSequence == Long.MIN_VALUE) {
+            return 0L;
+        }
+        DsBinlogPosition end = sourceDb.getBinlogStore().getCurrentPosition();
+        if (end == null) {
+            return 0L;
+        }
+        long lag = end.sequence() - lastCursorSequence;
+        return lag < 0L ? 0L : lag;
+    }
+
     void doTick() {
         if (!running.get()) return;
         try {
