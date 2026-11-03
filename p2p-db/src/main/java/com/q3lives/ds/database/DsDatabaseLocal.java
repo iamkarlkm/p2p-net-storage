@@ -1601,20 +1601,10 @@ public class DsDatabaseLocal implements AutoCloseable {
             compositeIndexes.add(new CompositeIndex(ci.name, cols, ciMvcc));
         }
         boolean hasMvcc = tableMvcc || !mvccColumnNames.isEmpty();
-        int finalRowLength;
-        int legacyRowLength;
-        if (sample != index.rowLength) {
-            legacyRowLength = index.rowLength;
-            finalRowLength = sample;
-            System.err.println("[DsDatabaseLocal] WARN Schema row length mismatch (Online DDL compat ON): "
-                    + "class=" + clazz.getName()
-                    + ", storedLegacyRowLength=" + index.rowLength
-                    + ", currentSchemaRowLength=" + sample
-                    + ". Old row data auto-fallback @DsField.defaultValue on read; new writes use new length.");
-        } else {
-            legacyRowLength = -1;
-            finalRowLength = sample;
-        }
+        int finalRowLength = sample;
+        // P56 Q1=A：compat 判定改读持久化 legacyRowLength leaf（旧的 sample != index.rowLength 恒 false 死分支已移除）。
+        // 返回 -1 表示非 compat（无待迁移老行）；否则为老行实际写入长度。
+        int legacyRowLength = EntityIndexUtil.detectLegacyRowLength(root, clazz, sample);
         int tableId = stableTableId(clazz);
         Class<? extends DsTableAdapter> prev = tableIdToClass.put(tableId, clazz);
         if (prev != null && prev != clazz) {
@@ -3570,6 +3560,31 @@ public class DsDatabaseLocal implements AutoCloseable {
         }
     }
 
+    /**
+     * P56 Q2=A：Online DDL row-plane 显式 pull 全量迁移（0 新线程，调用线程内同步逐批 rewrite）。
+     *
+     * <p>
+     * 把 compat 阶段的老行按主键升序逐批：以「老行实际写入长度」读出 → {@code putEntity}(自动 pad 到当前 schema
+     * 长度) 逐条 rewrite；完成后清除 legacyRowLength leaf 并重算 {@link TableMeta} 退出
+     * compat。期间读写仍由 load() 三层兼容兜底，0 阻塞。</p>
+     *
+     * <p>
+     * 幂等：非 compat（legacyRowLength &le; 0）或 MVCC 表 → 直接返回 0；重复调用已完成表 → 0
+     * 重复写。</p>
+     *
+     * @param clazz 实体类（{@link DsTableAdapter} 子类）
+     * @param batchSize 每批主键数（必须 &gt; 0）
+     * @return 实际 rewrite 的行数
+     * @throws IOException 迁移过程 I/O 失败
+     */
+    public <T extends DsTableAdapter> int migrateLegacyRows(Class<T> clazz, int batchSize) throws IOException {
+        Objects.requireNonNull(clazz, "clazz cannot be null");
+        if (batchSize <= 0) {
+            throw new IllegalArgumentException("batchSize must be > 0");
+        }
+        return odCoordinator.migrateLegacyRows(clazz, batchSize);
+    }
+
     // ================ P10 T8 Online DDL Registry 双向（FR-7）================
     private static final String DEFAULT_DB_SPACE = "default";
 
@@ -3735,6 +3750,105 @@ public class DsDatabaseLocal implements AutoCloseable {
                 } catch (Exception e) {
                     throw new RuntimeException("forceApply failed: ent=" + ent, e);
                 }
+            }
+        }
+
+        /**
+         * P56 Q2=A：显式 pull 的行级全量迁移（0 新线程，调用线程内同步逐批 rewrite）。
+         *
+         * <p>
+         * 非 compat（{@code legacyRowLength <= 0}）或 MVCC 表 → 0（幂等短路）。迁移逐批完成后清
+         * legacyRowLength leaf 并重算 {@code TableMeta} 退出 compat。主键 id
+         * 保持不变（索引/行集不重排）。</p>
+         */
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        int migrateLegacyRows(Class<? extends DsTableAdapter> clazz, int batchSize) throws IOException {
+            String ent = clazz.getName();
+            synchronized (lockFor(ent)) {
+                TableMeta meta = (TableMeta) metaOf(clazz);
+                int legacyLen = meta.legacyRowLength;
+                if (meta.hasMvcc || legacyLen <= 0) {
+                    return 0;
+                }
+                DsHashSet ids = idSetForClass(clazz);
+                List<Long> allIds = new ArrayList<>((int) ids.total());
+                for (Long v : ids) {
+                    allIds.add(v);
+                }
+                Collections.sort(allIds);
+                int total = allIds.size();
+                int migrated = 0;
+                for (int i = 0; i < total; i += batchSize) {
+                    int end = (int) Math.min((long) total, (long) i + batchSize);
+                    for (long id : allIds.subList(i, end)) {
+                        if (isAlreadyMigrated(meta, id)) {
+                            continue; // 断点续跑：已完成行 0 重复写
+                        }
+                        if (rewriteLegacyRow(meta, id, legacyLen)) {
+                            migrated++;
+                        }
+                    }
+                }
+                // 收尾：清 leaf（下次检测重新 seed 当前长度）→ 重算 meta 退出 compat
+                EntityIndexUtil.clearLegacyRowLength(root, clazz);
+                tableMetaCache.remove(clazz);
+                metaOf(clazz);
+                return migrated;
+            }
+        }
+
+        /**
+         * 以「老行实际写入长度」读出单行 → load()（短于 → @DsField.defaultValue 补）→ putEntity(自动
+         * pad 到新长度)。 老行已不在（tombstone/全 0）→ false。
+         */
+        @SuppressWarnings({"rawtypes", "unchecked"})
+        private boolean rewriteLegacyRow(TableMeta meta, long id, int legacyLen) throws IOException {
+            byte[] raw;
+            if (rowDataBackend != null) {
+                raw = rowDataBackend.readRowPayload(meta.clazz.getName(), id, () -> {
+                    try {
+                        byte[] b = bucketStore.get(meta.space, meta.type, id, 0, legacyLen);
+                        return (b == null || isAllZero(b)) ? null : b;
+                    } catch (Exception ex) {
+                        return null;
+                    }
+                });
+            } else {
+                try {
+                    raw = bucketStore.get(meta.space, meta.type, id, 0, legacyLen);
+                } catch (Exception ex) {
+                    raw = null;
+                }
+            }
+            if (raw == null || isAllZero(raw)) {
+                return false;
+            }
+            DsTableAdapter row;
+            try {
+                row = DsDatabaseLocal.newInstance((Class) meta.clazz);
+                row.setId(id);
+                row.load(ByteBuffer.wrap(raw));
+            } catch (Exception ex) {
+                return false;
+            }
+            putEntity(row, false);
+            return true;
+        }
+
+        /**
+         * P56 R8 断点续跑判定：Registry payload 已是新长度（== {@code meta.rowLength}）→
+         * 该行已完成迁移， 跳过重写（0 重复写）。无 rowDataBackend（YAML 回退）无法判定 → false。
+         */
+        @SuppressWarnings({"rawtypes"})
+        private boolean isAlreadyMigrated(TableMeta meta, long id) {
+            if (rowDataBackend == null) {
+                return false;
+            }
+            try {
+                byte[] p = rowDataBackend.readRowPayload(meta.clazz.getName(), id, () -> null);
+                return p != null && p.length == meta.rowLength;
+            } catch (Exception ex) {
+                return false;
             }
         }
 

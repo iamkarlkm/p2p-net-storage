@@ -124,6 +124,92 @@ public final class EntityIndexUtil {
         }
     }
 
+    // ---------- P56 Q1=A：Online DDL row-plane 兼容检测 leaf（legacyRowLength）----------
+    // /orm/row/<entityClass>/idSet/legacyRowLength
+    // 语义：记录「当前持久化数据实际写入的行长度」。与当前注解 schema.rowLength 不等时，表示存在待迁移老行。
+    /**
+     * 读持久化 legacyRowLength（数据实际写入的行长度）。 无 leaf 或非 REGISTRY/HYBRID 模式 → -1（表示非
+     * compat，与既有行为一致）。
+     */
+    public static int readLegacyRowLength(File dbRoot, Class<? extends DsTableAdapter> clazz) {
+        if (clazz == null) {
+            throw new IllegalArgumentException("clazz is null");
+        }
+        if (!MetaMode.isGlobalRegistryOrHybrid()) {
+            return -1;
+        }
+        try {
+            DsRegistry reg = DsRegistryInstance.get(dbRoot);
+            RegistryEntry e = reg.get(RegistryMetaPaths.rowIdSetLegacyRowLength(clazz.getName()));
+            if (e == null || !e.isPresent()) {
+                return -1;
+            }
+            return (int) e.asLong();
+        } catch (Exception ex) {
+            return -1;
+        }
+    }
+
+    /**
+     * 覆盖写 legacyRowLength（幂等）。非 REGISTRY/HYBRID 模式 no-op。
+     */
+    public static void writeLegacyRowLength(File dbRoot, Class<? extends DsTableAdapter> clazz, int rowLength) {
+        if (clazz == null) {
+            throw new IllegalArgumentException("clazz is null");
+        }
+        if (rowLength < 0) {
+            throw new IllegalArgumentException("rowLength must be >= 0");
+        }
+        if (!MetaMode.isGlobalRegistryOrHybrid()) {
+            return;
+        }
+        try {
+            DsRegistry reg = DsRegistryInstance.get(dbRoot);
+            reg.mkdirs(RegistryMetaPaths.rowIdSetRoot(clazz.getName()));
+            reg.putLong(RegistryMetaPaths.rowIdSetLegacyRowLength(clazz.getName()), DataType.REG_DWORD, (long) rowLength);
+        } catch (IOException ex) {
+            System.err.println("[EntityIndexUtil] WARN 写 legacyRowLength 失败: " + clazz.getName() + " -> " + ex.getMessage());
+        }
+    }
+
+    /**
+     * 清 legacyRowLength（迁移收尾）：移除 leaf，下次检测重新 seed 当前长度。
+     */
+    public static void clearLegacyRowLength(File dbRoot, Class<? extends DsTableAdapter> clazz) {
+        if (clazz == null) {
+            throw new IllegalArgumentException("clazz is null");
+        }
+        if (!MetaMode.isGlobalRegistryOrHybrid()) {
+            return;
+        }
+        try {
+            DsRegistry reg = DsRegistryInstance.get(dbRoot);
+            reg.remove(RegistryMetaPaths.rowIdSetLegacyRowLength(clazz.getName()), false);
+        } catch (Exception ex) {
+            System.err.println("[EntityIndexUtil] WARN 清 legacyRowLength 失败: " + clazz.getName() + " -> " + ex.getMessage());
+        }
+    }
+
+    /**
+     * P56 Q1=A 检测：比较持久化长度与当前 schema 长度，返回 legacyRowLength（-1 表示非 compat）。
+     * <ul>
+     * <li>首次（无 leaf）→ seed 当前长度并返回 -1；</li>
+     * <li>持久化 == 当前 → -1（无待迁移老行）；</li>
+     * <li>持久化 != 当前 → 返回持久化值（存在待迁移老行）。</li>
+     * </ul>
+     */
+    public static int detectLegacyRowLength(File dbRoot, Class<? extends DsTableAdapter> clazz, int currentRowLength) {
+        int stored = readLegacyRowLength(dbRoot, clazz);
+        if (stored < 0) {
+            writeLegacyRowLength(dbRoot, clazz, currentRowLength);
+            return -1;
+        }
+        if (stored == currentRowLength) {
+            return -1;
+        }
+        return stored;
+    }
+
     public static final class IndexDef {
         public final File idsFile;
         public final String rowType;
