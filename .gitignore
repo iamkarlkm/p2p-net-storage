@@ -49,3 +49,8 @@ target/delta-header-tier*/
 **/target/delta-header-tier*/
 target/surefire-reports/*.dump*
 target/surefire-reports/*.dumpstream
+
+# --- Python 构建产物（p2p-ws-sdk-python）---
+__pycache__/
+*.pyc
+*.egg-info/
