@@ -1,0 +1,7 @@
+javax.net.p2p.server.handler.fulltext.FulltextShardPutDocHandler
+javax.net.p2p.server.handler.fulltext.FulltextShardClearDocHandler
+javax.net.p2p.server.handler.fulltext.FulltextShardIndexVectorHandler
+javax.net.p2p.server.handler.fulltext.FulltextShardSearchVectorHandler
+javax.net.p2p.server.handler.fulltext.FulltextShardSearchHandler
+javax.net.p2p.server.handler.fulltext.FulltextShardSearchExtrasHandler
+javax.net.p2p.server.handler.fulltext.FulltextShardCloseHandler
