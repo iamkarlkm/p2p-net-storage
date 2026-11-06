@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "p2p-sync Chunked Resumable Upload (p2p-core QUIC)",
+    "viewBox": [
+      1050,
+      7550
+    ],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "column_fit": "spread"
+  },
+  "participants": [
+    {
+      "id": "cli",
+      "type": "external",
+      "label": "Sync Client"
+    },
+    {
+      "id": "up-idx",
+      "type": "database",
+      "label": "Upload Index",
+      "sublabel": "ns/task"
+    },
+    {
+      "id": "chunker",
+      "type": "backend",
+      "label": "Chunker",
+      "sublabel": "CDC + hash"
+    },
+    {
+      "id": "core",
+      "type": "backend",
+      "label": "p2p-core QUIC",
+      "sublabel": "auth_sig"
+    },
+    {
+      "id": "srv",
+      "type": "backend",
+      "label": "Sync Server",
+      "sublabel": "assembler"
+    },
+    {
+      "id": "tmp",
+      "type": "cloud",
+      "label": "Tmp",
+      "sublabel": "tmp file"
+    },
+    {
+      "id": "final",
+      "type": "cloud",
+      "label": "Final File",
+      "sublabel": "atomic rename"
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 310,
+      "label": "Resume From Idx"
+    },
+    {
+      "from": 330,
+      "to": 540,
+      "label": "Chunk Stream"
+    },
+    {
+      "from": 560,
+      "to": 700,
+      "label": "Finalize + E2E"
+    }
+  ],
+  "messages": [
+    {
+      "id": "s1",
+      "from": "cli",
+      "to": "up-idx",
+      "label": "get(ns,task) → done chunk list",
+      "variant": "default",
+      "y": 180
+    },
+    {
+      "id": "s2",
+      "from": "up-idx",
+      "to": "cli",
+      "label": "done: [0,1,4]",
+      "variant": "return",
+      "y": 222
+    },
+    {
+      "id": "s3",
+      "from": "cli",
+      "to": "chunker",
+      "label": "chunk file, skip 0,1,4",
+      "variant": "default",
+      "y": 264
+    },
+    {
+      "id": "s4",
+      "from": "chunker",
+      "to": "cli",
+      "label": "chunks: [2,3,5..]",
+      "variant": "return",
+      "y": 306
+    },
+    {
+      "id": "s5",
+      "from": "cli",
+      "to": "core",
+      "label": "chunk[i] stream (chunked RPC)",
+      "variant": "emphasis",
+      "y": 348
+    },
+    {
+      "id": "s6",
+      "from": "core",
+      "to": "srv",
+      "label": "encrypted chunk frames",
+      "variant": "default",
+      "y": 390
+    },
+    {
+      "id": "s7",
+      "from": "srv",
+      "to": "tmp",
+      "label": "write chunk bytes",
+      "variant": "dashed",
+      "y": 432
+    },
+    {
+      "id": "s8",
+      "from": "tmp",
+      "to": "srv",
+      "label": "write ack",
+      "variant": "return",
+      "y": 474
+    },
+    {
+      "id": "s9",
+      "from": "srv",
+      "to": "cli",
+      "label": "per chunk ack",
+      "variant": "return",
+      "y": 516
+    },
+    {
+      "id": "s10",
+      "from": "cli",
+      "to": "up-idx",
+      "label": "mark chunk[i] done",
+      "variant": "dashed",
+      "y": 558
+    },
+    {
+      "id": "s11",
+      "from": "cli",
+      "to": "srv",
+      "label": "finalize(hash)",
+      "variant": "security",
+      "y": 600
+    },
+    {
+      "id": "s12",
+      "from": "srv",
+      "to": "final",
+      "label": "atomic rename(tmp → final)",
+      "variant": "emphasis",
+      "y": 642
+    }
+  ],
+  "activations": [
+    {
+      "participant": "cli",
+      "from": 170,
+      "to": 630,
+      "type": "external"
+    },
+    {
+      "participant": "chunker",
+      "from": 254,
+      "to": 336,
+      "type": "backend"
+    },
+    {
+      "participant": "core",
+      "from": 338,
+      "to": 420,
+      "type": "backend"
+    },
+    {
+      "participant": "srv",
+      "from": 380,
+      "to": 672,
+      "type": "backend"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Resume Hot Path",
+      "items": [
+        "打开 Upload Index 拿到 done chunk，chunker 直接跳过；不用重算已上传字节"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Atomic Rename",
+      "items": [
+        "server 端所有 chunk 先写 tmp；finalize 请求触发 hash compare → 原子 rename 才对外部可见；失败保留 tmp 给下次 resume"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Namespace + Task",
+      "items": [
+        "Up-Idx 必须 composite key: (namespace, task, chunkId)；避免不同同步任务的同名 chunk 串扰"
+      ]
+    }
+  ]
+}

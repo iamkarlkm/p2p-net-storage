@@ -1,0 +1,215 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "p2p-ws SDK Connect → Auth → Subscribe → Publish Workflow",
+    "visual_preset": "signal-flow",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "viewBox": [
+      1200,
+      12550
+    ]
+  },
+  "lanes": [
+    {
+      "id": "app",
+      "label": "User App"
+    },
+    {
+      "id": "sdk",
+      "label": "WS SDK"
+    },
+    {
+      "id": "wire",
+      "label": "WS Wire"
+    },
+    {
+      "id": "srv",
+      "label": "WS Server"
+    },
+    {
+      "id": "err",
+      "label": "Fail Path",
+      "variant": "exception"
+    }
+  ],
+  "phases": [
+    {
+      "id": "conn",
+      "label": "Conn + Auth",
+      "fromCol": 0,
+      "toCol": 2
+    },
+    {
+      "id": "ops",
+      "label": "Pub/Sub",
+      "fromCol": 3,
+      "toCol": 4,
+      "variant": "emphasis"
+    }
+  ],
+  "mainPath": [
+    "connect",
+    "handshake",
+    "auth",
+    "sub",
+    "pub",
+    "msg-push",
+    "cancel"
+  ],
+  "nodes": [
+    {
+      "id": "connect",
+      "lane": "app",
+      "col": 0,
+      "type": "external",
+      "label": "connect(url, token)",
+      "sublabel": "ws or wss",
+      "width": 153,
+      "yOffset": 0
+    },
+    {
+      "id": "handshake",
+      "lane": "sdk",
+      "col": 1,
+      "type": "backend",
+      "label": "WS Handshake",
+      "sublabel": "Upgrade",
+      "width": 104,
+      "yOffset": 0
+    },
+    {
+      "id": "auth",
+      "lane": "srv",
+      "col": 2,
+      "type": "security",
+      "label": "Token Auth",
+      "tag": "RBAC",
+      "yOffset": 0
+    },
+    {
+      "id": "sub",
+      "lane": "sdk",
+      "col": 3,
+      "type": "messagebus",
+      "label": "Subscribe(topic)",
+      "sublabel": "topic filter",
+      "yOffset": 0,
+      "width": 132
+    },
+    {
+      "id": "pub",
+      "lane": "sdk",
+      "col": 3,
+      "type": "messagebus",
+      "label": "Publish(topic, msg)",
+      "width": 153,
+      "yOffset": 78
+    },
+    {
+      "id": "msg-push",
+      "lane": "sdk",
+      "col": 4,
+      "type": "backend",
+      "label": "OnMessage",
+      "sublabel": "push",
+      "yOffset": 0
+    },
+    {
+      "id": "cancel",
+      "lane": "err",
+      "col": 4,
+      "type": "security",
+      "label": "StdCancel",
+      "sublabel": "stop topic",
+      "yOffset": 0
+    },
+    {
+      "id": "bad-auth",
+      "lane": "err",
+      "col": 2,
+      "type": "backend",
+      "label": "401 Unauthorized",
+      "tag": "drop conn",
+      "width": 132,
+      "yOffset": 0
+    },
+    {
+      "id": "bad-sub",
+      "lane": "err",
+      "col": 4,
+      "type": "backend",
+      "label": "Forbidden Topic",
+      "tag": "RBAC",
+      "width": 125,
+      "yOffset": 78
+    }
+  ],
+  "edges": [
+    {
+      "from": "connect",
+      "to": "handshake",
+      "variant": "emphasis"
+    },
+    {
+      "from": "handshake",
+      "to": "auth",
+      "variant": "security"
+    },
+    {
+      "from": "auth",
+      "to": "sub",
+      "variant": "emphasis"
+    },
+    {
+      "from": "sub",
+      "to": "pub",
+      "variant": "default"
+    },
+    {
+      "from": "pub",
+      "to": "msg-push",
+      "variant": "emphasis"
+    },
+    {
+      "from": "msg-push",
+      "to": "cancel",
+      "variant": "security"
+    },
+    {
+      "from": "auth",
+      "to": "bad-auth",
+      "variant": "security"
+    },
+    {
+      "from": "sub",
+      "to": "bad-sub",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Upgrade Gate",
+      "items": [
+        "先 HTTP Upgrade 到 WS → 然后 Auth token → 才放行 subscribe 命令；否则 Upgrade 过但 Auth 失败直接 401 close"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "RBAC on Topic",
+      "items": [
+        "Subscribe 执行前服务端做 allowCommands/rbac 检查；无权限直接 Forbidden；Publish 同样"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "StdCancel",
+      "items": [
+        "取消订阅是 SDK 发 StdCancel stop 帧（绑定 sub id）；服务端取消匹配订阅，不需要关 WS 连接本身"
+      ]
+    }
+  ]
+}

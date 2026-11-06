@@ -1,0 +1,215 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "p2p-core QUIC Auth_SIG Handshake + First RPC",
+    "viewBox": [
+      1050,
+      1000
+    ],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "column_fit": "spread"
+  },
+  "participants": [
+    {
+      "id": "cli",
+      "type": "external",
+      "label": "Client",
+      "sublabel": "J/D SDK"
+    },
+    {
+      "id": "quic-cli",
+      "type": "backend",
+      "label": "QUIC Client",
+      "sublabel": "UDP 0-RTT/1-RTT"
+    },
+    {
+      "id": "quic-srv",
+      "type": "backend",
+      "label": "QUIC Server",
+      "sublabel": "listener"
+    },
+    {
+      "id": "srv",
+      "type": "backend",
+      "label": "p2p-core Server",
+      "sublabel": "Session"
+    },
+    {
+      "id": "crypto",
+      "type": "security",
+      "label": "Crypto Engine",
+      "sublabel": "AUTH_SIG"
+    },
+    {
+      "id": "router",
+      "type": "messagebus",
+      "label": "Router",
+      "sublabel": "Cmd Dispatch"
+    },
+    {
+      "id": "handler",
+      "type": "backend",
+      "label": "Handler",
+      "sublabel": "biz logic"
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 300,
+      "label": "QUIC + Crypto Hello"
+    },
+    {
+      "from": 320,
+      "to": 520,
+      "label": "Session Registered"
+    },
+    {
+      "from": 540,
+      "to": 700,
+      "label": "First RPC"
+    }
+  ],
+  "messages": [
+    {
+      "id": "m1",
+      "from": "cli",
+      "to": "quic-cli",
+      "label": "dial(host, AUTH_SIG)",
+      "variant": "emphasis",
+      "y": 180
+    },
+    {
+      "id": "m2",
+      "from": "quic-cli",
+      "to": "quic-srv",
+      "label": "QUIC Initial + ClientHello(nonce)",
+      "variant": "security",
+      "y": 222
+    },
+    {
+      "id": "m3",
+      "from": "quic-srv",
+      "to": "quic-cli",
+      "label": "ServerHello(nonce) + ServerCertSig",
+      "variant": "return",
+      "y": 264
+    },
+    {
+      "id": "m4",
+      "from": "quic-cli",
+      "to": "crypto",
+      "label": "verify(sig)",
+      "variant": "security",
+      "y": 306
+    },
+    {
+      "id": "m5",
+      "from": "crypto",
+      "to": "srv",
+      "label": "session key OK",
+      "variant": "return",
+      "y": 348
+    },
+    {
+      "id": "m6",
+      "from": "srv",
+      "to": "router",
+      "label": "register(sessionId)",
+      "variant": "default",
+      "y": 390
+    },
+    {
+      "id": "m7",
+      "from": "router",
+      "to": "srv",
+      "label": "routing table ready",
+      "variant": "return",
+      "y": 432
+    },
+    {
+      "id": "m8",
+      "from": "cli",
+      "to": "quic-cli",
+      "label": "DbNodePutReq(stream chunked)",
+      "variant": "emphasis",
+      "y": 474
+    },
+    {
+      "id": "m9",
+      "from": "quic-cli",
+      "to": "quic-srv",
+      "label": "encrypted PUT frame",
+      "variant": "default",
+      "y": 516
+    },
+    {
+      "id": "m10",
+      "from": "quic-srv",
+      "to": "handler",
+      "label": "call put handler",
+      "variant": "default",
+      "y": 558
+    },
+    {
+      "id": "m11",
+      "from": "handler",
+      "to": "cli",
+      "label": "putResp done",
+      "variant": "return",
+      "y": 600
+    }
+  ],
+  "activations": [
+    {
+      "participant": "quic-cli",
+      "from": 170,
+      "to": 546,
+      "type": "backend"
+    },
+    {
+      "participant": "quic-srv",
+      "from": 212,
+      "to": 588,
+      "type": "backend"
+    },
+    {
+      "participant": "srv",
+      "from": 338,
+      "to": 462,
+      "type": "backend"
+    },
+    {
+      "participant": "router",
+      "from": 380,
+      "to": 462,
+      "type": "messagebus"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Handshake Order",
+      "items": [
+        "QUIC → Hello nonce 交换 → AUTH_SIG verify signature → register session → 业务 frame 才放行；会话未注册前的业务帧直接丢弃"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Ordinal Routing",
+      "items": [
+        "每个业务命令 DbNodePutReq / DbNodeGetReq / QueryIdsReq 对应唯一 P2PCommand.ordinal；跨语言 wire-format 生成器保持一致"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "maxFrameBytes",
+      "items": [
+        "Session 协商 maxFrameBytes；后续发送自动分块 UDP v2 Segment + QUIC/TCP stream chunking"
+      ]
+    }
+  ]
+}

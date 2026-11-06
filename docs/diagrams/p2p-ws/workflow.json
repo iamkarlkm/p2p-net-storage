@@ -1,0 +1,99 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "WebSocket 建联流程 Schema v2",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "connect-handshake",
+        "label": "建联与握手",
+        "focus": ["join", "upgrade", "rsa-hi", "rsa-ack"],
+        "note": "从 center join 到 RSA 公钥握手"
+      },
+      {
+        "id": "xor-session",
+        "label": "XOR 会话建立",
+        "focus": ["xor-gen", "xor-key", "xor-verify"],
+        "note": "XOR 会话密钥生成与验证"
+      },
+      {
+        "id": "frame-rpc",
+        "label": "帧交换与 RPC 路由",
+        "focus": ["frame-ex", "rpc-route", "dispatch"],
+        "note": "加密帧交换、RPC 路由与消息分发"
+      }
+    ]
+  },
+  "lanes": [
+    { "id": "net", "label": "网络层 WebSocket" },
+    { "id": "crypto", "label": "加密协商层", "variant": "exception" },
+    { "id": "proto", "label": "协议与路由层" }
+  ],
+  "phases": [
+    { "id": "phase1", "label": "Phase 1: Center Join", "fromCol": 0, "toCol": 1 },
+    { "id": "phase2", "label": "Phase 2: RSA + XOR 握手", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "phase3", "label": "Phase 3: 帧交换 + RPC", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "g1", "label": "HTTP Upgrade", "lane": "net", "fromCol": 0, "toCol": 1, "variant": "default" },
+    { "id": "g2", "label": "RSA-OAEP 握手", "lane": "crypto", "fromCol": 2, "toCol": 2, "variant": "security" },
+    { "id": "g3", "label": "XOR 会话密钥", "lane": "crypto", "fromCol": 3, "toCol": 3, "variant": "security" },
+    { "id": "g4", "label": "Proto 路由分发", "lane": "proto", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["join", "upgrade", "rsa-hi", "rsa-ack", "xor-gen", "xor-key", "xor-verify", "frame-ex", "rpc-route", "dispatch"],
+  "nodes": [
+    { "id": "join", "lane": "net", "col": 0, "type": "external", "label": "Center Join", "sublabel": "peerId + token", "width": 140 },
+    { "id": "upgrade", "lane": "net", "col": 1, "type": "frontend", "label": "WS Upgrade", "sublabel": "HTTP → WS :8443", "width": 140 },
+    { "id": "rsa-hi", "lane": "crypto", "col": 2, "type": "security", "label": "RSA Hello", "sublabel": "客户端 RsaOaep 加密", "width": 140, "tag": "公钥握手" },
+    { "id": "rsa-ack", "lane": "crypto", "col": 2, "type": "security", "label": "RSA Ack", "sublabel": "Center 解密并返回挑战", "width": 140, "yOffset": 110, "tag": "nonce + sig" },
+    { "id": "xor-gen", "lane": "crypto", "col": 3, "type": "security", "label": "XOR Key Gen", "sublabel": "Center 生成 256bit 会话密钥", "width": 140, "tag": "per-session" },
+    { "id": "xor-key", "lane": "crypto", "col": 3, "type": "security", "label": "XOR Key 返回", "sublabel": "RSA-OAEP 加密 XOR 密钥", "width": 140, "yOffset": 110, "tag": "加密分发" },
+    { "id": "xor-verify", "lane": "crypto", "col": 3, "type": "backend", "label": "XOR Verify", "sublabel": "客户端解密 + 握手确认帧", "width": 140, "yOffset": 220 },
+    { "id": "frame-ex", "lane": "net", "col": 4, "type": "messagebus", "label": "帧交换 Frame", "sublabel": "WireHeader + XorCipher 载荷", "width": 140, "tag": "双向帧流" },
+    { "id": "rpc-route", "lane": "proto", "col": 5, "type": "backend", "label": "RPC 路由", "sublabel": "Proto Wrapper → methodId", "width": 140 },
+    { "id": "dispatch", "lane": "proto", "col": 5, "type": "cloud", "label": "消息分发 Dispatch", "sublabel": "control / data / im handler", "width": 140, "yOffset": 110 }
+  ],
+  "edges": [
+    { "id": "e1", "from": "join", "to": "upgrade", "label": "ws://center/ws", "variant": "emphasis" },
+    { "id": "e2", "from": "upgrade", "to": "rsa-hi", "label": "WS 已连接", "variant": "default" },
+    { "id": "e3", "from": "rsa-hi", "to": "rsa-ack", "label": "RSA-OAEP(hello+pubkey)", "variant": "security", "role": "main" },
+    { "id": "e4", "from": "rsa-ack", "to": "xor-gen", "label": "RSA 握手成功", "variant": "default", "role": "main" },
+    { "id": "e5", "from": "xor-gen", "to": "xor-key", "label": "生成 xorSessionKey", "variant": "security", "role": "main" },
+    { "id": "e6", "from": "xor-key", "to": "xor-verify", "label": "RSA-OAEP(xorKey)", "variant": "emphasis", "role": "main" },
+    { "id": "e7", "from": "xor-verify", "to": "frame-ex", "label": "XOR 会话就绪", "variant": "emphasis", "role": "main" },
+    { "id": "e8", "from": "frame-ex", "to": "rpc-route", "label": "解帧 → Proto", "variant": "default", "role": "main" },
+    { "id": "e9", "from": "rpc-route", "to": "dispatch", "label": "按 method 分发", "variant": "emphasis", "role": "main" },
+    { "id": "e10", "from": "dispatch", "to": "frame-ex", "label": "响应 → XOR 加密帧", "variant": "dashed", "role": "return", "fromSide": "left", "toSide": "left", "route": "outside-right" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Phase 1 建联",
+      "items": [
+        "peer 通过 Center Join 携带 token",
+        "HTTP Upgrade 升级为 WebSocket 连接",
+        "进入加密协商阶段"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Phase 2 双层握手",
+      "items": [
+        "RSA-OAEP: hello 包证明客户端持有公钥",
+        "Center 生成 per-session XOR 密钥",
+        "RSA 加密返回 XOR 密钥后客户端解密验证"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Phase 3 帧路由",
+      "items": [
+        "WireHeader + XorCipher 保护每一帧",
+        "Proto Wrapper 带 methodId 做 RPC 路由",
+        "control / data / im 三类 handler 分发"
+      ]
+    }
+  ]
+}

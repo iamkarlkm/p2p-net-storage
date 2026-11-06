@@ -1,0 +1,236 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "p2p-im Message Lifecycle + Delivered/Read Receipts",
+    "viewBox": [
+      1700,
+      3000
+    ],
+    "animation": "trace",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "locale": "zh-CN"
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Message Rail"
+    },
+    {
+      "id": "presence",
+      "label": "Presence"
+    },
+    {
+      "id": "receipts",
+      "label": "Receipts"
+    },
+    {
+      "id": "terminal",
+      "label": "Terminal"
+    }
+  ],
+  "states": [
+    {
+      "id": "sent",
+      "type": "active",
+      "label": "Sent",
+      "sublabel": "sent to ingest",
+      "lane": "main",
+      "col": 0,
+      "step": "02",
+      "yOffset": 80,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "delivered-evt",
+      "type": "active",
+      "label": "Delivered Event",
+      "sublabel": "receipts",
+      "lane": "receipts",
+      "col": 0,
+      "tag": "1 tick",
+      "yOffset": 88,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "done-double",
+      "type": "success",
+      "label": "Read Final",
+      "sublabel": "double check",
+      "lane": "terminal",
+      "col": 0,
+      "tag": "terminal",
+      "yOffset": 0,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "created",
+      "type": "start",
+      "label": "Client Created",
+      "sublabel": "pending send",
+      "lane": "main",
+      "col": 1,
+      "step": "01",
+      "yOffset": 80,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "online-ok",
+      "type": "waiting",
+      "label": "Online Match",
+      "sublabel": "Ws Push",
+      "lane": "presence",
+      "col": 1,
+      "tag": "dsfreering contains",
+      "yOffset": 100,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "persist-fail",
+      "type": "failure",
+      "label": "PersistFail",
+      "sublabel": "retry",
+      "lane": "terminal",
+      "col": 1,
+      "tag": "retryable",
+      "yOffset": 20,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "delivered",
+      "type": "waiting",
+      "label": "Delivered",
+      "sublabel": "client ack",
+      "lane": "main",
+      "col": 2,
+      "step": "05",
+      "yOffset": 80,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "offline-fallback",
+      "type": "waiting",
+      "label": "Offline",
+      "sublabel": "Sys Push",
+      "lane": "presence",
+      "col": 2,
+      "tag": "APNs/FCM",
+      "yOffset": 88,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "read-evt",
+      "type": "active",
+      "label": "Read Event",
+      "sublabel": "receipts",
+      "lane": "receipts",
+      "col": 2,
+      "tag": "2 tick",
+      "yOffset": 100,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "persisted",
+      "type": "success",
+      "label": "Persisted",
+      "sublabel": "p2p-db MVCC",
+      "lane": "main",
+      "col": 3,
+      "step": "03",
+      "yOffset": 80,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "routed",
+      "type": "active",
+      "label": "Routed",
+      "sublabel": "convId shard",
+      "lane": "main",
+      "col": 3,
+      "step": "04",
+      "yOffset": 98,
+      "width": 140,
+      "height": 86
+    }
+  ],
+  "transitions": [
+    {
+      "from": "routed",
+      "to": "online-ok",
+      "variant": "emphasis"
+    },
+    {
+      "from": "routed",
+      "to": "offline-fallback",
+      "variant": "dashed",
+      "channelY": -1660
+    },
+    {
+      "from": "online-ok",
+      "to": "delivered",
+      "variant": "emphasis",
+      "channelY": 400
+    },
+    {
+      "from": "delivered",
+      "to": "delivered-evt",
+      "variant": "default"
+    },
+    {
+      "from": "delivered-evt",
+      "to": "read-evt",
+      "variant": "dashed",
+      "channelY": 1260,
+      "channelX": 260,
+      "fromSide": "right"
+    },
+    {
+      "from": "read-evt",
+      "to": "done-double",
+      "variant": "emphasis",
+      "channelY": -1740,
+      "channelX": -200,
+      "toSide": "right"
+    },
+    {
+      "from": "persisted",
+      "to": "persist-fail",
+      "variant": "security",
+      "channelX": 1640
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Persisted → Delivered",
+      "items": [
+        "消息必须先 Persisted 成功，才能进入 delivery；是「已持久化」和「已送达」两阶段 UI 状态（单勾 vs 双勾第一勾）"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Presence Branch",
+      "items": [
+        "Routed 阶段读取 DsFreeRing uid 集合；命中 → Online Match→Ws Push；不命中 → Offline Fallback→系统推送，两种路径最终都会到 Delivered 状态"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Read Receipt is Terminal",
+      "items": [
+        "Done Double Check = Delivered + Read 双事件都已发出；聊天 UI 才显示真正的双勾已读"
+      ]
+    }
+  ]
+}

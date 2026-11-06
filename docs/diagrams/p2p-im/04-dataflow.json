@@ -1,0 +1,319 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "p2p-im Data Flow: Send → Store → Index → Presence → Push → Receipts",
+    "viewBox": [
+      5000,
+      7000
+    ],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN"
+  },
+  "stages": [
+    {
+      "label": "Clients"
+    },
+    {
+      "label": "Ingest"
+    },
+    {
+      "label": "Durable"
+    },
+    {
+      "label": "Routing"
+    },
+    {
+      "label": "Receipts"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "cli-a",
+      "type": "frontend",
+      "label": "Alice",
+      "stage": 0,
+      "row": 0,
+      "tag": "mobile",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "cli-b",
+      "type": "frontend",
+      "label": "Bob",
+      "stage": 0,
+      "row": 3,
+      "tag": "mobile",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "ing",
+      "type": "backend",
+      "label": "Ingest",
+      "sublabel": "p2p-ws",
+      "stage": 1,
+      "row": 0,
+      "tag": "gateway",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "store",
+      "type": "database",
+      "label": "Msg MVCC",
+      "sublabel": "p2p-db",
+      "stage": 2,
+      "row": 1,
+      "tag": "MVCC",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "idx",
+      "type": "database",
+      "label": "Conv/User Index",
+      "sublabel": "p2p-db",
+      "stage": 2,
+      "row": 0,
+      "tag": "EqIndex",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "presence",
+      "type": "backend",
+      "label": "Presence UID Set",
+      "sublabel": "DsFreeRing",
+      "stage": 2,
+      "row": 3,
+      "tag": "Set",
+      "width": 140,
+      "yOffset": 0,
+      "height": 80
+    },
+    {
+      "id": "ws-push",
+      "type": "backend",
+      "label": "WS Push",
+      "stage": 3,
+      "row": 3,
+      "tag": "online",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "sys-push",
+      "type": "cloud",
+      "label": "APNs/FCM",
+      "stage": 3,
+      "row": 0,
+      "tag": "offline",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "evt-deliv",
+      "type": "messagebus",
+      "label": "Delivered",
+      "stage": 4,
+      "row": 0,
+      "tag": "event",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "evt-read",
+      "type": "messagebus",
+      "label": "Read",
+      "stage": 4,
+      "row": 3,
+      "tag": "event",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "evt-trace",
+      "type": "cloud",
+      "label": "Tracing",
+      "stage": 4,
+      "row": 1,
+      "tag": "OTEL",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    }
+  ],
+  "flows": [
+    {
+      "id": "m1",
+      "from": "cli-a",
+      "to": "ing",
+      "label": "SendMessage",
+      "classification": "app command",
+      "variant": "emphasis",
+      "labelDx": 800,
+      "labelDy": -260,
+      "labelSegment": 0,
+      "channelX": 900
+    },
+    {
+      "id": "m2",
+      "from": "ing",
+      "to": "store",
+      "label": "MVCC write",
+      "classification": "bytes",
+      "variant": "default",
+      "labelDx": 0,
+      "labelDy": -560,
+      "labelSegment": 0,
+      "channelX": -900
+    },
+    {
+      "id": "m3",
+      "from": "ing",
+      "to": "idx",
+      "label": "userId + convId index",
+      "classification": "index",
+      "variant": "default",
+      "labelDx": 0,
+      "labelDy": 560,
+      "channelX": 1160,
+      "labelSegment": 0
+    },
+    {
+      "id": "m4",
+      "from": "ing",
+      "to": "presence",
+      "label": "contains(uid)",
+      "classification": "set",
+      "variant": "default",
+      "labelDx": -600,
+      "labelDy": 420,
+      "labelSegment": 0,
+      "channelX": -900
+    },
+    {
+      "id": "m5",
+      "from": "presence",
+      "to": "ws-push",
+      "label": "online",
+      "classification": "route",
+      "variant": "emphasis",
+      "labelDx": 600,
+      "labelDy": 420,
+      "channelX": 1160,
+      "labelSegment": 0
+    },
+    {
+      "id": "m6",
+      "from": "presence",
+      "to": "sys-push",
+      "label": "offline",
+      "classification": "route",
+      "variant": "dashed",
+      "labelDx": -600,
+      "labelDy": -420,
+      "labelSegment": 0,
+      "channelX": -900
+    },
+    {
+      "id": "m7",
+      "from": "ws-push",
+      "to": "cli-b",
+      "label": "WS frame",
+      "classification": "wire",
+      "variant": "emphasis",
+      "channelY": 630,
+      "labelDx": 600,
+      "labelDy": -420,
+      "labelSegment": 0,
+      "channelX": 900
+    },
+    {
+      "id": "m8",
+      "from": "sys-push",
+      "to": "cli-b",
+      "label": "system push",
+      "classification": "sys push",
+      "variant": "dashed",
+      "channelY": -630,
+      "labelDx": -800,
+      "labelDy": 260,
+      "labelSegment": 0,
+      "channelX": -900
+    },
+    {
+      "id": "m9",
+      "from": "cli-b",
+      "to": "evt-deliv",
+      "label": "ack delivered",
+      "classification": "event",
+      "variant": "default",
+      "channelX": 2540,
+      "channelY": 1260,
+      "labelDx": 800,
+      "labelDy": 260,
+      "labelSegment": 0
+    },
+    {
+      "id": "m10",
+      "from": "cli-b",
+      "to": "evt-read",
+      "label": "ack read",
+      "classification": "event",
+      "variant": "default",
+      "channelY": -1260,
+      "labelDx": -800,
+      "labelDy": -260,
+      "labelSegment": 0,
+      "channelX": -900
+    },
+    {
+      "id": "m11",
+      "from": "evt-deliv",
+      "to": "evt-trace",
+      "label": "span",
+      "classification": "trace",
+      "variant": "dashed",
+      "labelDx": 800,
+      "labelDy": -260,
+      "labelSegment": 0,
+      "channelX": 900
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "3 p2p-db Components Roles",
+      "items": [
+        "Msg Store = MVCC：消息 body 多版本历史；Index = EqIndex：收件箱/会话查询；Presence = DsFreeRing（本次新增 Set 语义）：在线 uid 集合"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Split Delivery",
+      "items": [
+        "Presence DsFreeRing.contains → WS 在线推；否则 APNs/FCM 系统推；两条路径互斥但共同覆盖 100% 用户场景"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Receipt Events",
+      "items": [
+        "Delivered/Read 都是独立 event；对 Alice 可见的双勾完全靠 receipts 事件，不靠服务端轮询"
+      ]
+    }
+  ]
+}

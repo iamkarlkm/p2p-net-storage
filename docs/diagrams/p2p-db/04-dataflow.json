@@ -1,0 +1,263 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "p2p-db Data Flow: Write → Binlog → Backup → Restore",
+    "viewBox": [
+      1400,
+      7000
+    ],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN"
+  },
+  "stages": [
+    {
+      "label": "Entities"
+    },
+    {
+      "label": "Engine"
+    },
+    {
+      "label": "Primary Storage"
+    },
+    {
+      "label": "Durable Stream"
+    },
+    {
+      "label": "Backup / Restore"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "entity",
+      "type": "frontend",
+      "label": "Java Entities",
+      "sublabel": "@DsTable",
+      "stage": 0,
+      "row": 0,
+      "tag": "ORM",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "plan",
+      "type": "backend",
+      "label": "Query + MVCC Planner",
+      "sublabel": "GenericManager",
+      "stage": 1,
+      "row": 0,
+      "tag": "p2p-db",
+      "width": 140,
+      "yOffset": 0,
+      "height": 80
+    },
+    {
+      "id": "rowstore",
+      "type": "database",
+      "label": "Row / MVCC Store",
+      "sublabel": "DsFixedBucketStore",
+      "stage": 2,
+      "row": 3,
+      "tag": "hot",
+      "width": 140,
+      "yOffset": 0,
+      "height": 80
+    },
+    {
+      "id": "indexstore",
+      "type": "database",
+      "label": "EqIndex / Range",
+      "sublabel": "RowIdSet",
+      "stage": 2,
+      "row": 0,
+      "tag": "cold index",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "binlog",
+      "type": "messagebus",
+      "label": "Binlog Pipeline",
+      "sublabel": "REDO/UNDO 3 roles",
+      "stage": 3,
+      "row": 0,
+      "tag": "append only",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "fullb",
+      "type": "cloud",
+      "label": "Full Backup",
+      "sublabel": "data+index+meta",
+      "stage": 4,
+      "row": 0,
+      "tag": "snapshot",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "incb",
+      "type": "cloud",
+      "label": "Inc Backup",
+      "sublabel": "binlog delta",
+      "stage": 4,
+      "row": 3,
+      "tag": "manifest diff",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "restore",
+      "type": "backend",
+      "label": "Timeline Restore",
+      "sublabel": "DsTimelineRestore",
+      "stage": 4,
+      "row": 1,
+      "tag": "PITR",
+      "width": 140,
+      "yOffset": 0,
+      "height": 80
+    }
+  ],
+  "flows": [
+    {
+      "id": "e1",
+      "from": "entity",
+      "to": "plan",
+      "label": "put/remove/query",
+      "classification": "entity graph",
+      "variant": "emphasis",
+      "labelDx": 180,
+      "labelDy": -120,
+      "labelSegment": 0,
+      "channelX": 860
+    },
+    {
+      "id": "e2",
+      "from": "plan",
+      "to": "rowstore",
+      "label": "version + row bytes",
+      "classification": "MVCC write",
+      "variant": "emphasis",
+      "labelDx": 0,
+      "labelDy": -180,
+      "labelSegment": 0,
+      "channelX": -860
+    },
+    {
+      "id": "e3",
+      "from": "plan",
+      "to": "indexstore",
+      "label": "rowIdSet updates",
+      "classification": "index deltas",
+      "variant": "default",
+      "channelX": 1120,
+      "labelDx": 240,
+      "labelDy": 0,
+      "labelSegment": 0
+    },
+    {
+      "id": "e4",
+      "from": "rowstore",
+      "to": "binlog",
+      "label": "REDO frame",
+      "classification": "durable",
+      "variant": "dashed",
+      "labelDx": -180,
+      "labelDy": -120,
+      "labelSegment": 0,
+      "channelX": -860
+    },
+    {
+      "id": "e5",
+      "from": "indexstore",
+      "to": "binlog",
+      "label": "index redo",
+      "classification": "durable",
+      "variant": "dashed",
+      "channelX": 1120,
+      "labelDx": 120,
+      "labelDy": 200,
+      "labelSegment": 0
+    },
+    {
+      "id": "e6",
+      "from": "binlog",
+      "to": "fullb",
+      "label": "BINLOG_FIXED/DYN/BYTES",
+      "classification": "full snapshot",
+      "variant": "emphasis",
+      "channelX": -1120,
+      "labelDx": -240,
+      "labelDy": 0,
+      "labelSegment": 0
+    },
+    {
+      "id": "e7",
+      "from": "binlog",
+      "to": "incb",
+      "label": "delta frames",
+      "classification": "incremental",
+      "variant": "dashed",
+      "labelDx": 180,
+      "labelDy": 120,
+      "labelSegment": 0,
+      "channelX": 860
+    },
+    {
+      "id": "e8",
+      "from": "fullb",
+      "to": "restore",
+      "label": "base restore",
+      "classification": "data files",
+      "variant": "security",
+      "labelDx": -120,
+      "labelDy": -200,
+      "labelSegment": 0,
+      "channelX": -860
+    },
+    {
+      "id": "e9",
+      "from": "incb",
+      "to": "restore",
+      "label": "replay [basePos,end)",
+      "classification": "ordered frames",
+      "variant": "security",
+      "labelDx": 0,
+      "labelDy": 180,
+      "labelSegment": 0,
+      "channelX": 860
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Primary Split",
+      "items": [
+        "MVCC 列=versionId 路由，历史版本保留；非 MVCC=rowId 路由，更新即删旧索引"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Binlog 3 Roles",
+      "items": [
+        "BINLOG_FIXED=定长；BINLOG_DYN=变长；BINLOG_BYTES=大字节；备份目录 3 子目录；恢复映射回 dbHome 树"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Restore 2-Phase",
+      "items": [
+        "Phase 1: 把备份链的 binlog 复制到 targetDbHome/_binlog/",
+        "Phase 2: 显式调用 DsDatabaseLocal.replayBinlog(base,end) 应用事件"
+      ]
+    }
+  ]
+}

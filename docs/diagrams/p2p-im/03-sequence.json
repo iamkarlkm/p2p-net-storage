@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "p2p-im Send → Persist → Presence → Deliver → Read Receipt",
+    "viewBox": [
+      1050,
+      7550
+    ],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "column_fit": "spread"
+  },
+  "participants": [
+    {
+      "id": "ua",
+      "type": "external",
+      "label": "Alice",
+      "sublabel": "Cl-A"
+    },
+    {
+      "id": "ingest",
+      "type": "backend",
+      "label": "Ingest",
+      "sublabel": "p2p-ws"
+    },
+    {
+      "id": "store",
+      "type": "database",
+      "label": "Msg Store",
+      "sublabel": "p2p-db"
+    },
+    {
+      "id": "idx",
+      "type": "database",
+      "label": "Conv",
+      "sublabel": "Conv idx"
+    },
+    {
+      "id": "presence",
+      "type": "backend",
+      "label": "Presence",
+      "sublabel": "Inodes"
+    },
+    {
+      "id": "ub",
+      "type": "external",
+      "label": "Bob",
+      "sublabel": "Cl-B"
+    },
+    {
+      "id": "receipts",
+      "type": "messagebus",
+      "label": "Receipt Bus"
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 320,
+      "label": "Persist"
+    },
+    {
+      "from": 340,
+      "to": 500,
+      "label": "Presence Route"
+    },
+    {
+      "from": 520,
+      "to": 700,
+      "label": "Deliver + Receipts"
+    }
+  ],
+  "messages": [
+    {
+      "id": "m1",
+      "from": "ua",
+      "to": "ingest",
+      "label": "SendMessage(to=Bob, body)",
+      "variant": "emphasis",
+      "y": 180
+    },
+    {
+      "id": "m2",
+      "from": "ingest",
+      "to": "store",
+      "label": "MVCC insert(msgId, body..)",
+      "variant": "default",
+      "y": 222
+    },
+    {
+      "id": "m3",
+      "from": "store",
+      "to": "ingest",
+      "label": "persisted msgId",
+      "variant": "return",
+      "y": 264
+    },
+    {
+      "id": "m4",
+      "from": "ingest",
+      "to": "idx",
+      "label": "index(userId=Bob, convId)",
+      "variant": "default",
+      "y": 306
+    },
+    {
+      "id": "m5",
+      "from": "idx",
+      "to": "ingest",
+      "label": "indexed",
+      "variant": "return",
+      "y": 348
+    },
+    {
+      "id": "m6",
+      "from": "ingest",
+      "to": "presence",
+      "label": "contains(Bob uid)",
+      "variant": "default",
+      "y": 390
+    },
+    {
+      "id": "m7",
+      "from": "presence",
+      "to": "ingest",
+      "label": "true (online)",
+      "variant": "return",
+      "y": 432
+    },
+    {
+      "id": "m8",
+      "from": "ingest",
+      "to": "ub",
+      "label": "WS push(msgId, body)",
+      "variant": "emphasis",
+      "y": 474
+    },
+    {
+      "id": "m9",
+      "from": "ub",
+      "to": "receipts",
+      "label": "emit delivered(msgId)",
+      "variant": "dashed",
+      "y": 516
+    },
+    {
+      "id": "m10",
+      "from": "ub",
+      "to": "receipts",
+      "label": "emit read(msgId)",
+      "variant": "dashed",
+      "y": 558
+    },
+    {
+      "id": "m11",
+      "from": "receipts",
+      "to": "ua",
+      "label": "delivered/read receipt",
+      "variant": "return",
+      "y": 600
+    }
+  ],
+  "activations": [
+    {
+      "participant": "ingest",
+      "from": 170,
+      "to": 504,
+      "type": "backend"
+    },
+    {
+      "participant": "store",
+      "from": 212,
+      "to": 294,
+      "type": "database"
+    },
+    {
+      "participant": "idx",
+      "from": 296,
+      "to": 378,
+      "type": "database"
+    },
+    {
+      "participant": "presence",
+      "from": 380,
+      "to": 462,
+      "type": "backend"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Receipt Chain",
+      "items": [
+        "Bob 收到→ delivered；Bob 阅读→ read；Receipt Bus 推送回 Alice；Alice 本地状态 UI 双勾"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Presence = DsFreeRing Set",
+      "items": [
+        "contains(Bob uid) 是 O(n) 两段计数遍历；单 server 在线用户 ≤ 100 万内完全 OK；超了可拆 16 分桶"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Persist-Then-Route",
+      "items": [
+        "如果 route 但消息没持久成功，等于虚假发送；Persist-Then-Route 保证失败可 client 安全重试，不会产生假 delivered"
+      ]
+    }
+  ]
+}

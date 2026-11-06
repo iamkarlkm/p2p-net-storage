@@ -1,0 +1,346 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "P2P 文件同步模块架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "sync-client-path",
+        "label": "客户端同步路径",
+        "focus": [
+          "syncClient",
+          "chunkManager",
+          "manifestStore",
+          "uploadTask",
+          "downloadTask"
+        ],
+        "note": "客户端侧同步核心链路：分块管理、清单存储、上传下载任务。"
+      },
+      {
+        "id": "conflict-merge-path",
+        "label": "冲突与合并路径",
+        "focus": [
+          "syncServer",
+          "conflictResolver",
+          "manifest"
+        ],
+        "note": "服务端接收清单后执行合并与冲突消解的关键组件。"
+      },
+      {
+        "id": "network-boundary",
+        "label": "跨节点网络边界",
+        "focus": [
+          "syncClient",
+          "syncServer",
+          "networkPeers"
+        ],
+        "note": "P2P 客户端与对等节点之间的网络边界与数据传输。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "syncClient",
+      "type": "frontend",
+      "label": "SyncClient",
+      "sublabel": "同步客户端",
+      "pos": [
+        60,
+        120
+      ],
+      "size": [
+        150,
+        70
+      ],
+      "tag": "P2P Node"
+    },
+    {
+      "id": "syncServer",
+      "type": "backend",
+      "label": "SyncServer",
+      "sublabel": "同步服务端",
+      "pos": [
+        520,
+        120
+      ],
+      "size": [
+        150,
+        70
+      ],
+      "tag": "Peer Endpoint"
+    },
+    {
+      "id": "chunkManager",
+      "type": "backend",
+      "label": "ChunkManager",
+      "sublabel": "分块管理器",
+      "pos": [
+        60,
+        280
+      ],
+      "size": [
+        150,
+        70
+      ],
+      "tag": "Rolling Hash"
+    },
+    {
+      "id": "manifestStore",
+      "type": "database",
+      "label": "ManifestStore",
+      "sublabel": "清单存储",
+      "pos": [
+        60,
+        440
+      ],
+      "size": [
+        150,
+        70
+      ],
+      "tag": "Merkle Root"
+    },
+    {
+      "id": "uploadTask",
+      "type": "backend",
+      "label": "UploadTask",
+      "sublabel": "上传任务",
+      "pos": [
+        260,
+        220
+      ],
+      "size": [
+        150,
+        70
+      ],
+      "tag": "Chunk Upload"
+    },
+    {
+      "id": "downloadTask",
+      "type": "backend",
+      "label": "DownloadTask",
+      "sublabel": "下载任务",
+      "pos": [
+        260,
+        380
+      ],
+      "size": [
+        150,
+        70
+      ],
+      "tag": "Chunk Fetch"
+    },
+    {
+      "id": "conflictResolver",
+      "type": "security",
+      "label": "ConflictResolver",
+      "sublabel": "冲突消解器",
+      "pos": [
+        520,
+        280
+      ],
+      "size": [
+        150,
+        70
+      ],
+      "tag": "3-Way Merge"
+    },
+    {
+      "id": "manifest",
+      "type": "database",
+      "label": "Manifest",
+      "sublabel": "清单对象",
+      "pos": [
+        520,
+        440
+      ],
+      "size": [
+        150,
+        70
+      ],
+      "tag": "Immutable"
+    },
+    {
+      "id": "timelineStore",
+      "type": "database",
+      "label": "TimelineStore",
+      "sublabel": "时间线存储",
+      "pos": [
+        720,
+        280
+      ],
+      "size": [
+        150,
+        70
+      ],
+      "tag": "Audit Log"
+    },
+    {
+      "id": "networkPeers",
+      "type": "external",
+      "label": "NetworkPeers",
+      "sublabel": "对等节点",
+      "pos": [
+        720,
+        120
+      ],
+      "size": [
+        150,
+        70
+      ],
+      "tag": "P2P Swarm"
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "本地节点",
+      "wraps": [
+        "syncClient",
+        "chunkManager",
+        "manifestStore",
+        "uploadTask",
+        "downloadTask"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "远端节点",
+      "wraps": [
+        "syncServer",
+        "conflictResolver",
+        "manifest",
+        "timelineStore"
+      ]
+    },
+    {
+      "kind": "security-group",
+      "label": "传输层",
+      "wraps": [
+        "uploadTask",
+        "downloadTask",
+        "networkPeers"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "client-chunk",
+      "from": "syncClient",
+      "to": "chunkManager",
+      "label": "触发分块",
+      "labelDy": 24
+    },
+    {
+      "id": "client-store",
+      "from": "syncClient",
+      "to": "manifestStore",
+      "label": "读写清单",
+      "labelDy": 59
+    },
+    {
+      "id": "chunk-upload",
+      "from": "chunkManager",
+      "to": "uploadTask",
+      "label": "生成 Chunk",
+      "variant": "emphasis",
+      "labelDy": 60
+    },
+    {
+      "id": "store-upload",
+      "from": "manifestStore",
+      "to": "uploadTask",
+      "label": "缺失清单",
+      "variant": "dashed"
+    },
+    {
+      "id": "download-chunk",
+      "from": "downloadTask",
+      "to": "chunkManager",
+      "label": "写入 Chunk",
+      "variant": "emphasis",
+      "labelDy": 9
+    },
+    {
+      "id": "download-store",
+      "from": "downloadTask",
+      "to": "manifestStore",
+      "label": "远端清单",
+      "variant": "dashed"
+    },
+    {
+      "id": "upload-server",
+      "from": "uploadTask",
+      "to": "syncServer",
+      "label": "推 Chunk + Manifest",
+      "variant": "emphasis"
+    },
+    {
+      "id": "server-download",
+      "from": "syncServer",
+      "to": "downloadTask",
+      "label": "拉取清单",
+      "variant": "dashed"
+    },
+    {
+      "id": "server-conflict",
+      "from": "syncServer",
+      "to": "conflictResolver",
+      "label": "检测冲突",
+      "labelDy": 24
+    },
+    {
+      "id": "conflict-manifest",
+      "from": "conflictResolver",
+      "to": "manifest",
+      "label": "写合并结果",
+      "labelDy": 24
+    },
+    {
+      "id": "manifest-timeline",
+      "from": "manifest",
+      "to": "timelineStore",
+      "label": "记录事件",
+      "variant": "dashed"
+    },
+    {
+      "id": "peers-upload",
+      "from": "networkPeers",
+      "to": "uploadTask",
+      "label": "ACK",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "right"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "客户端侧",
+      "items": [
+        "SyncClient 协调分块与清单",
+        "ChunkManager 基于 Rolling Hash 分块",
+        "ManifestStore 持久化 Merkle 根"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "任务与传输",
+      "items": [
+        "UploadTask 逐块上传缺失 Chunk",
+        "DownloadTask 并发拉取远端 Chunk",
+        "P2P 传输层支持多对等节点"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "服务端合并",
+      "items": [
+        "ConflictResolver 执行 3-Way Merge",
+        "Manifest 以不可变版本存储",
+        "TimelineStore 记录完整同步时间线"
+      ]
+    }
+  ]
+}

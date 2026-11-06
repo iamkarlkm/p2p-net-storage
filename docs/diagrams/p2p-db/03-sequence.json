@@ -1,0 +1,224 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "p2p-db MVCC put → Binlog → Backup Sequence",
+    "viewBox": [
+      1050,
+      1000
+    ],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "column_fit": "spread"
+  },
+  "participants": [
+    {
+      "id": "app",
+      "type": "external",
+      "label": "App",
+      "sublabel": "Java ORM"
+    },
+    {
+      "id": "gm",
+      "type": "backend",
+      "label": "GM",
+      "sublabel": "GM QueryWrap"
+    },
+    {
+      "id": "db",
+      "type": "backend",
+      "label": "DB",
+      "sublabel": "DB MVCC+Binlog"
+    },
+    {
+      "id": "mvcc",
+      "type": "database",
+      "label": "MVCC",
+      "sublabel": "ver-bucket"
+    },
+    {
+      "id": "idx",
+      "type": "database",
+      "label": "Idx",
+      "sublabel": "Eq-Idx Rows"
+    },
+    {
+      "id": "bl",
+      "type": "messagebus",
+      "label": "Binlog",
+      "sublabel": "REDO frames"
+    },
+    {
+      "id": "fs",
+      "type": "cloud",
+      "label": "Backup",
+      "sublabel": "full+inc snaps"
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 320,
+      "label": "Plan + Schema Gate"
+    },
+    {
+      "from": 340,
+      "to": 560,
+      "label": "MVCC + Index Write"
+    },
+    {
+      "from": 580,
+      "to": 700,
+      "label": "Durability"
+    }
+  ],
+  "messages": [
+    {
+      "id": "c1",
+      "from": "app",
+      "to": "gm",
+      "label": "put(User(id=7, name=x))",
+      "variant": "emphasis",
+      "y": 180
+    },
+    {
+      "id": "c2",
+      "from": "gm",
+      "to": "db",
+      "label": "putEntity(User.class, entity)",
+      "variant": "emphasis",
+      "y": 222
+    },
+    {
+      "id": "c3",
+      "from": "db",
+      "to": "mvcc",
+      "label": "alloc versionId + rowId",
+      "variant": "default",
+      "y": 264
+    },
+    {
+      "id": "c4",
+      "from": "mvcc",
+      "to": "db",
+      "label": "bytes written",
+      "variant": "return",
+      "y": 306
+    },
+    {
+      "id": "c5",
+      "from": "db",
+      "to": "idx",
+      "label": "add(versionId, colValue)",
+      "variant": "default",
+      "y": 348
+    },
+    {
+      "id": "c6",
+      "from": "idx",
+      "to": "db",
+      "label": "indexed ok",
+      "variant": "return",
+      "y": 390
+    },
+    {
+      "id": "c7",
+      "from": "db",
+      "to": "bl",
+      "label": "append REDO tableId=Fnv(User)",
+      "variant": "dashed",
+      "y": 432
+    },
+    {
+      "id": "c8",
+      "from": "bl",
+      "to": "db",
+      "label": "sequence N",
+      "variant": "return",
+      "y": 474
+    },
+    {
+      "id": "c9",
+      "from": "db",
+      "to": "gm",
+      "label": "entity ok",
+      "variant": "return",
+      "y": 516
+    },
+    {
+      "id": "c10",
+      "from": "gm",
+      "to": "app",
+      "label": "future done",
+      "variant": "return",
+      "y": 558
+    },
+    {
+      "id": "c11",
+      "from": "bl",
+      "to": "fs",
+      "label": "async snapshot diff → inc backup",
+      "variant": "dashed",
+      "y": 600
+    }
+  ],
+  "activations": [
+    {
+      "participant": "gm",
+      "from": 170,
+      "to": 588,
+      "type": "backend"
+    },
+    {
+      "participant": "db",
+      "from": 212,
+      "to": 546,
+      "type": "backend"
+    },
+    {
+      "participant": "mvcc",
+      "from": 254,
+      "to": 336,
+      "type": "database"
+    },
+    {
+      "participant": "idx",
+      "from": 338,
+      "to": 420,
+      "type": "database"
+    },
+    {
+      "participant": "bl",
+      "from": 422,
+      "to": 630,
+      "type": "messagebus"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "MVCC Write Order",
+      "items": [
+        "先分配 versionId/rowId 写 MVCC 槽 → 更 Index → 最后 append Binlog REDO",
+        "Binlog 位置 exclusive watermark: fixedOffset=下帧偏移, sequence=最后写帧序号"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "FNV tableId",
+      "items": [
+        "Binlog 每条表用 class.getName() 的 FNV-1a 作 tableId",
+        "列 colId 用 schema 中 0-based 列序，schema 改则 signature 改变"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "New Slot All-Zero Invariant",
+      "items": [
+        "DsFixedBucketStore.get 对新 slot 返回全零",
+        "old row 解读必须 isAllZero(bytes) 判定，否则 INSERT 会错写 UPDATE + UNDO"
+      ]
+    }
+  ]
+}

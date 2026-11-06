@@ -1,0 +1,320 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "p2p-sync File Sync Architecture",
+    "visual_preset": "blueprint",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "views": [
+      {
+        "id": "upload",
+        "label": "Upload Path",
+        "focus": [
+          "local-fs",
+          "chunk",
+          "dedup",
+          "transport",
+          "remote-fs"
+        ],
+        "note": "本地文件 → 分块 → 去重 → 4 种传输 → 远端"
+      },
+      {
+        "id": "monitor",
+        "label": "Monitor & Resume",
+        "focus": [
+          "monitor",
+          "up-idx",
+          "finalize"
+        ],
+        "note": "后台 fs monitor + upload 索引断点续传"
+      }
+    ],
+    "viewBox": [
+      1050,
+      2000
+    ]
+  },
+  "components": [
+    {
+      "id": "local-fs",
+      "type": "external",
+      "label": "Local FS",
+      "sublabel": "NTFS·ext4",
+      "pos": [
+        40,
+        140
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "col": 0,
+      "row": 0
+    },
+    {
+      "id": "monitor",
+      "type": "backend",
+      "label": "P2PSyncMonitor",
+      "sublabel": "FS Watcher",
+      "pos": [
+        40,
+        340
+      ],
+      "size": [
+        140,
+        60
+      ],
+      "tag": "daemon",
+      "col": 0,
+      "row": 1
+    },
+    {
+      "id": "chunk",
+      "type": "backend",
+      "label": "Chunker",
+      "sublabel": "content-hash chunk",
+      "pos": [
+        230,
+        140
+      ],
+      "size": [
+        144,
+        64
+      ],
+      "tag": "rabin/cdc",
+      "col": 0,
+      "row": 2
+    },
+    {
+      "id": "dedup",
+      "type": "database",
+      "label": "Dedup Index",
+      "sublabel": "hash → chunkId",
+      "pos": [
+        430,
+        70
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "tag": "p2p-db",
+      "col": 0,
+      "row": 3
+    },
+    {
+      "id": "transport",
+      "type": "messagebus",
+      "label": "p2p-core Transport",
+      "sublabel": "UDP/QUIC/TCP/WS",
+      "pos": [
+        430,
+        240
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "tag": "4 modes",
+      "col": 0,
+      "row": 4
+    },
+    {
+      "id": "up-idx",
+      "type": "database",
+      "label": "Upload Index",
+      "sublabel": "namespace + task",
+      "pos": [
+        230,
+        340
+      ],
+      "size": [
+        144,
+        60
+      ],
+      "tag": "resumable",
+      "col": 0,
+      "row": 5
+    },
+    {
+      "id": "remote-fs",
+      "type": "external",
+      "label": "Remote FS",
+      "sublabel": "peer storage",
+      "pos": [
+        650,
+        140
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "col": 0,
+      "row": 6
+    },
+    {
+      "id": "finalize",
+      "type": "backend",
+      "label": "Finalize + Rename",
+      "sublabel": "atomic move",
+      "pos": [
+        650,
+        290
+      ],
+      "size": [
+        140,
+        60
+      ],
+      "tag": "strong check",
+      "col": 0,
+      "row": 7
+    },
+    {
+      "id": "e2e",
+      "type": "security",
+      "label": "E2E Strong Check",
+      "sublabel": "content-hash final",
+      "pos": [
+        650,
+        420
+      ],
+      "size": [
+        140,
+        60
+      ],
+      "tag": "compare",
+      "col": 0,
+      "row": 8
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "p2p-sync Local",
+      "wraps": [
+        "local-fs",
+        "monitor",
+        "chunk",
+        "dedup",
+        "up-idx",
+        "transport"
+      ],
+      "pad": 14
+    },
+    {
+      "kind": "security-group",
+      "label": "Remote Peer",
+      "wraps": [
+        "remote-fs",
+        "finalize",
+        "e2e"
+      ],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "from": "local-fs",
+      "to": "chunk",
+      "label": "file bytes",
+      "variant": "emphasis",
+      "labelDy": 248,
+      "route": "orthogonal-v",
+      "labelDx": 10
+    },
+    {
+      "from": "monitor",
+      "to": "chunk",
+      "label": "file change event",
+      "variant": "dashed",
+      "labelDy": 28,
+      "route": "orthogonal-v",
+      "labelDx": 10
+    },
+    {
+      "from": "chunk",
+      "to": "dedup",
+      "label": "hash lookup",
+      "labelDy": 70,
+      "route": "orthogonal-v",
+      "labelDx": 10
+    },
+    {
+      "from": "dedup",
+      "to": "transport",
+      "label": "unique chunks only",
+      "labelDy": 24,
+      "route": "orthogonal-v",
+      "labelDx": 10
+    },
+    {
+      "from": "chunk",
+      "to": "up-idx",
+      "label": "chunk progress",
+      "variant": "dashed",
+      "labelDy": 24,
+      "route": "orthogonal-v",
+      "labelDx": 10
+    },
+    {
+      "from": "transport",
+      "to": "remote-fs",
+      "label": "chunks in order",
+      "variant": "emphasis",
+      "labelDy": 28,
+      "route": "orthogonal-v",
+      "labelDx": 10
+    },
+    {
+      "from": "remote-fs",
+      "to": "finalize",
+      "label": "chunks assembled",
+      "variant": "dashed",
+      "labelDy": 24,
+      "route": "orthogonal-v",
+      "labelDx": 10
+    },
+    {
+      "from": "finalize",
+      "to": "e2e",
+      "label": "rename final",
+      "variant": "security",
+      "labelDy": 24,
+      "route": "orthogonal-v",
+      "labelDx": 10
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Content Deduplication",
+      "items": [
+        "内容哈希分块；去重索引存在则直接跳过该 chunk；跨文件跨任务全局共享唯一 chunk 字节"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Resume + Namespace",
+      "items": [
+        "Upload Index 以 namespace+task 分桶，避免跨任务 chunk id 冲突；断点续传根据已上传的 chunk list 跳过已完成部分"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Atomic Finalize",
+      "items": [
+        "远端 chunk 合入临时文件 → finalize 原子 move → 强 E2E 内容哈希校验；不满足则回滚到临时文件"
+      ]
+    }
+  ],
+  "layout": {
+    "mode": "grid",
+    "cols": 3,
+    "gapX": 32,
+    "gapY": 32,
+    "cellW": 310,
+    "cellH": 160
+  }
+}

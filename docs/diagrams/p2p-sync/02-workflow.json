@@ -1,0 +1,223 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "p2p-sync Resumable Upload Workflow",
+    "visual_preset": "signal-flow",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "viewBox": [
+      1200,
+      12550
+    ]
+  },
+  "lanes": [
+    {
+      "id": "user",
+      "label": "Sync Caller"
+    },
+    {
+      "id": "prepare",
+      "label": "Plan + Dedup"
+    },
+    {
+      "id": "transport",
+      "label": "Transport Chunks"
+    },
+    {
+      "id": "verify",
+      "label": "Strong E2E Check"
+    },
+    {
+      "id": "resume",
+      "label": "Resume On Retry",
+      "variant": "exception"
+    }
+  ],
+  "phases": [
+    {
+      "id": "plan",
+      "label": "Plan",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "upload",
+      "label": "Upload",
+      "fromCol": 2,
+      "toCol": 2,
+      "variant": "emphasis"
+    },
+    {
+      "id": "check",
+      "label": "Finalize",
+      "fromCol": 3,
+      "toCol": 4
+    }
+  ],
+  "mainPath": [
+    "start-sync",
+    "plan-chunks",
+    "dedup-hash",
+    "push-chunks",
+    "assemble",
+    "strong-check",
+    "done"
+  ],
+  "nodes": [
+    {
+      "id": "start-sync",
+      "lane": "user",
+      "col": 0,
+      "type": "external",
+      "label": "sync(local→remote, ns)",
+      "sublabel": "task id",
+      "width": 174,
+      "yOffset": 0
+    },
+    {
+      "id": "plan-chunks",
+      "lane": "prepare",
+      "col": 1,
+      "type": "backend",
+      "label": "Chunk File",
+      "sublabel": "CDC",
+      "yOffset": 0
+    },
+    {
+      "id": "dedup-hash",
+      "lane": "prepare",
+      "col": 1,
+      "type": "database",
+      "label": "Dedup Hash",
+      "tag": "p2p-db",
+      "yOffset": 78
+    },
+    {
+      "id": "push-chunks",
+      "lane": "transport",
+      "col": 2,
+      "type": "messagebus",
+      "label": "Push Chunk Stream",
+      "sublabel": "p2p-core",
+      "width": 139,
+      "yOffset": 0
+    },
+    {
+      "id": "assemble",
+      "lane": "verify",
+      "col": 3,
+      "type": "backend",
+      "label": "Assemble Chunks",
+      "sublabel": "tmp target",
+      "width": 125,
+      "yOffset": 0
+    },
+    {
+      "id": "strong-check",
+      "lane": "verify",
+      "col": 3,
+      "type": "security",
+      "label": "Strong Content Check",
+      "sublabel": "hash compare",
+      "yOffset": 78,
+      "width": 160
+    },
+    {
+      "id": "done",
+      "lane": "user",
+      "col": 4,
+      "type": "backend",
+      "label": "Finalize Atomic",
+      "sublabel": "rename OK",
+      "width": 125,
+      "yOffset": 0
+    },
+    {
+      "id": "up-idx-save",
+      "lane": "resume",
+      "col": 2,
+      "type": "database",
+      "label": "Save Up-Idx",
+      "tag": "namespace+task",
+      "width": 97,
+      "yOffset": 0
+    },
+    {
+      "id": "retry-skip",
+      "lane": "resume",
+      "col": 4,
+      "type": "backend",
+      "label": "Skip Already Done",
+      "tag": "resume from idx",
+      "width": 139,
+      "yOffset": 0
+    }
+  ],
+  "edges": [
+    {
+      "from": "start-sync",
+      "to": "plan-chunks",
+      "variant": "emphasis"
+    },
+    {
+      "from": "plan-chunks",
+      "to": "dedup-hash",
+      "variant": "default"
+    },
+    {
+      "from": "dedup-hash",
+      "to": "push-chunks",
+      "variant": "emphasis"
+    },
+    {
+      "from": "push-chunks",
+      "to": "assemble",
+      "variant": "default"
+    },
+    {
+      "from": "assemble",
+      "to": "strong-check",
+      "variant": "security"
+    },
+    {
+      "from": "strong-check",
+      "to": "done",
+      "variant": "emphasis"
+    },
+    {
+      "from": "push-chunks",
+      "to": "up-idx-save",
+      "variant": "dashed"
+    },
+    {
+      "from": "up-idx-save",
+      "to": "retry-skip",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Dedup",
+      "items": [
+        "每 chunk 哈希查 p2p-db Dedup Index → 已存在跨任务不再推；极大节省广域网带宽 + 重传"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Strong Final Check",
+      "items": [
+        "chunk 全部到位后必须做最终全文件内容哈希，与本地 origin 逐字节一致；不通过则不进行最终 rename，避免静默 corrupt"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Resume Semantics",
+      "items": [
+        "重传启动时 read Upload Index(namespace, task) → 已完成 chunk 直接跳过；Upload Index 分桶避免任务串扰"
+      ]
+    }
+  ]
+}

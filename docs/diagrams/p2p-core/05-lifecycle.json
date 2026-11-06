@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "p2p-core Connection Lifecycle + StdCancel",
+    "viewBox": [
+      1700,
+      3000
+    ],
+    "animation": "trace",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "locale": "zh-CN"
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Connection Rail"
+    },
+    {
+      "id": "crypto",
+      "label": "Crypto State"
+    },
+    {
+      "id": "rpc",
+      "label": "RPC Operations"
+    },
+    {
+      "id": "terminal",
+      "label": "Terminal"
+    }
+  ],
+  "states": [
+    {
+      "id": "helloing",
+      "type": "decision",
+      "label": "Hello / Key",
+      "sublabel": "4 modes",
+      "lane": "crypto",
+      "col": 0,
+      "step": "03",
+      "yOffset": 100,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "resume",
+      "type": "waiting",
+      "label": "Resume",
+      "sublabel": "reconnect",
+      "lane": "main",
+      "col": 0,
+      "tag": "reconnect",
+      "yOffset": 0,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "success-end",
+      "type": "success",
+      "label": "All Commands Done",
+      "sublabel": "graceful",
+      "lane": "terminal",
+      "col": 0,
+      "tag": "terminal",
+      "yOffset": 0,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "ready",
+      "type": "success",
+      "label": "Session Ready",
+      "sublabel": "conn id",
+      "lane": "main",
+      "col": 1,
+      "step": "04",
+      "yOffset": 80,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "handshake-fail",
+      "type": "failure",
+      "label": "Handshake Fail",
+      "sublabel": "sig/cert",
+      "lane": "terminal",
+      "col": 1,
+      "tag": "terminal",
+      "yOffset": 20,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "rpc-run",
+      "type": "active",
+      "label": "Running RPC",
+      "sublabel": "req|stream|bidi",
+      "lane": "rpc",
+      "col": 2,
+      "tag": "running",
+      "yOffset": 88,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "close",
+      "type": "failure",
+      "label": "Closed",
+      "sublabel": "conn close",
+      "lane": "main",
+      "col": 2,
+      "step": "05",
+      "yOffset": 60,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "idle",
+      "type": "start",
+      "label": "Idle",
+      "sublabel": "no conn",
+      "lane": "main",
+      "col": 3,
+      "step": "01",
+      "yOffset": 60,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "dialing",
+      "type": "active",
+      "label": "Dialing",
+      "sublabel": "QUIC/TCP/WS",
+      "lane": "main",
+      "col": 3,
+      "step": "02",
+      "yOffset": 80,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "cancelling",
+      "type": "waiting",
+      "label": "StdCancel",
+      "sublabel": "stop frame",
+      "lane": "rpc",
+      "col": 3,
+      "tag": "stop",
+      "yOffset": 100,
+      "width": 140,
+      "height": 86
+    }
+  ],
+  "transitions": [
+    {
+      "from": "dialing",
+      "to": "helloing",
+      "variant": "security",
+      "channelY": 1030
+    },
+    {
+      "from": "helloing",
+      "to": "ready",
+      "variant": "emphasis",
+      "channelY": -400
+    },
+    {
+      "from": "ready",
+      "to": "rpc-run",
+      "variant": "default",
+      "channelY": 1260
+    },
+    {
+      "from": "rpc-run",
+      "to": "cancelling",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "cancelling",
+      "to": "ready",
+      "variant": "dashed",
+      "channelY": 1260
+    },
+    {
+      "from": "ready",
+      "to": "resume",
+      "variant": "dashed",
+      "channelY": -400
+    },
+    {
+      "from": "helloing",
+      "to": "handshake-fail",
+      "variant": "security",
+      "channelY": 400
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Session Ready Gate",
+      "items": [
+        "只有 Hello 完成、密钥交换完成的连接才能进入 Ready；否则业务帧进入一律 drop，避免半握手状态下注入"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "StdCancel Scope",
+      "items": [
+        "取消只针对该 RPC 上下文（cancel-token 绑定请求 id）；不影响其他并发 RPC；stop frame 是显式语义，不依赖连接关闭"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Reconnect Resume",
+      "items": [
+        "断连后进入 Resume，等待上层决策重连策略；App/SDK 层可自行指数退避"
+      ]
+    }
+  ]
+}

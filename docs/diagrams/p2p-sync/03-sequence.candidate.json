@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Upload File 时序流程",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [900, 1000],
+    "views": [
+      { "id": "manifest-check", "label": "清单检查与分块", "focus": ["client", "manifestStore", "chunkManager"], "note": "上传前先检查本地 Manifest 并执行分块。" },
+      { "id": "chunk-upload", "label": "逐块上传与 ACK", "focus": ["client", "chunkManager", "server", "network"], "note": "每块 Chunk 通过 P2P 网络传输并收到远端 ACK。" },
+      { "id": "finalize", "label": "Manifest 更新与 Timeline", "focus": ["server", "remoteManifest", "timeline"], "note": "所有块上传完成后更新远端 Manifest 并写入时间线。" }
+    ]
+  },
+  "participants": [
+    { "id": "client", "type": "frontend", "label": "SyncClient", "sublabel": "本地节点" },
+    { "id": "manifestStore", "type": "database", "label": "ManifestStore", "sublabel": "本地清单" },
+    { "id": "chunkManager", "type": "backend", "label": "ChunkManager", "sublabel": "分块哈希" },
+    { "id": "network", "type": "messagebus", "label": "P2P Network", "sublabel": "Swarm 传输" },
+    { "id": "server", "type": "backend", "label": "SyncServer", "sublabel": "远端节点" },
+    { "id": "remoteManifest", "type": "database", "label": "RemoteManifest", "sublabel": "远端清单" },
+    { "id": "timeline", "type": "database", "label": "TimelineStore", "sublabel": "审计时间线" }
+  ],
+  "segments": [
+    { "from": 150, "to": 290, "label": "Manifest Check" },
+    { "from": 308, "to": 570, "label": "Chunking + Upload" },
+    { "from": 586, "to": 860, "label": "Manifest Update + Timeline" }
+  ],
+  "messages": [
+    { "from": "client", "to": "manifestStore", "y": 180, "label": "GET manifest(path)", "variant": "default" },
+    { "from": "manifestStore", "to": "client", "y": 222, "label": "返回本地版本 / 空", "variant": "return" },
+    { "from": "client", "to": "chunkManager", "y": 264, "label": "SPLIT file → chunks", "variant": "emphasis" },
+    { "from": "chunkManager", "to": "client", "y": 310, "label": "chunks[] + hashes", "variant": "return" },
+    { "from": "client", "to": "network", "y": 352, "label": "UPLOAD chunk[0]", "variant": "emphasis" },
+    { "from": "network", "to": "server", "y": 394, "label": "转发 chunk[0]", "variant": "default" },
+    { "from": "server", "to": "network", "y": 436, "label": "ACK chunk[0]", "variant": "return" },
+    { "from": "network", "to": "client", "y": 478, "label": "ACK chunk[0]", "variant": "return" },
+    { "from": "client", "to": "network", "y": 520, "label": "UPLOAD chunk[n] …", "variant": "dashed" },
+    { "from": "network", "to": "server", "y": 562, "label": "转发 chunk[n]", "variant": "dashed" },
+    { "from": "server", "to": "network", "y": 604, "label": "ACK chunk[n]", "variant": "return", "note": "全部块接收完成" },
+    { "from": "network", "to": "client", "y": 646, "label": "ACK 全部完成", "variant": "return" },
+    { "from": "client", "to": "server", "y": 688, "label": "UPDATE manifest(root)", "variant": "emphasis" },
+    { "from": "server", "to": "remoteManifest", "y": 730, "label": "SAVE 新版本 Manifest", "variant": "emphasis" },
+    { "from": "remoteManifest", "to": "server", "y": 772, "label": "版本号 + 哈希", "variant": "return" },
+    { "from": "server", "to": "timeline", "y": 814, "label": "RECORD sync event", "variant": "dashed" },
+    { "from": "server", "to": "client", "y": 856, "label": "200 OK {version, root}", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "client", "from": 172, "to": 232, "type": "frontend" },
+    { "participant": "chunkManager", "from": 256, "to": 320, "type": "backend" },
+    { "participant": "network", "from": 344, "to": 658, "type": "messagebus" },
+    { "participant": "server", "from": 386, "to": 868, "type": "backend" },
+    { "participant": "remoteManifest", "from": 722, "to": 780, "type": "database" },
+    { "participant": "timeline", "from": 806, "to": 822, "type": "database" },
+    { "participant": "client", "from": 680, "to": 868, "type": "frontend" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "清单前置检查", "items": ["先读本地 Manifest 判断是否首次同步", "ChunkManager 基于 Rolling Hash 切分", "返回带哈希的 Chunk 列表供逐块上传"] },
+    { "dot": "emerald", "title": "逐块可靠传输", "items": ["每块独立经 P2P Network 转发", "远端逐块返回 ACK 以驱动下一块", "大文件通过省略号表示可扩展的并发"] },
+    { "dot": "rose", "title": "最终落盘与审计", "items": ["全部块完成后发送 Merkle Root", "RemoteManifest 写入新版本", "Timeline 记录完整同步事件用于审计"] }
+  ]
+}

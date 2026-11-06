@@ -1,0 +1,227 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "p2p-core Connection Handshake (4 Crypto Modes)",
+    "visual_preset": "signal-flow",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "viewBox": [
+      1200,
+      12600
+    ]
+  },
+  "lanes": [
+    {
+      "id": "client",
+      "label": "Client"
+    },
+    {
+      "id": "wire",
+      "label": "Wire 4 Transports"
+    },
+    {
+      "id": "crypto",
+      "label": "Crypto Engine"
+    },
+    {
+      "id": "server",
+      "label": "Server"
+    },
+    {
+      "id": "err",
+      "label": "Reject Path",
+      "variant": "exception"
+    }
+  ],
+  "phases": [
+    {
+      "id": "hello",
+      "label": "Hello + Nonce",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "exchange",
+      "label": "Key Exchange",
+      "fromCol": 2,
+      "toCol": 2,
+      "variant": "emphasis"
+    },
+    {
+      "id": "session",
+      "label": "Session OK",
+      "fromCol": 3,
+      "toCol": 4
+    }
+  ],
+  "mainPath": [
+    "open",
+    "client-random",
+    "server-random",
+    "derive-key",
+    "session-ready",
+    "app-call"
+  ],
+  "nodes": [
+    {
+      "id": "open",
+      "lane": "client",
+      "col": 0,
+      "type": "frontend",
+      "label": "Dial(address, mode)",
+      "sublabel": "4 modes",
+      "width": 153,
+      "yOffset": 0
+    },
+    {
+      "id": "client-random",
+      "lane": "wire",
+      "col": 1,
+      "type": "messagebus",
+      "label": "ClientHello",
+      "sublabel": "clientNonce",
+      "width": 97,
+      "yOffset": 0
+    },
+    {
+      "id": "server-random",
+      "lane": "wire",
+      "col": 1,
+      "type": "messagebus",
+      "label": "ServerHello",
+      "sublabel": "serverNonce",
+      "yOffset": 78,
+      "width": 97
+    },
+    {
+      "id": "derive-key",
+      "lane": "crypto",
+      "col": 2,
+      "type": "security",
+      "label": "KDF + Mode Select",
+      "sublabel": "PLAIN/RANDOM/AUTH/CERT",
+      "width": 139,
+      "yOffset": 0
+    },
+    {
+      "id": "sig-verify",
+      "lane": "crypto",
+      "col": 2,
+      "type": "security",
+      "label": "Sig Verify",
+      "tag": "AUTH / CERT",
+      "yOffset": 78
+    },
+    {
+      "id": "session-ready",
+      "lane": "server",
+      "col": 3,
+      "type": "backend",
+      "label": "Session Registered",
+      "sublabel": "conn id",
+      "width": 146,
+      "yOffset": 0
+    },
+    {
+      "id": "app-call",
+      "lane": "server",
+      "col": 4,
+      "type": "backend",
+      "label": "RPC Ready",
+      "sublabel": "maxFrameBytes",
+      "yOffset": 0
+    },
+    {
+      "id": "bad-sig",
+      "lane": "err",
+      "col": 2,
+      "type": "backend",
+      "label": "Bad Signature",
+      "tag": "drop",
+      "width": 111,
+      "yOffset": 0
+    },
+    {
+      "id": "no-cert",
+      "lane": "err",
+      "col": 4,
+      "type": "backend",
+      "label": "No Cert Chain",
+      "tag": "CERT guard",
+      "width": 111,
+      "yOffset": 0
+    }
+  ],
+  "edges": [
+    {
+      "from": "open",
+      "to": "client-random",
+      "variant": "emphasis"
+    },
+    {
+      "from": "client-random",
+      "to": "server-random",
+      "variant": "default"
+    },
+    {
+      "from": "server-random",
+      "to": "derive-key",
+      "variant": "emphasis"
+    },
+    {
+      "from": "derive-key",
+      "to": "sig-verify",
+      "variant": "security"
+    },
+    {
+      "from": "sig-verify",
+      "to": "session-ready",
+      "variant": "emphasis"
+    },
+    {
+      "from": "session-ready",
+      "to": "app-call",
+      "variant": "emphasis"
+    },
+    {
+      "from": "sig-verify",
+      "to": "bad-sig",
+      "variant": "security"
+    },
+    {
+      "from": "session-ready",
+      "to": "no-cert",
+      "variant": "security"
+    },
+    {
+      "from": "derive-key",
+      "to": "session-ready",
+      "variant": "default"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Hello Nonce",
+      "items": [
+        "PLAIN/RANDOM/AUTH_SIG/CERT_CHAIN 都先发 ClientHello/ServerHello 随机 nonce；KDF 双方 nonce + 模式独立输出会话密钥"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Security Guards",
+      "items": [
+        "CERT_CHAIN：若无证书链直接拒绝；AUTH_SIG：签名错直接 drop，不复用连接；避免明文可 downgrade 攻击"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Ordinal Contract",
+      "items": [
+        "P2PCommand enum.ordinal 在 Java/Dart/Python/C/TS 生成的 wire format 必须完全一致；改动 enum 顺序会引起跨语言不可互操作，需 p2p-core-wire-format 重新发布"
+      ]
+    }
+  ]
+}

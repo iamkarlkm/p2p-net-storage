@@ -1,0 +1,63 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "文件同步循环 Workflow",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "happy-sync", "label": "完整同步循环", "focus": ["detect", "chunking", "hash", "uploadMissing", "pullRemote", "merge", "conflict", "done"], "note": "从变更检测到完成的标准同步主路径。" },
+      { "id": "conflict-handling", "label": "冲突处理分支", "focus": ["merge", "conflict", "resolve", "retryMerge", "done"], "note": "清单冲突检测、消解与重试合并的异常处理分支。" },
+      { "id": "network-branch", "label": "网络重试分支", "focus": ["uploadMissing", "networkRetry", "pullRemote"], "note": "上传失败时的指数退避重试与跳过策略。" }
+    ]
+  },
+  "lanes": [
+    { "id": "local", "label": "本地变更" },
+    { "id": "chunks", "label": "分块与哈希" },
+    { "id": "network", "label": "网络传输" },
+    { "id": "merge", "label": "合并与冲突", "variant": "exception" }
+  ],
+  "phases": [
+    { "id": "local-phase", "label": "本地处理", "fromCol": 0, "toCol": 2 },
+    { "id": "net-phase", "label": "网络同步", "fromCol": 3, "toCol": 3, "variant": "emphasis" },
+    { "id": "merge-phase", "label": "合并落盘", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "local-loop", "label": "变更分块子流程", "lane": "chunks", "fromCol": 1, "toCol": 2, "variant": "emphasis" },
+    { "id": "conflict-group", "label": "冲突消解子流程", "lane": "merge", "fromCol": 4, "toCol": 5, "variant": "security" },
+    { "id": "retry-group", "label": "网络重试", "lane": "network", "fromCol": 3, "toCol": 3, "variant": "dashed" }
+  ],
+  "mainPath": ["detect", "chunking", "hash", "uploadMissing", "pullRemote", "merge", "conflict", "done"],
+  "nodes": [
+    { "id": "detect", "lane": "local", "col": 0, "type": "external", "label": "检测变更", "sublabel": "Watcher + mtime", "width": 140 },
+    { "id": "chunking", "lane": "chunks", "col": 1, "type": "backend", "label": "Chunking", "sublabel": "Rolling Hash 分块", "tag": "动态块大小", "width": 140 },
+    { "id": "hash", "lane": "chunks", "col": 2, "type": "database", "label": "Manifest Hash", "sublabel": "Merkle Root", "tag": "SHA-256", "width": 140 },
+    { "id": "uploadMissing", "lane": "network", "col": 3, "type": "backend", "label": "上传缺失 Chunks", "sublabel": "逐块并发", "tag": "P2P 传输", "width": 140 },
+    { "id": "pullRemote", "lane": "network", "col": 3, "type": "messagebus", "label": "拉取远端 Manifest", "sublabel": "差异对比", "width": 140, "yOffset": 120 },
+    { "id": "networkRetry", "lane": "network", "col": 3, "type": "backend", "label": "网络重试", "sublabel": "指数退避", "width": 140, "yOffset": -120 },
+    { "id": "merge", "lane": "merge", "col": 4, "type": "backend", "label": "Merge 清单", "sublabel": "3-Way Diff", "width": 140 },
+    { "id": "conflict", "lane": "merge", "col": 4, "type": "security", "label": "冲突处理", "sublabel": "CRDT / LWW", "tag": "策略选择", "width": 140, "yOffset": 120 },
+    { "id": "resolve", "lane": "merge", "col": 5, "type": "security", "label": "冲突消解", "sublabel": "人工或自动", "width": 140 },
+    { "id": "retryMerge", "lane": "merge", "col": 5, "type": "messagebus", "label": "重试合并", "sublabel": "应用消解结果", "width": 140, "yOffset": -120 },
+    { "id": "done", "lane": "local", "col": 5, "type": "backend", "label": "完成", "sublabel": "写入 Timeline", "tag": "ACK", "width": 140 }
+  ],
+  "edges": [
+    { "id": "e-detect-chunk", "from": "detect", "to": "chunking", "label": "变更事件", "variant": "emphasis" },
+    { "id": "e-chunk-hash", "from": "chunking", "to": "hash", "label": "生成 Chunk 列表" },
+    { "id": "e-hash-upload", "from": "hash", "to": "uploadMissing", "label": "缺失清单", "variant": "emphasis" },
+    { "id": "e-upload-retry", "from": "uploadMissing", "to": "networkRetry", "label": "超时失败", "variant": "error", "role": "branch" },
+    { "id": "e-retry-upload", "from": "networkRetry", "to": "uploadMissing", "variant": "dashed", "role": "return", "route": "return-left" },
+    { "id": "e-upload-pull", "from": "uploadMissing", "to": "pullRemote", "variant": "emphasis", "label": "上传完成" },
+    { "id": "e-pull-merge", "from": "pullRemote", "to": "merge", "label": "远端 Manifest", "variant": "emphasis" },
+    { "id": "e-merge-conflict", "from": "merge", "to": "conflict", "label": "检测冲突?", "variant": "security" },
+    { "id": "e-merge-done", "from": "merge", "to": "done", "variant": "emphasis", "role": "main", "label": "无冲突" },
+    { "id": "e-conflict-resolve", "from": "conflict", "to": "resolve", "variant": "security", "role": "main" },
+    { "id": "e-resolve-retry", "from": "resolve", "to": "retryMerge", "variant": "dashed", "role": "branch", "label": "消解完成" },
+    { "id": "e-retry-done", "from": "retryMerge", "to": "done", "variant": "emphasis", "role": "return", "route": "outside-right", "fromSide": "right", "toSide": "right" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Schema v2 布局合约", "items": ["lanes + columns 决定节点几何", "mainPath 贯穿检测到完成", "异常分支由 conflict 和 retry 组承担"] },
+    { "dot": "emerald", "title": "同步循环步骤", "items": ["检测变更 → Chunking → Manifest Hash", "上传缺失 Chunks → 拉取远端 Manifest", "Merge → 冲突处理 → 写入 Timeline"] },
+    { "dot": "rose", "title": "异常与重试", "items": ["网络层指数退避重试", "冲突策略支持 CRDT / LWW / 人工", "重试合并后统一流向完成"] }
+  ]
+}

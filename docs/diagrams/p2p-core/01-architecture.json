@@ -1,0 +1,408 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "p2p-core Network Architecture",
+    "visual_preset": "blueprint",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "views": [
+      {
+        "id": "transports",
+        "label": "Transports",
+        "focus": [
+          "udp",
+          "quic",
+          "tcp",
+          "ws"
+        ],
+        "note": "4 种传输统一 Frame 格式"
+      },
+      {
+        "id": "crypto",
+        "label": "Crypto Modes",
+        "focus": [
+          "session",
+          "auth"
+        ],
+        "note": "4 Cryptomode: PLAIN/RANDOM/AUTH_SIG/CERT_CHAIN"
+      }
+    ],
+    "viewBox": [
+      1050,
+      3000
+    ]
+  },
+  "components": [
+    {
+      "id": "app-sdk",
+      "type": "frontend",
+      "label": "App / SDK",
+      "sublabel": "Java / Dart / TS / C",
+      "pos": [
+        30,
+        180
+      ],
+      "size": [
+        140,
+        72
+      ],
+      "col": 0,
+      "row": 0
+    },
+    {
+      "id": "rpc",
+      "type": "backend",
+      "label": "RPC Layer",
+      "sublabel": "request/stream/bidi",
+      "pos": [
+        220,
+        180
+      ],
+      "size": [
+        148,
+        72
+      ],
+      "tag": "p2p-core",
+      "col": 0,
+      "row": 1
+    },
+    {
+      "id": "session",
+      "type": "backend",
+      "label": "Session Manager",
+      "sublabel": "P2PCommand ordinal",
+      "pos": [
+        420,
+        180
+      ],
+      "size": [
+        148,
+        72
+      ],
+      "tag": "p2p-core",
+      "col": 0,
+      "row": 2
+    },
+    {
+      "id": "auth",
+      "type": "security",
+      "label": "Auth Handshake",
+      "sublabel": "4 Crypto Modes",
+      "pos": [
+        620,
+        100
+      ],
+      "size": [
+        144,
+        68
+      ],
+      "tag": "TLS / sig",
+      "col": 0,
+      "row": 3
+    },
+    {
+      "id": "frame",
+      "type": "messagebus",
+      "label": "Frame Codec",
+      "sublabel": "maxFrameBytes",
+      "pos": [
+        420,
+        310
+      ],
+      "size": [
+        148,
+        60
+      ],
+      "tag": "wire format",
+      "col": 0,
+      "row": 4
+    },
+    {
+      "id": "udp",
+      "type": "cloud",
+      "label": "UDP v2 Segment",
+      "sublabel": "MTU safe",
+      "pos": [
+        220,
+        400
+      ],
+      "size": [
+        148,
+        58
+      ],
+      "tag": "p2p-core",
+      "col": 0,
+      "row": 5
+    },
+    {
+      "id": "quic",
+      "type": "cloud",
+      "label": "QUIC Stream",
+      "sublabel": "mux over UDP",
+      "pos": [
+        420,
+        400
+      ],
+      "size": [
+        148,
+        58
+      ],
+      "tag": "QUIC",
+      "col": 0,
+      "row": 6
+    },
+    {
+      "id": "tcp",
+      "type": "cloud",
+      "label": "TCP Stream",
+      "sublabel": "byte stream",
+      "pos": [
+        620,
+        400
+      ],
+      "size": [
+        148,
+        58
+      ],
+      "tag": "TCP",
+      "col": 0,
+      "row": 7
+    },
+    {
+      "id": "ws",
+      "type": "cloud",
+      "label": "WebSocket",
+      "sublabel": ":80/:443 FW OK",
+      "pos": [
+        820,
+        400
+      ],
+      "size": [
+        148,
+        58
+      ],
+      "tag": "WS",
+      "col": 0,
+      "row": 8
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "p2p-core Core",
+      "wraps": [
+        "rpc",
+        "session",
+        "frame",
+        "auth"
+      ],
+      "pad": 16
+    },
+    {
+      "kind": "security-group",
+      "label": "4 Transports",
+      "wraps": [
+        "udp",
+        "quic",
+        "tcp",
+        "ws"
+      ],
+      "pad": 12
+    }
+  ],
+  "connections": [
+    {
+      "from": "app-sdk",
+      "to": "rpc",
+      "label": "unary/stream/bidi",
+      "variant": "emphasis",
+      "labelDx": 300,
+      "labelDy": -200,
+      "labelSegment": 0,
+      "via": [
+        [
+          400,
+          -300
+        ],
+        [
+          400,
+          -220
+        ]
+      ],
+      "route": "orthogonal-v"
+    },
+    {
+      "from": "rpc",
+      "to": "session",
+      "label": "P2PCommand router",
+      "variant": "emphasis",
+      "labelDx": 0,
+      "labelDy": -300,
+      "labelSegment": 0,
+      "via": [
+        [
+          -250,
+          400
+        ],
+        [
+          -400,
+          380
+        ]
+      ],
+      "route": "orthogonal-h"
+    },
+    {
+      "from": "session",
+      "to": "auth",
+      "label": "handshake (client/server random)",
+      "variant": "security",
+      "labelDx": 0,
+      "labelDy": 300,
+      "labelSegment": 0,
+      "via": [
+        [
+          250,
+          400
+        ],
+        [
+          250,
+          480
+        ]
+      ],
+      "route": "orthogonal-v"
+    },
+    {
+      "from": "session",
+      "to": "frame",
+      "label": "encode frame",
+      "variant": "default",
+      "labelDx": -400,
+      "labelDy": 0,
+      "labelSegment": 0,
+      "via": [
+        [
+          -250,
+          -400
+        ],
+        [
+          -400,
+          -220
+        ]
+      ],
+      "route": "orthogonal-h"
+    },
+    {
+      "from": "frame",
+      "to": "udp",
+      "label": "UDP v2 segmented",
+      "variant": "dashed",
+      "labelDx": 400,
+      "labelDy": 0,
+      "labelSegment": 0,
+      "via": [
+        [
+          250,
+          -400
+        ],
+        [
+          250,
+          -320
+        ]
+      ],
+      "route": "orthogonal-v"
+    },
+    {
+      "from": "frame",
+      "to": "quic",
+      "label": "QUIC single stream",
+      "variant": "dashed",
+      "labelDx": -300,
+      "labelDy": 200,
+      "labelSegment": 0,
+      "via": [
+        [
+          -400,
+          300
+        ],
+        [
+          -250,
+          480
+        ]
+      ],
+      "route": "orthogonal-h"
+    },
+    {
+      "from": "frame",
+      "to": "tcp",
+      "label": "TCP framed",
+      "variant": "dashed",
+      "labelDx": 300,
+      "labelDy": 200,
+      "labelSegment": 0,
+      "via": [
+        [
+          400,
+          300
+        ],
+        [
+          400,
+          380
+        ]
+      ],
+      "route": "orthogonal-v"
+    },
+    {
+      "from": "frame",
+      "to": "ws",
+      "label": "WS binary frame",
+      "variant": "dashed",
+      "labelDx": -300,
+      "labelDy": -200,
+      "labelSegment": 0,
+      "via": [
+        [
+          -400,
+          -300
+        ],
+        [
+          -250,
+          -320
+        ]
+      ],
+      "route": "orthogonal-h"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Uniform Wire Format",
+      "items": [
+        "RPC Layer 下所有 4 传输进同一 Frame Codec；maxFrameBytes 一致；P2PCommand 序号是路由唯一 ID"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Crypto Mode Contract",
+      "items": [
+        "PLAIN=无加密；RANDOM=会话随机密钥；AUTH_SIG=双方握手证书签名；CERT_CHAIN=真实 X509 链；模式可逐连接独立选择"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Cancel Contract",
+      "items": [
+        "RPC StdCancel 语义：Java SDK cancel() → server STOP frame；Dart Python C TS 一致；p2p-core-wire-format 跨语言对齐"
+      ]
+    }
+  ],
+  "layout": {
+    "mode": "grid",
+    "cols": 3,
+    "gapX": 240,
+    "gapY": 240,
+    "cellW": 380,
+    "cellH": 300
+  }
+}

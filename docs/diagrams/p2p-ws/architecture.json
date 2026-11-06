@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "P2P WS Protocol + SDK 架构图",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "control-plane",
+        "label": "控制平面",
+        "focus": ["center", "peer", "client", "handshake"],
+        "note": "展示控制平面三层角色与握手入口"
+      },
+      {
+        "id": "wire-stack",
+        "label": "有线协议栈",
+        "focus": ["wireframe", "codec", "rsa", "xor"],
+        "note": "帧结构、编解码器与双层加密"
+      },
+      {
+        "id": "proto-sdk",
+        "label": "协议与多语言SDK",
+        "focus": ["proto", "sdk-java", "sdk-ts", "sdk-dart"],
+        "note": "protobuf 四层消息与 Java/TS/Dart/C/Python SDK"
+      }
+    ]
+  },
+  "layout": {
+    "mode": "grid",
+    "cols": 4,
+    "gapX": 80,
+    "gapY": 80,
+    "cellW": 180,
+    "cellH": 80
+  },
+  "components": [
+    { "id": "center", "type": "cloud", "label": "ControlPlane Center", "sublabel": "信令中继中心", "row": 0, "col": 0, "size": [160, 72] },
+    { "id": "peer", "type": "backend", "label": "ControlPlane Peer", "sublabel": "对等节点", "row": 1, "col": 0, "size": [160, 72] },
+    { "id": "client", "type": "frontend", "label": "ControlPlane Client", "sublabel": "业务客户端", "row": 2, "col": 0, "size": [160, 72] },
+    { "id": "wireframe", "type": "messagebus", "label": "WireFrame", "sublabel": "有线帧封装", "row": 0, "col": 1, "size": [160, 72] },
+    { "id": "codec", "type": "backend", "label": "FrameCodec", "sublabel": "帧编解码", "row": 1, "col": 1, "size": [160, 72] },
+    { "id": "handshake", "type": "security", "label": "Handshake", "sublabel": "握手协商", "row": 2, "col": 1, "size": [160, 72] },
+    { "id": "rsa", "type": "security", "label": "RsaOaep", "sublabel": "RSA-OAEP 非对称", "row": 0, "col": 2, "size": [160, 72], "tag": "会话密钥保护" },
+    { "id": "xor", "type": "security", "label": "XorCipher", "sublabel": "XOR 流加密", "row": 1, "col": 2, "size": [160, 72], "tag": "帧载荷加密" },
+    { "id": "proto", "type": "backend", "label": "Proto Messages", "sublabel": "control/data/im/wrapper", "row": 2, "col": 2, "size": [160, 72], "tag": "protobuf v4" },
+    { "id": "sdk-java", "type": "external", "label": "SDK Java", "sublabel": "JVM / Android", "row": 0, "col": 3, "size": [150, 60] },
+    { "id": "sdk-ts", "type": "external", "label": "SDK TS", "sublabel": "Node / Web", "row": 1, "col": 3, "size": [150, 60] },
+    { "id": "sdk-dart", "type": "external", "label": "SDK Dart/C/Python", "sublabel": "Flutter / Native", "row": 2, "col": 3, "size": [150, 60] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "ControlPlane 控制平面", "wraps": ["center", "peer", "client"] },
+    { "kind": "security-group", "label": "Wire Layer 有线协议层", "wraps": ["wireframe", "codec", "handshake", "rsa", "xor"] },
+    { "kind": "region", "label": "Proto + SDK 业务接入层", "wraps": ["proto", "sdk-java", "sdk-ts", "sdk-dart"] }
+  ],
+  "connections": [
+    { "id": "c1", "from": "center", "to": "wireframe", "label": "WS 信令" },
+    { "id": "c2", "from": "peer", "to": "wireframe", "label": "WS 帧流" },
+    { "id": "c3", "from": "client", "to": "handshake", "label": "握手请求", "variant": "security" },
+    { "id": "c4", "from": "handshake", "to": "rsa", "label": "公钥加密 hello", "variant": "security" },
+    { "id": "c5", "from": "rsa", "to": "xor", "label": "分发 XOR 密钥", "variant": "emphasis" },
+    { "id": "c6", "from": "wireframe", "to": "codec", "label": "帧字节流" },
+    { "id": "c7", "from": "codec", "to": "proto", "label": "解码载荷" },
+    { "id": "c8", "from": "xor", "to": "codec", "label": "XOR 加解密", "variant": "security" },
+    { "id": "c9", "from": "proto", "to": "sdk-java", "label": "Java 绑定" },
+    { "id": "c10", "from": "proto", "to": "sdk-ts", "label": "TS 绑定" },
+    { "id": "c11", "from": "proto", "to": "sdk-dart", "label": "Dart/C/Python 绑定" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "ControlPlane 三层角色",
+      "items": [
+        "Center: 中心信令与密钥分发",
+        "Peer: 对等存储节点",
+        "Client: 业务接入客户端"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "双层加密模型",
+      "items": [
+        "RSA-OAEP 保护握手与 XOR 密钥",
+        "XOR 流加密承载帧载荷",
+        "Handshake 完成后全链路帧加密"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Proto + 多语言 SDK",
+      "items": [
+        "Proto: control / data / im / wrapper 四类消息",
+        "Java / TS / Dart / C / Python 五语言 SDK",
+        "FrameCodec 统一跨语言帧格式"
+      ]
+    }
+  ]
+}

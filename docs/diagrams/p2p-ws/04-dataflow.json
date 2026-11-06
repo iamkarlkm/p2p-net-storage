@@ -1,0 +1,372 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "p2p-ws Data Flow: 5 SDKs → WS → Handler → Events",
+    "viewBox": [
+      5000,
+      7000
+    ],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN"
+  },
+  "stages": [
+    {
+      "label": "SDKs"
+    },
+    {
+      "label": "WS Codec"
+    },
+    {
+      "label": "Router"
+    },
+    {
+      "label": "Handlers"
+    },
+    {
+      "label": "Events"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "sdkj",
+      "type": "frontend",
+      "label": "Java SDK",
+      "stage": 0,
+      "row": 0,
+      "tag": "JVM",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "sdkd",
+      "type": "frontend",
+      "label": "Dart SDK",
+      "stage": 0,
+      "row": 1,
+      "tag": "Flutter",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "sdkp",
+      "type": "frontend",
+      "label": "Python SDK",
+      "stage": 0,
+      "row": 2,
+      "tag": "CLI",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "sdkt",
+      "type": "frontend",
+      "label": "TS SDK",
+      "stage": 0,
+      "row": 3,
+      "tag": "Browser",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "sdkc",
+      "type": "frontend",
+      "label": "C SDK",
+      "stage": 0,
+      "row": 0,
+      "tag": "embed",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "codec",
+      "type": "messagebus",
+      "label": "WS Frame Codec",
+      "stage": 1,
+      "row": 1,
+      "tag": "binary",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "router",
+      "type": "backend",
+      "label": "P2PCommand Router",
+      "sublabel": "ordinal",
+      "stage": 2,
+      "row": 2,
+      "tag": "p2p-core",
+      "width": 140,
+      "yOffset": 0,
+      "height": 80
+    },
+    {
+      "id": "h-unary",
+      "type": "backend",
+      "label": "Unary Handler",
+      "stage": 3,
+      "row": 3,
+      "tag": "RPC",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "h-stream",
+      "type": "backend",
+      "label": "Stream Handler",
+      "stage": 3,
+      "row": 0,
+      "tag": "RPC",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "h-bidi",
+      "type": "backend",
+      "label": "Bidi Handler",
+      "stage": 3,
+      "row": 1,
+      "tag": "RPC",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "h-cancel",
+      "type": "security",
+      "label": "StdCancel",
+      "stage": 3,
+      "row": 2,
+      "tag": "RPC",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "evt",
+      "type": "messagebus",
+      "label": "Event Emitter",
+      "stage": 4,
+      "row": 3,
+      "tag": "onXxx",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "trace",
+      "type": "cloud",
+      "label": "Tracing",
+      "stage": 4,
+      "row": 0,
+      "tag": "OTEL",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    }
+  ],
+  "flows": [
+    {
+      "id": "w1",
+      "from": "sdkj",
+      "to": "codec",
+      "label": "binary WS",
+      "classification": "frame",
+      "variant": "default",
+      "labelDx": 800,
+      "labelDy": -260,
+      "labelSegment": 0,
+      "channelX": 1560,
+      "channelY": 180
+    },
+    {
+      "id": "w2",
+      "from": "sdkd",
+      "to": "codec",
+      "label": "binary WS",
+      "classification": "frame",
+      "variant": "default",
+      "labelDx": -600,
+      "labelDy": 420,
+      "labelSegment": 0,
+      "channelX": -1560
+    },
+    {
+      "id": "w3",
+      "from": "sdkp",
+      "to": "codec",
+      "label": "binary WS",
+      "classification": "frame",
+      "variant": "default",
+      "labelDx": 600,
+      "labelDy": -420,
+      "labelSegment": 0,
+      "channelX": 1560
+    },
+    {
+      "id": "w4",
+      "from": "sdkt",
+      "to": "codec",
+      "label": "binary WS",
+      "classification": "frame",
+      "variant": "default",
+      "labelDx": -800,
+      "labelDy": -260,
+      "labelSegment": 0,
+      "channelX": -1560
+    },
+    {
+      "id": "w5",
+      "from": "sdkc",
+      "to": "codec",
+      "label": "binary WS",
+      "classification": "frame",
+      "variant": "default",
+      "labelDx": 0,
+      "labelDy": 560,
+      "labelSegment": 0,
+      "channelX": 1560,
+      "channelY": 180
+    },
+    {
+      "id": "w6",
+      "from": "codec",
+      "to": "router",
+      "label": "frame decoded",
+      "classification": "dispatch",
+      "variant": "emphasis",
+      "labelDx": -600,
+      "labelDy": -420,
+      "labelSegment": 0,
+      "channelX": -1560
+    },
+    {
+      "id": "w7",
+      "from": "router",
+      "to": "h-unary",
+      "label": "unary",
+      "classification": "rpc",
+      "variant": "default",
+      "labelDx": 800,
+      "labelDy": 260,
+      "labelSegment": 0,
+      "channelX": 1560
+    },
+    {
+      "id": "w8",
+      "from": "router",
+      "to": "h-stream",
+      "label": "server stream",
+      "classification": "rpc",
+      "variant": "default",
+      "labelDx": 0,
+      "labelDy": -560,
+      "labelSegment": 0,
+      "channelX": -1560
+    },
+    {
+      "id": "w9",
+      "from": "router",
+      "to": "h-bidi",
+      "label": "bidi",
+      "classification": "rpc",
+      "variant": "default",
+      "labelDx": 600,
+      "labelDy": 420,
+      "labelSegment": 0,
+      "channelX": 1560
+    },
+    {
+      "id": "w10",
+      "from": "router",
+      "to": "h-cancel",
+      "label": "stop frame",
+      "classification": "cancel",
+      "variant": "security",
+      "labelDx": -800,
+      "labelDy": 260,
+      "labelSegment": 0,
+      "channelX": -1560
+    },
+    {
+      "id": "w11",
+      "from": "h-unary",
+      "to": "evt",
+      "label": "emit frame/end",
+      "classification": "event",
+      "variant": "dashed",
+      "labelDx": 800,
+      "labelDy": -260,
+      "labelSegment": 0,
+      "channelX": 1560
+    },
+    {
+      "id": "w12",
+      "from": "h-stream",
+      "to": "evt",
+      "label": "emit chunk/end",
+      "classification": "event",
+      "variant": "dashed",
+      "labelDx": -600,
+      "labelDy": 420,
+      "labelSegment": 0,
+      "channelX": -1560
+    },
+    {
+      "id": "w13",
+      "from": "h-bidi",
+      "to": "evt",
+      "label": "emit frame/end",
+      "classification": "event",
+      "variant": "dashed",
+      "labelDx": 600,
+      "labelDy": -420,
+      "channelX": 1820,
+      "labelSegment": 0
+    },
+    {
+      "id": "w14",
+      "from": "h-unary",
+      "to": "trace",
+      "label": "span",
+      "classification": "trace",
+      "variant": "dashed",
+      "labelDx": -800,
+      "labelDy": -260,
+      "labelSegment": 0,
+      "channelX": -1560
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Uniform WS Binary",
+      "items": [
+        "5 语言 SDK 输出同构 WS binary frame；服务端只认一个 frame codec"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "One Router",
+      "items": [
+        "P2PCommand Router（p2p-core 路由表）对 p2p-ws 与 UDP/QUIC/TCP 全部一致，Handler 不用分传输写"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Event Emitter",
+      "items": [
+        "所有 Handler 结果统一进入 Event Emitter 向外 onXxx 回调；Tracing 边车不进入 SDK 主热路径"
+      ]
+    }
+  ]
+}

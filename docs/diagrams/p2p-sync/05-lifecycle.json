@@ -1,0 +1,215 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "p2p-sync Upload Task Lifecycle (Resumable + Strong)",
+    "viewBox": [
+      1700,
+      3000
+    ],
+    "animation": "trace",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "locale": "zh-CN"
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Upload Rail"
+    },
+    {
+      "id": "idx",
+      "label": "Up-Idx Writes"
+    },
+    {
+      "id": "check",
+      "label": "Strong Checks"
+    },
+    {
+      "id": "terminal",
+      "label": "Terminal"
+    }
+  ],
+  "states": [
+    {
+      "id": "assembled",
+      "type": "success",
+      "label": "Assembled",
+      "sublabel": "remote tmp",
+      "lane": "main",
+      "col": 0,
+      "step": "05",
+      "yOffset": 0,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "ok",
+      "type": "success",
+      "label": "Finalized OK",
+      "sublabel": "visible",
+      "lane": "terminal",
+      "col": 0,
+      "tag": "terminal",
+      "yOffset": 0,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "created",
+      "type": "start",
+      "label": "Task Created",
+      "sublabel": "ns + path",
+      "lane": "main",
+      "col": 1,
+      "step": "01",
+      "yOffset": 0,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "persist",
+      "type": "active",
+      "label": "Persist Progress",
+      "sublabel": "per chunk",
+      "lane": "idx",
+      "col": 1,
+      "tag": "write",
+      "yOffset": 100,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "hash-check",
+      "type": "decision",
+      "label": "E2E Hash Match?",
+      "lane": "check",
+      "col": 1,
+      "tag": "gate",
+      "yOffset": 88,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "fail",
+      "type": "failure",
+      "label": "Hash Mismatch",
+      "sublabel": "retry resume",
+      "lane": "terminal",
+      "col": 1,
+      "tag": "retryable",
+      "yOffset": 20,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "resume",
+      "type": "waiting",
+      "label": "Resume Skip",
+      "sublabel": "read done list",
+      "lane": "idx",
+      "col": 2,
+      "tag": "read",
+      "yOffset": 100,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "planned",
+      "type": "waiting",
+      "label": "Planned",
+      "sublabel": "chunk list",
+      "lane": "main",
+      "col": 3,
+      "step": "02",
+      "yOffset": 80,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "pushing",
+      "type": "active",
+      "label": "Pushing Chunks",
+      "sublabel": "stream",
+      "lane": "main",
+      "col": 3,
+      "step": "03",
+      "yOffset": 60,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "paused",
+      "type": "waiting",
+      "label": "Paused",
+      "sublabel": "net drop",
+      "lane": "main",
+      "col": 3,
+      "step": "04",
+      "yOffset": 98,
+      "width": 140,
+      "height": 86
+    }
+  ],
+  "transitions": [
+    {
+      "from": "pushing",
+      "to": "persist",
+      "variant": "dashed",
+      "channelX": 2460
+    },
+    {
+      "from": "paused",
+      "to": "resume",
+      "variant": "dashed",
+      "channelY": -1660
+    },
+    {
+      "from": "assembled",
+      "to": "hash-check",
+      "variant": "security",
+      "channelY": 1260
+    },
+    {
+      "from": "resume",
+      "to": "pushing",
+      "variant": "emphasis",
+      "channelY": -1660
+    },
+    {
+      "from": "hash-check",
+      "to": "ok",
+      "variant": "emphasis",
+      "channelY": 1030
+    },
+    {
+      "from": "hash-check",
+      "to": "fail",
+      "variant": "security",
+      "channelX": -820
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Chunk Persist Progress",
+      "items": [
+        "每收到 per-chunk ack 就写 Up-Idx；这样崩溃/网络断开后恢复只需要读 done 列表即可跳过已发 chunk"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Paused→Resume",
+      "items": [
+        "Paused 不撤销任何 progress；下次运行 Resume Skip 直接从 idx 读；不用重推已完成 chunk，是广域网 sync 体验的关键"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Hash Gate",
+      "items": [
+        "Finalized 前必须哈希 gate；match → Finalized OK 原子 rename；否则 Hash Mismatch，可再尝试 resume 重推只错的 chunk"
+      ]
+    }
+  ]
+}

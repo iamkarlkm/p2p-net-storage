@@ -1,0 +1,520 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "p2p-im Send Message → Persist → Push → Receipts Workflow",
+    "visual_preset": "signal-flow",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "viewBox": [
+      1400,
+      3000
+    ]
+  },
+  "lanes": [
+    {
+      "id": "send",
+      "label": "Sender"
+    },
+    {
+      "id": "durable",
+      "label": "Persist + Index"
+    },
+    {
+      "id": "presence",
+      "label": "Presence"
+    },
+    {
+      "id": "deliver",
+      "label": "Receiver"
+    },
+    {
+      "id": "err",
+      "label": "Fail Path",
+      "variant": "exception"
+    }
+  ],
+  "phases": [
+    {
+      "id": "durable",
+      "label": "Durable",
+      "fromCol": 1,
+      "toCol": 1,
+      "variant": "emphasis"
+    },
+    {
+      "id": "deliver",
+      "label": "Deliver",
+      "fromCol": 2,
+      "toCol": 3
+    }
+  ],
+  "mainPath": [
+    "u-send",
+    "msg-persist",
+    "idx-write",
+    "presence-lkup",
+    "ws-push",
+    "deliver-receipt",
+    "read-receipt"
+  ],
+  "nodes": [
+    {
+      "id": "u-send",
+      "col": 0,
+      "type": "external",
+      "label": "User Send",
+      "sublabel": "IM Client",
+      "yOffset": 0,
+      "lane": "send",
+      "width": 160,
+      "height": 72
+    },
+    {
+      "id": "msg-persist",
+      "col": 1,
+      "type": "database",
+      "label": "Msg MVCC",
+      "sublabel": "p2p-db",
+      "yOffset": 0,
+      "lane": "durable",
+      "width": 160,
+      "height": 72
+    },
+    {
+      "id": "idx-write",
+      "col": 1,
+      "type": "database",
+      "label": "Conv Index",
+      "tag": "rowIdSet",
+      "yOffset": 78,
+      "lane": "durable",
+      "width": 160,
+      "height": 72
+    },
+    {
+      "id": "presence-lkup",
+      "col": 2,
+      "type": "backend",
+      "label": "Presence Lookup",
+      "sublabel": "DsFreeRing contains",
+      "width": 125,
+      "yOffset": 0,
+      "lane": "presence",
+      "height": 72
+    },
+    {
+      "id": "ws-push",
+      "col": 3,
+      "type": "backend",
+      "label": "WS Push",
+      "tag": "online",
+      "yOffset": 0,
+      "lane": "deliver",
+      "width": 160,
+      "height": 72
+    },
+    {
+      "id": "sys-push",
+      "col": 3,
+      "type": "backend",
+      "label": "Offline Push",
+      "tag": "APNs/FCM",
+      "yOffset": 78,
+      "width": 104,
+      "lane": "deliver",
+      "height": 72
+    },
+    {
+      "id": "deliver-receipt",
+      "col": 3,
+      "type": "messagebus",
+      "label": "Delivered Event",
+      "width": 125,
+      "yOffset": 156,
+      "lane": "deliver",
+      "height": 72
+    },
+    {
+      "id": "read-receipt",
+      "col": 0,
+      "type": "backend",
+      "label": "Read Receipt",
+      "sublabel": "双向确认",
+      "width": 104,
+      "yOffset": 78,
+      "lane": "send",
+      "height": 72
+    },
+    {
+      "id": "persist-fail",
+      "col": 1,
+      "type": "backend",
+      "label": "Persist Fail",
+      "sublabel": "retry send",
+      "width": 104,
+      "yOffset": 0,
+      "lane": "durable",
+      "height": 72
+    }
+  ],
+  "edges": [
+    {
+      "from": "u-send",
+      "to": "msg-persist",
+      "variant": "emphasis",
+      "bias": 0,
+      "route": "straight",
+      "labelDx": 30,
+      "labelDy": -30,
+      "via": [
+        [
+          334,
+          301
+        ],
+        [
+          417,
+          392
+        ],
+        [
+          431,
+          330
+        ],
+        [
+          466,
+          407
+        ],
+        [
+          556,
+          467
+        ],
+        [
+          431,
+          330
+        ],
+        [
+          486,
+          427
+        ],
+        [
+          576,
+          487
+        ],
+        [
+          451,
+          350
+        ],
+        [
+          96,
+          157
+        ],
+        [
+          176,
+          207
+        ],
+        [
+          51,
+          70
+        ],
+        [
+          576,
+          487
+        ],
+        [
+          474,
+          394
+        ],
+        [
+          451,
+          350
+        ],
+        [
+          96,
+          157
+        ],
+        [
+          176,
+          207
+        ],
+        [
+          74,
+          114
+        ],
+        [
+          51,
+          70
+        ],
+        [
+          576,
+          487
+        ],
+        [
+          474,
+          394
+        ],
+        [
+          451,
+          350
+        ]
+      ]
+    },
+    {
+      "from": "msg-persist",
+      "to": "idx-write",
+      "variant": "default",
+      "route": "straight",
+      "labelDx": -30,
+      "labelDy": 20,
+      "channelX": -1080
+    },
+    {
+      "from": "idx-write",
+      "to": "presence-lkup",
+      "variant": "emphasis",
+      "route": "straight",
+      "labelDx": 30,
+      "labelDy": -30
+    },
+    {
+      "from": "presence-lkup",
+      "to": "ws-push",
+      "variant": "emphasis",
+      "route": "straight",
+      "labelDx": -30,
+      "labelDy": 20
+    },
+    {
+      "from": "presence-lkup",
+      "to": "sys-push",
+      "variant": "security",
+      "route": "straight",
+      "labelDx": 30,
+      "labelDy": -30,
+      "via": [
+        [
+          550,
+          348
+        ],
+        [
+          644,
+          339
+        ],
+        [
+          691,
+          334
+        ],
+        [
+          735,
+          592
+        ]
+      ]
+    },
+    {
+      "from": "ws-push",
+      "to": "deliver-receipt",
+      "variant": "dashed",
+      "route": "straight",
+      "labelDx": -30,
+      "labelDy": 20,
+      "channelX": -820
+    },
+    {
+      "from": "deliver-receipt",
+      "to": "read-receipt",
+      "variant": "emphasis",
+      "route": "straight",
+      "labelDx": 30,
+      "labelDy": -30,
+      "via": [
+        [
+          434,
+          542
+        ],
+        [
+          434,
+          542
+        ],
+        [
+          434,
+          542
+        ],
+        [
+          434,
+          542
+        ],
+        [
+          467,
+          490
+        ],
+        [
+          467,
+          490
+        ],
+        [
+          467,
+          490
+        ],
+        [
+          467,
+          490
+        ],
+        [
+          581,
+          715
+        ],
+        [
+          467,
+          490
+        ],
+        [
+          484,
+          464
+        ],
+        [
+          484,
+          464
+        ],
+        [
+          484,
+          464
+        ],
+        [
+          631,
+          636
+        ],
+        [
+          581,
+          715
+        ],
+        [
+          484,
+          464
+        ],
+        [
+          512,
+          191
+        ],
+        [
+          512,
+          191
+        ],
+        [
+          512,
+          191
+        ],
+        [
+          651,
+          376
+        ],
+        [
+          601,
+          455
+        ],
+        [
+          512,
+          191
+        ],
+        [
+          251,
+          656
+        ],
+        [
+          201,
+          735
+        ],
+        [
+          371,
+          326
+        ],
+        [
+          371,
+          326
+        ],
+        [
+          651,
+          376
+        ],
+        [
+          601,
+          455
+        ],
+        [
+          171,
+          466
+        ],
+        [
+          171,
+          466
+        ],
+        [
+          86,
+          671
+        ],
+        [
+          251,
+          656
+        ],
+        [
+          201,
+          735
+        ],
+        [
+          171,
+          466
+        ],
+        [
+          356,
+          192
+        ],
+        [
+          356,
+          192
+        ],
+        [
+          486,
+          391
+        ],
+        [
+          651,
+          376
+        ],
+        [
+          601,
+          455
+        ]
+      ]
+    },
+    {
+      "from": "msg-persist",
+      "to": "persist-fail",
+      "variant": "security",
+      "route": "straight",
+      "labelDx": -30,
+      "labelDy": 20
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Presence = DsFreeRing Set",
+      "items": [
+        "Presence Lookup 就是 DsFreeRing.contains(uid)；这是本改 DsFreeRing 新增 Set 语义的典型 inode 集合用法：64-bit uid → contains/offerUnique/remove/snapshot"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Persist First",
+      "items": [
+        "先 msg 写 p2p-db MVCC 并索引 conv/user；然后才做 Presence 路由和推送。这样任何断连都可重放未推送"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Receipt Contract",
+      "items": [
+        "Delivered 是服务端事件；Read 是客户端主动事件；两者都是 msg-id 级细粒度，支持单会话内多消息独立状态"
+      ]
+    }
+  ]
+}

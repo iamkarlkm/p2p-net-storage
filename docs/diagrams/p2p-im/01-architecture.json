@@ -1,0 +1,299 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "p2p-im Instant Messaging Architecture",
+    "visual_preset": "blueprint",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "views": [
+      {
+        "id": "send",
+        "label": "Send Path",
+        "focus": [
+          "client",
+          "ingest",
+          "msg-store"
+        ],
+        "note": "IM 消息入库 + 投递"
+      },
+      {
+        "id": "push",
+        "label": "Push Path",
+        "focus": [
+          "presence",
+          "push",
+          "notify"
+        ],
+        "note": "在线推送 + 离线补偿"
+      }
+    ],
+    "viewBox": [
+      1050,
+      3000
+    ]
+  },
+  "components": [
+    {
+      "id": "client",
+      "type": "frontend",
+      "label": "IM Clients",
+      "sublabel": "移动端/Web/PC",
+      "pos": [
+        30,
+        130
+      ],
+      "size": [
+        140,
+        70
+      ],
+      "tag": "p2p-ws SDK",
+      "col": 0,
+      "row": 0
+    },
+    {
+      "id": "ingest",
+      "type": "backend",
+      "label": "Ingest Gateway",
+      "sublabel": "p2p-ws server",
+      "pos": [
+        230,
+        130
+      ],
+      "size": [
+        148,
+        70
+      ],
+      "tag": "p2p-ws",
+      "col": 0,
+      "row": 1
+    },
+    {
+      "id": "router",
+      "type": "messagebus",
+      "label": "Message Router",
+      "sublabel": "convId → shard",
+      "pos": [
+        430,
+        130
+      ],
+      "size": [
+        150,
+        70
+      ],
+      "tag": "p2p-core",
+      "col": 0,
+      "row": 2
+    },
+    {
+      "id": "msg-store",
+      "type": "database",
+      "label": "Message Store",
+      "sublabel": "p2p-db MVCC",
+      "pos": [
+        650,
+        70
+      ],
+      "size": [
+        140,
+        68
+      ],
+      "tag": "durable",
+      "col": 0,
+      "row": 3
+    },
+    {
+      "id": "msg-index",
+      "type": "database",
+      "label": "Conv/User Index",
+      "sublabel": "EqIndex + Range",
+      "pos": [
+        650,
+        210
+      ],
+      "size": [
+        140,
+        68
+      ],
+      "tag": "p2p-db",
+      "col": 0,
+      "row": 4
+    },
+    {
+      "id": "presence",
+      "type": "backend",
+      "label": "Presence",
+      "sublabel": "online user set",
+      "pos": [
+        430,
+        290
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "tag": "p2p-db DsFreeRing",
+      "col": 0,
+      "row": 5
+    },
+    {
+      "id": "push",
+      "type": "backend",
+      "label": "Push Service",
+      "sublabel": "APNs/FCM/WebPush",
+      "pos": [
+        230,
+        370
+      ],
+      "size": [
+        148,
+        60
+      ],
+      "tag": "push",
+      "col": 0,
+      "row": 6
+    },
+    {
+      "id": "notify",
+      "type": "external",
+      "label": "Notify Receipt",
+      "sublabel": "delivered/read",
+      "pos": [
+        30,
+        370
+      ],
+      "size": [
+        140,
+        60
+      ],
+      "tag": "receipt",
+      "col": 0,
+      "row": 7
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "p2p-im Server",
+      "wraps": [
+        "ingest",
+        "router",
+        "msg-store",
+        "msg-index",
+        "presence"
+      ],
+      "pad": 16
+    }
+  ],
+  "connections": [
+    {
+      "from": "client",
+      "to": "ingest",
+      "label": "SendMessage(msg)",
+      "variant": "emphasis",
+      "route": "orthogonal-v",
+      "labelDx": -430,
+      "labelDy": 255,
+      "labelSegment": 0
+    },
+    {
+      "from": "ingest",
+      "to": "router",
+      "label": "route convId",
+      "route": "orthogonal-h",
+      "labelDx": 270,
+      "labelDy": 375,
+      "labelSegment": 0
+    },
+    {
+      "from": "router",
+      "to": "msg-store",
+      "label": "append MVCC",
+      "route": "orthogonal-v",
+      "labelDx": -565,
+      "labelDy": 80,
+      "labelSegment": 0
+    },
+    {
+      "from": "router",
+      "to": "msg-index",
+      "label": "index convId/userId",
+      "route": "orthogonal-h",
+      "labelDx": 530,
+      "labelDy": -345,
+      "labelSegment": 0
+    },
+    {
+      "from": "router",
+      "to": "presence",
+      "label": "target online?",
+      "variant": "default",
+      "route": "orthogonal-v",
+      "labelDx": -50,
+      "labelDy": -485,
+      "labelSegment": 0
+    },
+    {
+      "from": "presence",
+      "to": "ingest",
+      "label": "online → WS push",
+      "variant": "dashed",
+      "route": "orthogonal-h",
+      "labelDx": 500,
+      "labelDy": 340,
+      "labelSegment": 0
+    },
+    {
+      "from": "presence",
+      "to": "push",
+      "label": "offline → APNs/FCM",
+      "variant": "dashed",
+      "route": "orthogonal-v",
+      "labelDx": -215,
+      "labelDy": -425,
+      "labelSegment": 0
+    },
+    {
+      "from": "push",
+      "to": "notify",
+      "label": "delivery receipt",
+      "variant": "dashed",
+      "route": "orthogonal-h",
+      "labelDx": 590,
+      "labelDy": -45,
+      "labelSegment": 0
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "p2p-db 三角色",
+      "items": [
+        "Message Store = MVCC 存 message body；Conv/User Index = 查询收件箱；Presence = DsFreeRing(64-bit uid Set) 作为「在线 uid 集合」语义"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Two Delivery Path",
+      "items": [
+        "用户在线 Presence in set → WS 直接推；离线 → Push Service 走系统推送，并在消息索引中标记 unread"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Receipts",
+      "items": [
+        "delivered/read receipt 是双向显式事件；客户端发送 receipt 给 Ingest → 更新 msg-index 对应消息状态"
+      ]
+    }
+  ],
+  "layout": {
+    "mode": "grid",
+    "cols": 3,
+    "gapX": 240,
+    "gapY": 240,
+    "cellW": 360,
+    "cellH": 260
+  }
+}

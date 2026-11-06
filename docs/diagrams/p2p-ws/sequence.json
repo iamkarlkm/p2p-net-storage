@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Peer-to-Center Handshake 完整时序",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [1080, 860],
+    "column_fit": "spread",
+    "views": [
+      {
+        "id": "rsa-phase",
+        "label": "RSA-OAEP 握手阶段",
+        "focus": ["peer", "rsa", "center", "rsa2"],
+        "note": "客户端 hello → 中心解密 → 密钥生成"
+      },
+      {
+        "id": "xor-phase",
+        "label": "XOR 会话建立与 RPC",
+        "focus": ["xor1", "xor2", "proto", "echo"],
+        "note": "XOR 密钥返回 → 后续帧加解密 → RPC echo"
+      }
+    ]
+  },
+  "participants": [
+    { "id": "peer", "type": "frontend", "label": "Peer Client", "sublabel": "ControlPlane Client" },
+    { "id": "rsa", "type": "security", "label": "RsaOaep", "sublabel": "客户端加密器" },
+    { "id": "center", "type": "cloud", "label": "ControlCenter", "sublabel": "信令中心" },
+    { "id": "rsa2", "type": "security", "label": "RsaOaep", "sublabel": "中心解密器" },
+    { "id": "xor1", "type": "security", "label": "XorCipher", "sublabel": "会话密钥管理" },
+    { "id": "xor2", "type": "security", "label": "XorCipher", "sublabel": "帧载荷加解密" },
+    { "id": "proto", "type": "messagebus", "label": "Proto RPC", "sublabel": "wrapper / control" }
+  ],
+  "segments": [
+    { "from": 150, "to": 320, "label": "① RSA Hello 阶段" },
+    { "from": 340, "to": 510, "label": "② XOR 密钥分发" },
+    { "from": 530, "to": 710, "label": "③ 会话建立验证" },
+    { "from": 730, "to": 860, "label": "④ 加密帧 RPC Echo" }
+  ],
+  "messages": [
+    { "id": "m1", "from": "peer", "to": "rsa", "y": 180, "label": "构造 hello {nonce, pubKeyId}", "variant": "default" },
+    { "id": "m2", "from": "rsa", "to": "center", "y": 215, "label": "RSA-OAEP.encrypt(hello)", "variant": "security" },
+    { "id": "m3", "from": "center", "to": "rsa2", "y": 255, "label": "接收密文 hello", "variant": "default" },
+    { "id": "m4", "from": "rsa2", "to": "center", "y": 290, "label": "RSA-OAEP.decrypt → hello plain", "variant": "return" },
+    { "id": "m5", "from": "center", "to": "xor1", "y": 360, "label": "生成 xorSessionKey (256bit)", "variant": "emphasis" },
+    { "id": "m6", "from": "xor1", "to": "rsa2", "y": 395, "label": "xorKey 送加密", "variant": "default" },
+    { "id": "m7", "from": "rsa2", "to": "peer", "y": 430, "label": "RSA-OAEP.encrypt(xorKey + nonce+1)", "variant": "security", "note": "用客户端公钥加密返回" },
+    { "id": "m8", "from": "peer", "to": "rsa", "y": 470, "label": "接收 xorKey 密文", "variant": "default" },
+    { "id": "m9", "from": "rsa", "to": "peer", "y": 505, "label": "RSA-OAEP.decrypt → xorKey plain", "variant": "return" },
+    { "id": "m10", "from": "peer", "to": "xor2", "y": 560, "label": "安装 xorKey → XorCipher", "variant": "emphasis" },
+    { "id": "m11", "from": "peer", "to": "center", "y": 595, "label": "XOR.encrypt(handshake-ack frame)", "variant": "security" },
+    { "id": "m12", "from": "center", "to": "xor2", "y": 630, "label": "XOR.decrypt → ack 验证通过", "variant": "return" },
+    { "id": "m13", "from": "peer", "to": "proto", "y": 700, "label": "Proto Wrapper {method: echo, data}", "variant": "default" },
+    { "id": "m14", "from": "proto", "to": "xor2", "y": 735, "label": "XorCipher.encrypt(payload)", "variant": "security" },
+    { "id": "m15", "from": "xor2", "to": "center", "y": 770, "label": "WireFrame(header + 密文)", "variant": "emphasis" },
+    { "id": "m16", "from": "center", "to": "peer", "y": 810, "label": "XOR.encrypt(echo-resp)", "variant": "return" },
+    { "id": "m17", "from": "peer", "to": "peer", "y": 845, "label": "XOR.decrypt → Proto echo resp", "variant": "dashed", "note": "会话建立 + RPC 双验证通过" }
+  ],
+  "activations": [
+    { "participant": "rsa", "from": 175, "to": 300, "type": "security" },
+    { "participant": "center", "from": 210, "to": 640, "type": "cloud" },
+    { "participant": "rsa2", "from": 250, "to": 440, "type": "security" },
+    { "participant": "xor1", "from": 355, "to": 400, "type": "security" },
+    { "participant": "xor2", "from": 555, "to": 820, "type": "security" },
+    { "participant": "proto", "from": 695, "to": 740, "type": "messagebus" }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "RSA 阶段安全保证",
+      "items": [
+        "客户端 hello 包携带 nonce 防重放",
+        "中心用私钥解密验证 pubKeyId",
+        "RSA-OAEP 仅用于握手与密钥分发"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "XOR 会话密钥",
+      "items": [
+        "per-session 256bit xorKey 由中心生成",
+        "仅用 RSA 加密一次返回给客户端",
+        "handshake-ack 帧确认双方密钥一致"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "RPC Echo 验证",
+      "items": [
+        "Proto Wrapper 携带 methodId=echo",
+        "XorCipher 加密载荷后封装 WireFrame",
+        "返回密文解密后完成双向 RPC 验证"
+      ]
+    }
+  ]
+}

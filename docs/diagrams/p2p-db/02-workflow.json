@@ -1,0 +1,242 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "p2p-db MVCC Write + Binlog Workflow",
+    "visual_preset": "signal-flow",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "viewBox": [
+      1200,
+      1900
+    ]
+  },
+  "lanes": [
+    {
+      "id": "orm",
+      "label": "ORM Caller"
+    },
+    {
+      "id": "planner",
+      "label": "Query Planner"
+    },
+    {
+      "id": "mvcc",
+      "label": "MVCC Engine"
+    },
+    {
+      "id": "binlog",
+      "label": "Binlog Store"
+    },
+    {
+      "id": "backup",
+      "label": "Backup Chain"
+    },
+    {
+      "id": "recover",
+      "label": "Recovery",
+      "variant": "exception"
+    }
+  ],
+  "phases": [
+    {
+      "id": "plan",
+      "label": "Plan + Gate",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "write",
+      "label": "Execute + Durable",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "post",
+      "label": "Backup + Recovery",
+      "fromCol": 4,
+      "toCol": 5
+    }
+  ],
+  "mainPath": [
+    "user-call",
+    "plan-query",
+    "mvcc-write",
+    "binlog-append",
+    "full-snap",
+    "replay-binlog"
+  ],
+  "nodes": [
+    {
+      "id": "user-call",
+      "lane": "orm",
+      "col": 0,
+      "type": "external",
+      "label": "ORM put(entity)",
+      "sublabel": "Java API",
+      "width": 125,
+      "yOffset": 0
+    },
+    {
+      "id": "plan-query",
+      "lane": "planner",
+      "col": 1,
+      "type": "backend",
+      "label": "matchesAll gate",
+      "sublabel": "schema check + row key",
+      "width": 125,
+      "yOffset": 0
+    },
+    {
+      "id": "mvcc-write",
+      "lane": "mvcc",
+      "col": 2,
+      "type": "database",
+      "label": "MVCC insert version",
+      "sublabel": "versionId & rowId",
+      "width": 153,
+      "yOffset": 0
+    },
+    {
+      "id": "index-update",
+      "lane": "planner",
+      "col": 2,
+      "type": "backend",
+      "label": "EqIndex + Range update",
+      "tag": "rowIdSet",
+      "width": 174,
+      "yOffset": 0
+    },
+    {
+      "id": "binlog-append",
+      "lane": "binlog",
+      "col": 3,
+      "type": "messagebus",
+      "label": "append REDO/UNDO",
+      "sublabel": "FNV-1a tableId",
+      "width": 132,
+      "yOffset": 0
+    },
+    {
+      "id": "full-snap",
+      "lane": "backup",
+      "col": 4,
+      "type": "cloud",
+      "label": "Full snapshot",
+      "tag": "Files.copy",
+      "width": 111,
+      "yOffset": 0
+    },
+    {
+      "id": "inc-delta",
+      "lane": "backup",
+      "col": 4,
+      "type": "cloud",
+      "label": "Inc binlog diff",
+      "tag": "manifest compare",
+      "yOffset": 78,
+      "width": 125
+    },
+    {
+      "id": "replay-binlog",
+      "lane": "recover",
+      "col": 5,
+      "type": "backend",
+      "label": "replay [basePos,end)",
+      "tag": "parallel by rowKey",
+      "width": 160,
+      "yOffset": 0
+    },
+    {
+      "id": "rollback-undo",
+      "lane": "recover",
+      "col": 5,
+      "type": "security",
+      "label": "UNDO skip frame",
+      "sublabel": "FLAG_BIT_UNDO_LOG",
+      "yOffset": 78,
+      "width": 125
+    }
+  ],
+  "edges": [
+    {
+      "from": "user-call",
+      "to": "plan-query",
+      "variant": "emphasis"
+    },
+    {
+      "from": "plan-query",
+      "to": "mvcc-write",
+      "variant": "emphasis"
+    },
+    {
+      "from": "mvcc-write",
+      "to": "index-update",
+      "variant": "default"
+    },
+    {
+      "from": "index-update",
+      "to": "binlog-append",
+      "variant": "emphasis"
+    },
+    {
+      "from": "binlog-append",
+      "to": "full-snap",
+      "variant": "dashed"
+    },
+    {
+      "from": "full-snap",
+      "to": "inc-delta",
+      "variant": "dashed"
+    },
+    {
+      "from": "inc-delta",
+      "to": "replay-binlog",
+      "variant": "security"
+    },
+    {
+      "from": "binlog-append",
+      "to": "rollback-undo",
+      "variant": "security"
+    },
+    {
+      "from": "mvcc-write",
+      "to": "binlog-append",
+      "variant": "default"
+    },
+    {
+      "from": "full-snap",
+      "to": "replay-binlog",
+      "variant": "default"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "MVCC Column Opt-In",
+      "items": [
+        "@DsField(mvcc=true) 列索引 versionId；其他列 rowId",
+        "schema signature 含 |M=，开关 mvcc 会改 schemaId 防止脏读"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Binlog Invariant",
+      "items": [
+        "所有 INSERT/UPDATE/DELETE 必 append Binlog",
+        "并行重放按 rowKey 分区，实际写串行 replayApplyLock",
+        "UNDO frame 重放跳过，数据库只向前"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Backup Semantics",
+      "items": [
+        "Full Snapshot 用 Files.copy（非 hard link），快照独立",
+        "增量只带 Binlog 三角色（FIXED/DYN/BYTES），恢复先 base → 按时间序叠增量"
+      ]
+    }
+  ]
+}

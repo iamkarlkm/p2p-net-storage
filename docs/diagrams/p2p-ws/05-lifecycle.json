@@ -1,0 +1,234 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "p2p-ws SDK Session Lifecycle (Connect → Authed → Subscribed → Closing)",
+    "viewBox": [
+      1700,
+      3000
+    ],
+    "animation": "trace",
+    "visual_preset": "signal-flow",
+    "quality_profile": "showcase",
+    "locale": "zh-CN"
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Session Rail"
+    },
+    {
+      "id": "auth",
+      "label": "Auth"
+    },
+    {
+      "id": "sub",
+      "label": "Subscribe Ops"
+    },
+    {
+      "id": "terminal",
+      "label": "Terminal"
+    }
+  ],
+  "states": [
+    {
+      "id": "authed",
+      "type": "success",
+      "label": "Authed",
+      "sublabel": "session id",
+      "lane": "main",
+      "col": 0,
+      "step": "04",
+      "yOffset": 0,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "ok-fin",
+      "type": "success",
+      "label": "Graceful End",
+      "sublabel": "all subs unsub",
+      "lane": "terminal",
+      "col": 0,
+      "tag": "terminal",
+      "yOffset": 0,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "new",
+      "type": "start",
+      "label": "New Session",
+      "sublabel": "pre connect",
+      "lane": "main",
+      "col": 1,
+      "step": "01",
+      "yOffset": 80,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "subscribing",
+      "type": "active",
+      "label": "Subscribing",
+      "sublabel": "topic=T",
+      "lane": "sub",
+      "col": 1,
+      "tag": "request",
+      "yOffset": 88,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "kick",
+      "type": "failure",
+      "label": "Auth Failed",
+      "sublabel": "kick conn",
+      "lane": "terminal",
+      "col": 1,
+      "tag": "terminal",
+      "yOffset": 20,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "authing",
+      "type": "decision",
+      "label": "Authing",
+      "sublabel": "token/rbac",
+      "lane": "auth",
+      "col": 2,
+      "step": "03",
+      "yOffset": 100,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "subscribed",
+      "type": "waiting",
+      "label": "Subscribed",
+      "sublabel": "subId",
+      "lane": "sub",
+      "col": 2,
+      "tag": "active",
+      "yOffset": 100,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "closing",
+      "type": "failure",
+      "label": "Closing",
+      "sublabel": "stop or close",
+      "lane": "main",
+      "col": 2,
+      "step": "05",
+      "yOffset": 80,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "upgrade",
+      "type": "active",
+      "label": "Upgrade WS",
+      "sublabel": "HTTP 101",
+      "lane": "main",
+      "col": 3,
+      "step": "02",
+      "yOffset": 80,
+      "width": 140,
+      "height": 86
+    },
+    {
+      "id": "publishing",
+      "type": "active",
+      "label": "Pushing",
+      "sublabel": "messages",
+      "lane": "sub",
+      "col": 3,
+      "tag": "flow",
+      "yOffset": 100,
+      "width": 140,
+      "height": 86
+    }
+  ],
+  "transitions": [
+    {
+      "from": "upgrade",
+      "to": "authing",
+      "variant": "security",
+      "channelY": 1660
+    },
+    {
+      "from": "authing",
+      "to": "authed",
+      "variant": "emphasis",
+      "channelY": -1890,
+      "channelX": -200,
+      "toSide": "right"
+    },
+    {
+      "from": "authed",
+      "to": "subscribing",
+      "variant": "default"
+    },
+    {
+      "from": "subscribing",
+      "to": "subscribed",
+      "variant": "emphasis",
+      "channelY": -1660,
+      "channelX": -260,
+      "fromSide": "right"
+    },
+    {
+      "from": "subscribed",
+      "to": "publishing",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "channelX": 820
+    },
+    {
+      "from": "publishing",
+      "to": "closing",
+      "variant": "security",
+      "channelY": -2370,
+      "channelX": -200,
+      "toSide": "right"
+    },
+    {
+      "from": "closing",
+      "to": "ok-fin",
+      "variant": "emphasis"
+    },
+    {
+      "from": "authing",
+      "to": "kick",
+      "variant": "security",
+      "channelY": -1660
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Session Gate",
+      "items": [
+        "Upgrade 完成 + Auth 通过才进入 Authed；否则直接 kick，不接受任何 subscribe/publish 帧"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Subscribed → Pushing",
+      "items": [
+        "Subscribed 状态持续可发 Pushing；StdCancel 只退单订阅，其他 subId 继续维持 Subscribed"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Graceful Close",
+      "items": [
+        "Closing 必须发送 close 帧给所有订阅；session 释放所有 subId，避免泄漏"
+      ]
+    }
+  ]
+}

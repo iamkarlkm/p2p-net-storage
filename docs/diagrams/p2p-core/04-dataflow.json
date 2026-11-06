@@ -1,0 +1,397 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "p2p-core Data Flow: RPC → Frame Codec → 4 Transports → Router",
+    "viewBox": [
+      2200,
+      5000
+    ],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN"
+  },
+  "stages": [
+    {
+      "label": "SDK Callers"
+    },
+    {
+      "label": "RPC + Session"
+    },
+    {
+      "label": "Frame + Crypto"
+    },
+    {
+      "label": "Transports"
+    },
+    {
+      "label": "Server Router"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "java",
+      "type": "frontend",
+      "label": "Java SDK",
+      "stage": 0,
+      "row": 0,
+      "tag": "p2p-core",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "dart",
+      "type": "frontend",
+      "label": "Dart SDK",
+      "stage": 0,
+      "row": 1,
+      "tag": "Flutter",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "py",
+      "type": "frontend",
+      "label": "Python SDK",
+      "stage": 0,
+      "row": 2,
+      "tag": "CLI",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "rpc",
+      "type": "backend",
+      "label": "RPC Layer",
+      "sublabel": "unary/stream/bidi",
+      "stage": 1,
+      "row": 3,
+      "tag": "p2p-core",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "session",
+      "type": "backend",
+      "label": "Session + Cancel",
+      "sublabel": "StdCancel",
+      "stage": 1,
+      "row": 0,
+      "tag": "connection",
+      "width": 140,
+      "yOffset": 0,
+      "height": 80
+    },
+    {
+      "id": "codec",
+      "type": "messagebus",
+      "label": "Frame Codec",
+      "sublabel": "maxFrameBytes",
+      "stage": 2,
+      "row": 1,
+      "tag": "wire format",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "crypt",
+      "type": "security",
+      "label": "Crypto",
+      "sublabel": "4 modes",
+      "stage": 2,
+      "row": 2,
+      "tag": "encrypt",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "udp",
+      "type": "cloud",
+      "label": "UDP v2",
+      "stage": 3,
+      "row": 3,
+      "tag": "MTU",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "quic",
+      "type": "cloud",
+      "label": "QUIC",
+      "stage": 3,
+      "row": 0,
+      "tag": "QUIC",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "tcp",
+      "type": "cloud",
+      "label": "TCP",
+      "stage": 3,
+      "row": 1,
+      "tag": "TCP",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "ws",
+      "type": "cloud",
+      "label": "WebSocket",
+      "stage": 3,
+      "row": 2,
+      "tag": "WS",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "router",
+      "type": "backend",
+      "label": "P2PCommand Router",
+      "stage": 4,
+      "row": 3,
+      "tag": "ordinal",
+      "width": 140,
+      "yOffset": 0,
+      "height": 80
+    },
+    {
+      "id": "handler",
+      "type": "backend",
+      "label": "Handler Registry",
+      "stage": 4,
+      "row": 0,
+      "tag": "biz",
+      "width": 140,
+      "yOffset": 0,
+      "height": 80
+    }
+  ],
+  "flows": [
+    {
+      "id": "f1",
+      "from": "java",
+      "to": "rpc",
+      "label": "Java API call",
+      "classification": "caller",
+      "variant": "default",
+      "labelDx": -60,
+      "labelDy": 260,
+      "labelSegment": 0,
+      "channelX": 640
+    },
+    {
+      "id": "f2",
+      "from": "dart",
+      "to": "rpc",
+      "label": "Dart stream",
+      "classification": "caller",
+      "variant": "default",
+      "labelDx": -320,
+      "labelDy": 560,
+      "channelX": -900,
+      "labelSegment": 0
+    },
+    {
+      "id": "f3",
+      "from": "py",
+      "to": "rpc",
+      "label": "Python SDK",
+      "classification": "caller",
+      "variant": "default",
+      "labelDx": -425,
+      "labelDy": 0,
+      "labelSegment": 0,
+      "channelX": 640
+    },
+    {
+      "id": "f4",
+      "from": "rpc",
+      "to": "session",
+      "label": "sessionId + cancel",
+      "classification": "session",
+      "variant": "emphasis",
+      "labelDx": 60,
+      "labelDy": -580,
+      "labelSegment": 0,
+      "channelX": -640
+    },
+    {
+      "id": "f5",
+      "from": "rpc",
+      "to": "codec",
+      "label": "frame body",
+      "classification": "bytes",
+      "variant": "emphasis",
+      "labelDx": -140,
+      "labelDy": 300,
+      "labelSegment": 0,
+      "channelX": 1060
+    },
+    {
+      "id": "f6",
+      "from": "session",
+      "to": "crypt",
+      "label": "key/nonce",
+      "classification": "secret",
+      "variant": "security",
+      "labelDx": 320,
+      "labelDy": 160,
+      "labelSegment": 0,
+      "channelX": -1060
+    },
+    {
+      "id": "f7",
+      "from": "codec",
+      "to": "crypt",
+      "label": "plaintext",
+      "classification": "frame",
+      "variant": "default",
+      "labelDx": -380,
+      "labelDy": 160,
+      "labelSegment": 0,
+      "channelX": 640
+    },
+    {
+      "id": "f8",
+      "from": "crypt",
+      "to": "udp",
+      "label": "segmented UDP",
+      "classification": "wire",
+      "variant": "dashed",
+      "labelDx": 85,
+      "labelDy": -260,
+      "labelSegment": 0,
+      "channelX": -640
+    },
+    {
+      "id": "f9",
+      "from": "crypt",
+      "to": "quic",
+      "label": "QUIC frame",
+      "classification": "wire",
+      "variant": "dashed",
+      "labelDx": 380,
+      "labelDy": -680,
+      "labelSegment": 0,
+      "channelX": 640
+    },
+    {
+      "id": "f10",
+      "from": "crypt",
+      "to": "tcp",
+      "label": "TCP bytes",
+      "classification": "wire",
+      "variant": "dashed",
+      "labelDx": 40,
+      "labelDy": 340,
+      "channelX": -380,
+      "labelSegment": 0
+    },
+    {
+      "id": "f11",
+      "from": "crypt",
+      "to": "ws",
+      "label": "WS binary",
+      "classification": "wire",
+      "variant": "dashed",
+      "labelDx": -320,
+      "labelDy": -160,
+      "labelSegment": 0,
+      "channelX": 640
+    },
+    {
+      "id": "f12",
+      "from": "udp",
+      "to": "router",
+      "label": "decrypted",
+      "classification": "frame",
+      "variant": "default",
+      "labelDx": 325,
+      "labelDy": -120,
+      "labelSegment": 0,
+      "channelX": -640
+    },
+    {
+      "id": "f13",
+      "from": "quic",
+      "to": "router",
+      "label": "decrypted",
+      "classification": "frame",
+      "variant": "default",
+      "labelDx": 80,
+      "labelDy": 380,
+      "labelSegment": 0,
+      "channelX": 640
+    },
+    {
+      "id": "f14",
+      "from": "tcp",
+      "to": "router",
+      "label": "decrypted",
+      "classification": "frame",
+      "variant": "default",
+      "labelDx": -120,
+      "labelDy": 100,
+      "channelX": -900,
+      "labelSegment": 0
+    },
+    {
+      "id": "f15",
+      "from": "ws",
+      "to": "router",
+      "label": "decrypted",
+      "classification": "frame",
+      "variant": "default",
+      "labelDx": -220,
+      "labelDy": -140,
+      "labelSegment": 0,
+      "channelX": 640
+    },
+    {
+      "id": "f16",
+      "from": "router",
+      "to": "handler",
+      "label": "dispatch ordinal",
+      "classification": "handler",
+      "variant": "emphasis",
+      "labelDx": -20,
+      "labelDy": -420,
+      "labelSegment": 0,
+      "channelX": -640
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Single Wire Format",
+      "items": [
+        "4 种 SDK / 4 种传输统一 Frame Codec；maxFrameBytes、P2PCommand 路由一致，跨 SDK 透明"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "StdCancel",
+      "items": [
+        "取消路径和业务路径分离：StdCancel 只影响本 session RPC；其他连接会话不受影响；Python/C/TS/Dart SDK 都实现同构 stop 帧语义"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Transport Agnostic",
+      "items": [
+        "应用层看不到传输差异：UDP/QUIC/TCP/WS 进入 Server Router 前已完整还原同一个解密后的业务帧"
+      ]
+    }
+  ]
+}

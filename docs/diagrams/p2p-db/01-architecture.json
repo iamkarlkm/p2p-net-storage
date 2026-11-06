@@ -1,0 +1,329 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "p2p-db Architecture",
+    "visual_preset": "blueprint",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "views": [
+      {
+        "id": "orm",
+        "label": "ORM Write Path",
+        "focus": [
+          "java-orm",
+          "genericmgr",
+          "db-local",
+          "mvcc",
+          "eqindex"
+        ],
+        "note": "Java 对象 → GenericManager → DsDatabaseLocal 写 MVCC + Index"
+      },
+      {
+        "id": "binlog",
+        "label": "Binlog & Backup",
+        "focus": [
+          "db-local",
+          "binlog",
+          "full-backup",
+          "inc-backup",
+          "timeline"
+        ],
+        "note": "写事件进 Binlog → 全量 + 增量备份链 → 时间点恢复"
+      }
+    ],
+    "viewBox": [
+      1050,
+      3600
+    ]
+  },
+  "components": [
+    {
+      "id": "java-orm",
+      "type": "frontend",
+      "label": "Java ORM Layer",
+      "sublabel": "@DsTable / @DsField",
+      "pos": [
+        40,
+        130
+      ],
+      "size": [
+        140,
+        68
+      ],
+      "tag": "Java SDK",
+      "col": 0,
+      "row": 0
+    },
+    {
+      "id": "genericmgr",
+      "type": "backend",
+      "label": "GenericManager",
+      "sublabel": "Query Planner",
+      "pos": [
+        230,
+        130
+      ],
+      "size": [
+        140,
+        68
+      ],
+      "tag": "p2p-db",
+      "col": 0,
+      "row": 1
+    },
+    {
+      "id": "db-local",
+      "type": "backend",
+      "label": "DsDatabaseLocal",
+      "sublabel": "MVCC + Binlog",
+      "pos": [
+        430,
+        130
+      ],
+      "size": [
+        156,
+        78
+      ],
+      "tag": "p2p-db",
+      "col": 0,
+      "row": 2
+    },
+    {
+      "id": "mvcc",
+      "type": "database",
+      "label": "MVCC Store",
+      "sublabel": "version records",
+      "pos": [
+        650,
+        70
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "tag": "versioned",
+      "col": 0,
+      "row": 3
+    },
+    {
+      "id": "eqindex",
+      "type": "database",
+      "label": "EqIndex / Range",
+      "sublabel": "Indexed RowIdSet",
+      "pos": [
+        650,
+        210
+      ],
+      "size": [
+        140,
+        64
+      ],
+      "tag": "O(1) lookup",
+      "col": 0,
+      "row": 4
+    },
+    {
+      "id": "binlog",
+      "type": "messagebus",
+      "label": "DsBinlogStore",
+      "sublabel": "REDO/UNDO Frames",
+      "pos": [
+        430,
+        290
+      ],
+      "size": [
+        156,
+        60
+      ],
+      "tag": "append only",
+      "col": 0,
+      "row": 5
+    },
+    {
+      "id": "full-backup",
+      "type": "cloud",
+      "label": "Full Backup",
+      "sublabel": "data/index/binlog tar",
+      "pos": [
+        230,
+        350
+      ],
+      "size": [
+        140,
+        60
+      ],
+      "tag": "snapshot",
+      "col": 0,
+      "row": 6
+    },
+    {
+      "id": "inc-backup",
+      "type": "cloud",
+      "label": "Incremental",
+      "sublabel": "delta binlog",
+      "pos": [
+        40,
+        350
+      ],
+      "size": [
+        140,
+        60
+      ],
+      "tag": "diff chain",
+      "col": 0,
+      "row": 7
+    },
+    {
+      "id": "timeline",
+      "type": "external",
+      "label": "Timeline Restore",
+      "sublabel": "replay binlog [a,b)",
+      "pos": [
+        650,
+        350
+      ],
+      "size": [
+        140,
+        60
+      ],
+      "tag": "PITR",
+      "col": 0,
+      "row": 8
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "p2p-db Core Runtime",
+      "wraps": [
+        "genericmgr",
+        "db-local",
+        "mvcc",
+        "eqindex",
+        "binlog"
+      ],
+      "pad": 18
+    },
+    {
+      "kind": "security-group",
+      "label": "Persistence",
+      "wraps": [
+        "mvcc",
+        "eqindex",
+        "binlog"
+      ],
+      "pad": 12
+    }
+  ],
+  "connections": [
+    {
+      "from": "java-orm",
+      "to": "genericmgr",
+      "label": "put / remove / query",
+      "variant": "emphasis",
+      "labelDx": 400,
+      "labelDy": -240,
+      "labelSegment": 0
+    },
+    {
+      "from": "genericmgr",
+      "to": "db-local",
+      "label": "plan → execute",
+      "variant": "emphasis",
+      "labelDx": -400,
+      "labelDy": 240,
+      "labelSegment": 0
+    },
+    {
+      "from": "db-local",
+      "to": "mvcc",
+      "label": "version write",
+      "labelDx": 0,
+      "labelDy": 360,
+      "labelSegment": 0
+    },
+    {
+      "from": "db-local",
+      "to": "eqindex",
+      "label": "index update",
+      "labelDx": -400,
+      "labelDy": -240,
+      "labelSegment": 0
+    },
+    {
+      "from": "db-local",
+      "to": "binlog",
+      "label": "append REDO/UNDO",
+      "variant": "dashed",
+      "labelDx": 560,
+      "labelDy": 0,
+      "labelSegment": 0
+    },
+    {
+      "from": "binlog",
+      "to": "full-backup",
+      "label": "BINLOG_FIXED/DYN/BYTES",
+      "variant": "dashed",
+      "labelDx": 0,
+      "labelDy": -360,
+      "labelSegment": 0
+    },
+    {
+      "from": "full-backup",
+      "to": "inc-backup",
+      "label": "delta diff",
+      "variant": "dashed",
+      "labelDx": 400,
+      "labelDy": 240,
+      "labelSegment": 0
+    },
+    {
+      "from": "binlog",
+      "to": "timeline",
+      "label": "replay events",
+      "variant": "security",
+      "labelDx": -560,
+      "labelDy": 0,
+      "labelSegment": 0
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Core Layers",
+      "items": [
+        "Java ORM 注解定义表结构",
+        "GenericManager 做 Query Planner + 多 Index 交并",
+        "DsDatabaseLocal 单进程 MVCC + Binlog"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Durability",
+      "items": [
+        "物理 WAL 已删除，Binlog 唯一持久化流水",
+        "Full=全量快照，Incremental=Binlog 差量链",
+        "Timeline Restore = base + replay [a,b)"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Index Invariant",
+      "items": [
+        "Index 仅缩小候选 RowIdSet",
+        "最终过滤权威 matchesAll(wrapper,entity)",
+        "MVCC 列 versionId 索引，非 MVCC 列 rowId 索引"
+      ]
+    }
+  ],
+  "layout": {
+    "mode": "grid",
+    "cols": 3,
+    "gapX": 280,
+    "gapY": 280,
+    "cellW": 400,
+    "cellH": 320
+  }
+}

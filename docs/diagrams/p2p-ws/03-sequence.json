@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "p2p-ws SDK Connect + Auth + Subscribe + Publish",
+    "viewBox": [
+      1050,
+      7550
+    ],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN",
+    "column_fit": "spread"
+  },
+  "participants": [
+    {
+      "id": "app",
+      "type": "external",
+      "label": "App / Browser"
+    },
+    {
+      "id": "sdk",
+      "type": "backend",
+      "label": "p2p-ws SDK",
+      "sublabel": "Java/Dart/TS"
+    },
+    {
+      "id": "ws",
+      "type": "backend",
+      "label": "WS Transport",
+      "sublabel": "wss://"
+    },
+    {
+      "id": "srv",
+      "type": "backend",
+      "label": "p2p-ws Server"
+    },
+    {
+      "id": "rbac",
+      "type": "security",
+      "label": "RBAC",
+      "sublabel": "allowCommands"
+    },
+    {
+      "id": "router",
+      "type": "messagebus",
+      "label": "Router",
+      "sublabel": "Msg dispatch"
+    },
+    {
+      "id": "biz",
+      "type": "backend",
+      "label": "Biz Handler",
+      "sublabel": "pub/sub"
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 280,
+      "label": "WS Upgrade + Auth"
+    },
+    {
+      "from": 300,
+      "to": 500,
+      "label": "Subscribe"
+    },
+    {
+      "from": 520,
+      "to": 700,
+      "label": "Publish Push"
+    }
+  ],
+  "messages": [
+    {
+      "id": "w1",
+      "from": "app",
+      "to": "sdk",
+      "label": "connect(wss://, token)",
+      "variant": "emphasis",
+      "y": 180
+    },
+    {
+      "id": "w2",
+      "from": "sdk",
+      "to": "ws",
+      "label": "HTTP Upgrade",
+      "variant": "default",
+      "y": 222
+    },
+    {
+      "id": "w3",
+      "from": "ws",
+      "to": "srv",
+      "label": "WS connected",
+      "variant": "return",
+      "y": 264
+    },
+    {
+      "id": "w4",
+      "from": "srv",
+      "to": "rbac",
+      "label": "Auth(token)",
+      "variant": "security",
+      "y": 306
+    },
+    {
+      "id": "w5",
+      "from": "rbac",
+      "to": "srv",
+      "label": "sessionId + roles",
+      "variant": "return",
+      "y": 348
+    },
+    {
+      "id": "w6",
+      "from": "sdk",
+      "to": "ws",
+      "label": "Subscribe frame(topic=T)",
+      "variant": "default",
+      "y": 390
+    },
+    {
+      "id": "w7",
+      "from": "ws",
+      "to": "router",
+      "label": "decoded frame",
+      "variant": "default",
+      "y": 432
+    },
+    {
+      "id": "w8",
+      "from": "router",
+      "to": "biz",
+      "label": "dispatch Subscribe",
+      "variant": "default",
+      "y": 474
+    },
+    {
+      "id": "w9",
+      "from": "biz",
+      "to": "sdk",
+      "label": "SubscribedOK(subId=7)",
+      "variant": "return",
+      "y": 516
+    },
+    {
+      "id": "w10",
+      "from": "sdk",
+      "to": "ws",
+      "label": "Publish(T, msg)",
+      "variant": "default",
+      "y": 558
+    },
+    {
+      "id": "w11",
+      "from": "biz",
+      "to": "sdk",
+      "label": "OnMessage(subId=7, msg)",
+      "variant": "return",
+      "y": 600
+    }
+  ],
+  "activations": [
+    {
+      "participant": "sdk",
+      "from": 170,
+      "to": 630,
+      "type": "backend"
+    },
+    {
+      "participant": "ws",
+      "from": 212,
+      "to": 588,
+      "type": "backend"
+    },
+    {
+      "participant": "srv",
+      "from": 254,
+      "to": 378,
+      "type": "backend"
+    },
+    {
+      "participant": "router",
+      "from": 422,
+      "to": 504,
+      "type": "messagebus"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Sub Id",
+      "items": [
+        "订阅返回 subId；后续推送/取消都携带 subId；单连接多订阅互不干扰"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "RBAC allowCommands",
+      "items": [
+        "RBAC 按角色的 allowCommands 决定能否 Subscribe/Publish 某 topic；命令级粒度"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "SDK Uniform",
+      "items": [
+        "跨 5 语言：Connect → Auth → Subscribe → Publish → OnMessage 生命周期完全同构"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,234 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "P2P Core 模块架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [1440, 900]
+  },
+  "layout": {
+    "mode": "grid",
+    "cols": 4,
+    "gapX": 80,
+    "gapY": 72,
+    "cellW": 232,
+    "cellH": 112
+  },
+  "components": [
+    {
+      "id": "config",
+      "type": "backend",
+      "label": "配置模块",
+      "sublabel": "P2PConfig",
+      "row": 0,
+      "col": 0
+    },
+    {
+      "id": "auth",
+      "type": "security",
+      "label": "身份认证",
+      "sublabel": "Auth / ACL",
+      "row": 0,
+      "col": 1
+    },
+    {
+      "id": "transport",
+      "type": "cloud",
+      "label": "传输层",
+      "sublabel": "QUIC / WebSocket",
+      "row": 0,
+      "col": 2
+    },
+    {
+      "id": "session",
+      "type": "backend",
+      "label": "会话管理",
+      "sublabel": "P2PSession",
+      "row": 0,
+      "col": 3
+    },
+    {
+      "id": "handshake",
+      "type": "security",
+      "label": "握手协议",
+      "sublabel": "Handshake",
+      "row": 1,
+      "col": 0
+    },
+    {
+      "id": "rsa",
+      "type": "security",
+      "label": "RSA-OAEP",
+      "sublabel": "非对称加密",
+      "row": 1,
+      "col": 1
+    },
+    {
+      "id": "xor",
+      "type": "security",
+      "label": "XorCipher",
+      "sublabel": "对称流加密",
+      "row": 1,
+      "col": 2
+    },
+    {
+      "id": "rpc",
+      "type": "messagebus",
+      "label": "RPC 层",
+      "sublabel": "FrameCodec / Proto",
+      "row": 1,
+      "col": 3
+    },
+    {
+      "id": "node",
+      "type": "backend",
+      "label": "节点模型",
+      "sublabel": "P2PNode",
+      "row": 2,
+      "col": 0
+    },
+    {
+      "id": "router",
+      "type": "backend",
+      "label": "路由器",
+      "sublabel": "P2PRouter",
+      "row": 2,
+      "col": 1
+    },
+    {
+      "id": "searcher",
+      "type": "backend",
+      "label": "搜索器",
+      "sublabel": "P2PSearcher",
+      "row": 2,
+      "col": 2
+    },
+    {
+      "id": "command",
+      "type": "messagebus",
+      "label": "命令分发",
+      "sublabel": "P2PCommand",
+      "row": 2,
+      "col": 3
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "security-group",
+      "label": "安全加密域",
+      "wraps": ["handshake", "rsa", "xor", "auth"]
+    },
+    {
+      "kind": "region",
+      "label": "核心模型域",
+      "wraps": ["node", "router", "searcher", "command"]
+    }
+  ],
+  "connections": [
+    {
+      "from": "config",
+      "to": "auth",
+      "label": "加载凭证",
+      "fromSide": "right",
+      "toSide": "left",
+      "route": "straight"
+    },
+    {
+      "from": "config",
+      "to": "transport",
+      "label": "网络参数",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 28
+    },
+    {
+      "from": "auth",
+      "to": "handshake",
+      "label": "身份校验",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "transport",
+      "to": "session",
+      "label": "建立连接",
+      "fromSide": "right",
+      "toSide": "left",
+      "route": "straight"
+    },
+    {
+      "from": "handshake",
+      "to": "rsa",
+      "label": "密钥协商",
+      "fromSide": "right",
+      "toSide": "left",
+      "route": "straight"
+    },
+    {
+      "from": "rsa",
+      "to": "xor",
+      "label": "派生会话密钥",
+      "fromSide": "right",
+      "toSide": "left",
+      "route": "straight"
+    },
+    {
+      "from": "session",
+      "to": "handshake",
+      "label": "驱动握手",
+      "fromSide": "bottom",
+      "toSide": "right"
+    },
+    {
+      "from": "xor",
+      "to": "rpc",
+      "label": "加密帧流",
+      "fromSide": "right",
+      "toSide": "left",
+      "route": "straight"
+    },
+    {
+      "from": "session",
+      "to": "rpc",
+      "label": "帧通道",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "from": "rpc",
+      "to": "command",
+      "label": "解析请求",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 26
+    },
+    {
+      "from": "command",
+      "to": "router",
+      "label": "分发命令",
+      "fromSide": "left",
+      "toSide": "right",
+      "route": "straight",
+      "labelDy": 48
+    },
+    {
+      "from": "router",
+      "to": "node",
+      "label": "路由节点",
+      "fromSide": "left",
+      "toSide": "right",
+      "route": "straight"
+    },
+    {
+      "from": "router",
+      "to": "searcher",
+      "label": "资源搜索",
+      "fromSide": "right",
+      "toSide": "left",
+      "route": "straight",
+      "labelDy": 40
+    }
+  ]
+}

@@ -1,0 +1,310 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "p2p-sync Data Flow: File → Chunks → Dedup → Transport → Assembly",
+    "viewBox": [
+      1400,
+      7000
+    ],
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "locale": "zh-CN"
+  },
+  "stages": [
+    {
+      "label": "Watched FS"
+    },
+    {
+      "label": "Prepare"
+    },
+    {
+      "label": "Dedup + Idx"
+    },
+    {
+      "label": "Transport"
+    },
+    {
+      "label": "Remote Assembly"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "watch",
+      "type": "external",
+      "label": "Watch Events",
+      "sublabel": "monitor",
+      "stage": 0,
+      "row": 0,
+      "tag": "P2PSyncMonitor",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "read",
+      "type": "frontend",
+      "label": "Read Local File",
+      "sublabel": "bytes",
+      "stage": 0,
+      "row": 1,
+      "tag": "local fs",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "chunk",
+      "type": "backend",
+      "label": "CDC Chunker",
+      "sublabel": "hash",
+      "stage": 1,
+      "row": 2,
+      "tag": "rabin",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "dedup",
+      "type": "database",
+      "label": "Global Dedup",
+      "sublabel": "p2p-db",
+      "stage": 2,
+      "row": 3,
+      "tag": "hash → chunk",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "up-idx",
+      "type": "database",
+      "label": "Upload Index",
+      "sublabel": "p2p-db",
+      "stage": 2,
+      "row": 0,
+      "tag": "ns/task/done",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "net",
+      "type": "messagebus",
+      "label": "p2p-core",
+      "sublabel": "QUIC/TCP/UDP/WS",
+      "stage": 3,
+      "row": 1,
+      "tag": "auth_sig",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "remote-tmp",
+      "type": "cloud",
+      "label": "Remote Tmp",
+      "sublabel": "chunks",
+      "stage": 4,
+      "row": 2,
+      "tag": "tmp file",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "remote-final",
+      "type": "cloud",
+      "label": "Remote Final",
+      "sublabel": "atomic rename",
+      "stage": 4,
+      "row": 3,
+      "tag": "visible",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    },
+    {
+      "id": "e2e-hash",
+      "type": "security",
+      "label": "Strong E2E Hash",
+      "sublabel": "compare",
+      "stage": 4,
+      "row": 0,
+      "tag": "content hash",
+      "yOffset": 0,
+      "width": 140,
+      "height": 80
+    }
+  ],
+  "flows": [
+    {
+      "id": "s1",
+      "from": "watch",
+      "to": "chunk",
+      "label": "file changed",
+      "classification": "event",
+      "variant": "dashed",
+      "labelDx": 200,
+      "labelDy": -140,
+      "labelSegment": 0,
+      "channelX": 1100,
+      "channelY": 280
+    },
+    {
+      "id": "s2",
+      "from": "read",
+      "to": "chunk",
+      "label": "file bytes",
+      "classification": "bytes",
+      "variant": "emphasis",
+      "labelDx": -280,
+      "labelDy": 0,
+      "labelSegment": 0,
+      "channelX": -1100,
+      "channelY": 280
+    },
+    {
+      "id": "s3",
+      "from": "chunk",
+      "to": "dedup",
+      "label": "chunk hash query",
+      "classification": "dedup",
+      "variant": "default",
+      "labelDx": 200,
+      "labelDy": 140,
+      "labelSegment": 0,
+      "channelX": 1100,
+      "channelY": -280
+    },
+    {
+      "id": "s4",
+      "from": "dedup",
+      "to": "chunk",
+      "label": "unique only",
+      "classification": "boolean",
+      "variant": "default",
+      "labelDx": 0,
+      "labelDy": -220,
+      "labelSegment": 0,
+      "channelX": -1100,
+      "channelY": -280
+    },
+    {
+      "id": "s5",
+      "from": "chunk",
+      "to": "up-idx",
+      "label": "per chunk progress",
+      "classification": "progress",
+      "variant": "dashed",
+      "labelDx": 280,
+      "labelDy": 0,
+      "labelSegment": 0,
+      "channelX": 1800,
+      "channelY": 280
+    },
+    {
+      "id": "s6",
+      "from": "up-idx",
+      "to": "chunk",
+      "label": "skip already done",
+      "classification": "resume",
+      "variant": "dashed",
+      "labelDx": -200,
+      "labelDy": -140,
+      "labelSegment": 0,
+      "channelX": -1800,
+      "channelY": 280
+    },
+    {
+      "id": "s7",
+      "from": "chunk",
+      "to": "net",
+      "label": "unique chunk stream",
+      "classification": "wire",
+      "variant": "emphasis",
+      "channelY": 410,
+      "labelDx": 0,
+      "labelDy": 220,
+      "labelSegment": 0,
+      "channelX": 1100
+    },
+    {
+      "id": "s8",
+      "from": "net",
+      "to": "remote-tmp",
+      "label": "chunk bytes",
+      "classification": "wire",
+      "variant": "default",
+      "labelDx": -200,
+      "labelDy": 140,
+      "labelSegment": 0,
+      "channelX": -1100,
+      "channelY": -280
+    },
+    {
+      "id": "s9",
+      "from": "remote-tmp",
+      "to": "remote-final",
+      "label": "atomic rename",
+      "classification": "finalize",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDx": 200,
+      "labelDy": -140,
+      "labelSegment": 0,
+      "channelX": 1100,
+      "channelY": 280
+    },
+    {
+      "id": "s10",
+      "from": "remote-final",
+      "to": "e2e-hash",
+      "label": "final hash",
+      "classification": "strong check",
+      "variant": "security",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "channelX": 1720,
+      "labelDx": -600,
+      "labelDy": 420,
+      "labelSegment": 0,
+      "channelY": 680,
+      "via": [
+        [
+          700,
+          0
+        ],
+        [
+          700,
+          -280
+        ]
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Monitor Trigger",
+      "items": [
+        "P2PSyncMonitor 捕获修改/rename/delete；然后走同一 Chunker→ Dedup → Transport 流水线，不用手工触发"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Two p2p-db Roles",
+      "items": [
+        "Dedup Index=内容哈希全局唯一；Upload Index=ns/task 下完成列表；两个表共同提供 Dedup + Resume 两个核心能力"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "E2E Strong",
+      "items": [
+        "Strong Content Check 是最终一致性的唯一保证；只要 hash 不等就不 rename，任何 chunk 丢/错都会在 finalize 暴露"
+      ]
+    }
+  ]
+}
