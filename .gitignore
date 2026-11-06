@@ -54,3 +54,7 @@ target/surefire-reports/*.dumpstream
 __pycache__/
 *.pyc
 *.egg-info/
+
+# --- 测试运行产生的本地库目录 / 临时调试输出 ---
+dsdb/
+_debug.txt
