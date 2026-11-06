@@ -1,0 +1,201 @@
+syntax = "proto3";
+
+package p2p.shard.fulltext.v1;
+
+option java_multiple_files = false;
+option java_package = "com.q3lives.ds.database.fulltext.cluster.proto";
+option java_outer_classname = "FulltextShardWire";
+
+// =============================================================================
+// P26 OQ12-④ Fulltext Shard GRPC Wire Protocol v1 (proto3, monotonic).
+//
+// Rules (monotonic & backward compat):
+// 1) Field numbers 1..N are append-only; NEVER delete or re-number a field.
+// 2) All Request/Response pairs start at field=1 monotonic.
+// 3) P25 ScoredDocHit/ScoredDocHitWithExtras Java inner class fields -> 1:1 proto field order.
+// 4) Enum ordinal defaults: 0 = UNSPECIFIED for unknown future compat (proto3 required).
+// 5) version=1 reserved.
+// =============================================================================
+
+enum ShardFacetLevel {
+  SHARD_FACET_LEVEL_UNSPECIFIED = 0;
+  CHAR = 1;
+  WORD = 2;
+  SENTENCE = 3;
+  PARAGRAPH = 4;
+  DOC = 5;
+}
+
+message SearchOptionsMsg {
+  int32  facet_top_k              = 1; // default 10
+  ShardFacetLevel facet_level     = 2; // default WORD=2
+  bool   char_level_facet         = 3; // default false
+  int32  snippet_window           = 4; // default 40
+  int32  snippet_max_count        = 5; // default 3
+  bool   return_positions         = 6; // default true
+  bool   vector_recall_enable     = 7; // default true
+  int32  top_k                    = 8; // default 100
+  double alpha                    = 9;  // 0.5 default
+  double beta                     = 10; // 0.25
+  double gamma                    = 11; // 0.1
+  double delta                    = 12; // 0.15
+  int32  rrf_k                    = 13; // default 60
+  int64  deadline_ms              = 14; // 0 means system default 5000ms
+}
+
+message PositionSpanMsg {
+  int64  uid          = 1;
+  int32  start        = 2;
+  int32  end          = 3;
+  int32  level        = 4;
+  string term_text    = 5;
+}
+
+message SnippetMsg {
+  string snippet_text                 = 1;
+  int32  start_in_doc                 = 2;
+  int32  end_in_doc                   = 3;
+  repeated int32 highlight_ranges_flat = 4; // pair flattened [s1,e1,s2,e2,...]
+}
+
+message FacetMsg {
+  string term_text       = 1;
+  int64  uid             = 2;
+  int32  shard_facet_level = 3;
+  int64  doc_count       = 4;
+  int64  total_tf        = 5;
+  double score           = 6;
+}
+
+message ScoredDocHitMsg {
+  int64  doc_id               = 1;
+  int64  parent_id            = 2;
+  int32  level                = 3;
+  int64  unit_id              = 4;
+  double sort_score           = 5;
+  double rrf_score            = 6;
+  double vector_score         = 7;
+  double phrase_boost_score   = 8;
+  int32  matched_query_terms  = 9;
+  int32  seq                  = 10;
+  double final_score          = 11;
+  int32  shard_id             = 12;
+}
+
+message ScoredDocHitWithExtrasMsg {
+  ScoredDocHitMsg core                               = 1;
+  repeated PositionSpanMsg matched_spans             = 2;
+  repeated SnippetMsg snippets                       = 3;
+  repeated FacetMsg top_facets                       = 4;
+}
+
+// ========== 6 Request/Response pairs + HEARTBEAT ==========
+
+message PutDocShardRequest {
+  int32  shard_id = 1;
+  int64  doc_id   = 2;
+  string text     = 3;
+  string cluster_root = 4;
+}
+
+message PutDocShardResponse {
+  int32  status_code          = 1; // 0=OK, mirror RpcStatusCode
+  string error_message        = 2;
+  int64  doc_id               = 3;
+  int64  pairs_total          = 4;
+  repeated int32 rows_per_level = 5; // fixed 6 ints
+}
+
+message ClearDocShardRequest {
+  int32  shard_id = 1;
+  int64  doc_id   = 2;
+  string cluster_root = 3;
+}
+
+message ClearDocShardResponse {
+  int32  status_code   = 1;
+  string error_message = 2;
+}
+
+message SearchShardRequest {
+  int32            shard_id      = 1;
+  string           query         = 2;
+  repeated float   query_vec     = 3; // empty allowed = no vector
+  int32            K             = 4;
+  SearchOptionsMsg options       = 5;
+  string cluster_root = 6;
+}
+
+message SearchShardResponse {
+  int32                 status_code   = 1;
+  string                error_message = 2;
+  repeated ScoredDocHitMsg hits        = 3;
+}
+
+message RawDocPairMsg {
+  int64  doc_id = 1;
+  string text   = 2;
+}
+
+message SearchShardWithExtrasRequest {
+  int32              shard_id           = 1;
+  string             query              = 2;
+  repeated RawDocPairMsg raw_doc_texts  = 3;
+  int32              K                  = 4;
+  SearchOptionsMsg   options            = 5;
+  string cluster_root = 6;
+}
+
+message SearchShardWithExtrasResponse {
+  int32                          status_code   = 1;
+  string                         error_message = 2;
+  repeated ScoredDocHitWithExtrasMsg hits      = 3;
+}
+
+message IndexTermVectorShardRequest {
+  int32          shard_id  = 1;
+  int64          uid       = 2;
+  repeated float vector    = 3;
+  string cluster_root = 4;
+}
+
+message IndexTermVectorShardResponse {
+  int32  status_code   = 1;
+  string error_message = 2;
+}
+
+message SearchWithVectorShardRequest {
+  int32 shard_id = 1;
+  repeated float vector = 2;
+  int32 K = 3;
+  string cluster_root = 4;
+  string query = 5;
+  SearchOptionsMsg options = 6;
+}
+
+message SearchWithVectorShardResponse {
+  int32  status_code   = 1;
+  string error_message = 2;
+  repeated ScoredDocHitMsg hits = 3;
+}
+
+message CloseShardRequest {
+  int32 shard_id = 1;
+  string cluster_root = 2;
+}
+
+message CloseShardResponse {
+  int32  status_code   = 1;
+  string error_message = 2;
+}
+
+message HeartbeatShardRequest {
+  int64 sent_ts_ms = 1;
+}
+
+message HeartbeatShardResponse {
+  int32  status_code   = 1;
+  string error_message = 2;
+  int64  sent_ts_ms    = 3;
+  int64  recv_ts_ms    = 4;
+}
