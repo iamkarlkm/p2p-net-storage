@@ -16,8 +16,8 @@ import java.lang.reflect.Modifier;
 import java.util.List;
 
 /**
- * P33 T1: TpcHQuery + DslCorpus + BenchmarkReport 骨架。 TR 总数 4：TR1.1 TpcHQuery
- * 22 条全在；TR1.2 DslCorpus 100 条全在；TR1.3 BenchmarkReport 不可变；TR1.4 状态可观测。
+ * P33 T1: TpcHQuery + DslCorpus + BenchmarkReport 骨架。
+ * TR 总数 4：TR1.1 TpcHQuery 22 条全在；TR1.2 DslCorpus 100 条全在；TR1.3 BenchmarkReport 不可变；TR1.4 状态可观测。
  */
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 public class P33_T1_BenchmarkSkeletonTest {
@@ -28,6 +28,7 @@ public class P33_T1_BenchmarkSkeletonTest {
     }
 
     // ============== TR1.1 TpcHQuery 22 条全在 ==============
+
     @Test(timeout = 30000)
     public void tr1_1_TpcHQuery_Has22Queries() {
         Assert.assertEquals("COUNT should be 22", 22, TpcHQuery.COUNT);
@@ -45,29 +46,14 @@ public class P33_T1_BenchmarkSkeletonTest {
                     TpcHQuery.get(Integer.parseInt(name.substring(1)) - 1), q);
         }
         // 边界检查
-        try {
-            TpcHQuery.get(-1);
-            Assert.fail("expected IOOBE");
-        } catch (IndexOutOfBoundsException expected) {
-        }
-        try {
-            TpcHQuery.get(22);
-            Assert.fail("expected IOOBE");
-        } catch (IndexOutOfBoundsException expected) {
-        }
-        try {
-            TpcHQuery.getByName("Q23");
-            Assert.fail("expected IAE");
-        } catch (IllegalArgumentException expected) {
-        }
-        try {
-            TpcHQuery.getByName(null);
-            Assert.fail("expected NPE");
-        } catch (NullPointerException expected) {
-        }
+        try { TpcHQuery.get(-1); Assert.fail("expected IOOBE"); } catch (IndexOutOfBoundsException expected) { }
+        try { TpcHQuery.get(22); Assert.fail("expected IOOBE"); } catch (IndexOutOfBoundsException expected) { }
+        try { TpcHQuery.getByName("Q23"); Assert.fail("expected IAE"); } catch (IllegalArgumentException expected) { }
+        try { TpcHQuery.getByName(null); Assert.fail("expected NPE"); } catch (NullPointerException expected) { }
     }
 
     // ============== TR1.2 DslCorpus 100 条全在 ==============
+
     @Test(timeout = 30000)
     public void tr1_2_DslCorpus_Has100Queries() {
         Assert.assertEquals("COUNT should be 100", 100, DslCorpus.COUNT);
@@ -82,22 +68,14 @@ public class P33_T1_BenchmarkSkeletonTest {
         try {
             all.set(0, "x");
             Assert.fail("expected UnsupportedOperationException");
-        } catch (UnsupportedOperationException expected) {
-            /* OK */ }
+        } catch (UnsupportedOperationException expected) { /* OK */ }
         // 边界
-        try {
-            DslCorpus.get(-1);
-            Assert.fail("expected IOOBE");
-        } catch (IndexOutOfBoundsException expected) {
-        }
-        try {
-            DslCorpus.get(100);
-            Assert.fail("expected IOOBE");
-        } catch (IndexOutOfBoundsException expected) {
-        }
+        try { DslCorpus.get(-1); Assert.fail("expected IOOBE"); } catch (IndexOutOfBoundsException expected) { }
+        try { DslCorpus.get(100); Assert.fail("expected IOOBE"); } catch (IndexOutOfBoundsException expected) { }
     }
 
     // ============== TR1.3 BenchmarkReport 不可变 ==============
+
     @Test(timeout = 30000)
     public void tr1_3_BenchmarkReport_Immutable_And_Validation() {
         // 合法构造
@@ -112,31 +90,11 @@ public class P33_T1_BenchmarkSkeletonTest {
         Assert.assertTrue("acceptable for low P50/P95 + high recall", r.isAcceptable());
 
         // 越界校验
-        try {
-            new BenchmarkReport(-1, 0, 0, 0, "a", 0);
-            Assert.fail("expected IAE");
-        } catch (IllegalArgumentException expected) {
-        }
-        try {
-            new BenchmarkReport(0, -1, 0, 0, "a", 0);
-            Assert.fail("expected IAE");
-        } catch (IllegalArgumentException expected) {
-        }
-        try {
-            new BenchmarkReport(0, 0, 1.5, 0, "a", 0);
-            Assert.fail("expected IAE");
-        } catch (IllegalArgumentException expected) {
-        }
-        try {
-            new BenchmarkReport(0, 0, 0, -1, "a", 0);
-            Assert.fail("expected IAE");
-        } catch (IllegalArgumentException expected) {
-        }
-        try {
-            new BenchmarkReport(0, 0, 0, 0, null, 0);
-            Assert.fail("expected NPE");
-        } catch (NullPointerException expected) {
-        }
+        try { new BenchmarkReport(-1, 0, 0, 0, "a", 0); Assert.fail("expected IAE"); } catch (IllegalArgumentException expected) { }
+        try { new BenchmarkReport(0, -1, 0, 0, "a", 0); Assert.fail("expected IAE"); } catch (IllegalArgumentException expected) { }
+        try { new BenchmarkReport(0, 0, 1.5, 0, "a", 0); Assert.fail("expected IAE"); } catch (IllegalArgumentException expected) { }
+        try { new BenchmarkReport(0, 0, 0, -1, "a", 0); Assert.fail("expected IAE"); } catch (IllegalArgumentException expected) { }
+        try { new BenchmarkReport(0, 0, 0, 0, null, 0); Assert.fail("expected NPE"); } catch (NullPointerException expected) { }
 
         // 不可变：final 字段
         for (java.lang.reflect.Field f : BenchmarkReport.class.getDeclaredFields()) {
@@ -152,6 +110,7 @@ public class P33_T1_BenchmarkSkeletonTest {
     }
 
     // ============== TR1.4 状态可观测 + BenchmarkRunner 工具方法 ==============
+
     @Test(timeout = 30000)
     public void tr1_4_StateObservability_And_Utils() {
         // percentile（nearest-rank：idx = ceil(N*p) - 1）
@@ -164,11 +123,8 @@ public class P33_T1_BenchmarkSkeletonTest {
         Assert.assertEquals(100.0, BenchmarkRunner.percentile(sorted, 1.0), 1e-9);
         // p=0.0 → idx=ceil(0)-1=-1 → clamped 0 → sorted[0]=10
         Assert.assertEquals(10.0, BenchmarkRunner.percentile(sorted, 0.0), 1e-9);
-        try {
-            BenchmarkRunner.percentile(sorted, 1.5);
-            Assert.fail("expected IAE");
-        } catch (IllegalArgumentException expected) {
-        }
+        try { BenchmarkRunner.percentile(sorted, 1.5); Assert.fail("expected IAE"); }
+        catch (IllegalArgumentException expected) { }
         // 空数组
         Assert.assertEquals(0.0, BenchmarkRunner.percentile(new double[0], 0.5), 1e-9);
 

@@ -185,4 +185,101 @@ public class DsMemoryBulkArrayTest {
             dest[i] = (int) mem.loadU32ByOffset(position + (long) i * 4L);
         }
     }
+
+    private static void storeBytesOneByOne(DsMemory mem, long position, byte[] src) {
+        for (int i = 0; i < src.length; i++) {
+            mem.storeByteOffset(position + i, src[i]);
+        }
+    }
+
+    @Test
+    public void shouldRoundTripBytesWithinSingleBlock() {
+        DsMemory mem = open(64, 16);
+        try {
+            int block = 64 * 1024;
+            int len = 2048;
+            byte[] original = new byte[len];
+            Random r = new Random(2026092201L);
+            r.nextBytes(original);
+            long position = block / 2L - 1024L;
+            storeBytesOneByOne(mem, position, original);
+            byte[] loaded = new byte[len];
+            mem.loadBytesOffset(position, loaded, 0, len);
+            Assert.assertArrayEquals("bytes within single block (dest 0+len)", original, loaded);
+        } finally {
+            mem.syncStore();
+        }
+    }
+
+    @Test
+    public void shouldRoundTripBytesAcrossTwoBlocks() {
+        DsMemory mem = open(64, 16);
+        try {
+            int block = 64 * 1024;
+            int len = 200;
+            byte[] original = new byte[len];
+            Random r = new Random(2026092202L);
+            r.nextBytes(original);
+            long position = block - 100L;
+            storeBytesOneByOne(mem, position, original);
+            byte[] loaded = new byte[len + 16];
+            mem.loadBytesOffset(position, loaded, 8, len);
+            byte[] sliced = new byte[len];
+            System.arraycopy(loaded, 8, sliced, 0, len);
+            Assert.assertArrayEquals("bytes across two blocks (destOffset=8, len=200)", original, sliced);
+        } finally {
+            mem.syncStore();
+        }
+    }
+
+    @Test
+    public void shouldRoundTripBytesAcrossThreeOrMoreBlocks() {
+        DsMemory mem = open(64, 16);
+        try {
+            int block = 64 * 1024;
+            int len = 2 * block + 200;
+            byte[] original = new byte[len];
+            Random r = new Random(2026092203L);
+            r.nextBytes(original);
+            long position = block - 50L;
+            storeBytesOneByOne(mem, position, original);
+            byte[] loaded = new byte[len];
+            mem.loadBytesOffset(position, loaded);
+            Assert.assertArrayEquals("bytes across 3+ blocks (len=131272)", original, loaded);
+        } finally {
+            mem.syncStore();
+        }
+    }
+
+    @Test
+    public void shouldRoundTripBytesViaSymmetricStoreBytesOffset() {
+        DsMemory mem = open(64, 16);
+        try {
+            int block = 64 * 1024;
+            int len = 2 * block + 200;
+            byte[] original = new byte[len];
+            Random r = new Random(2026092204L);
+            r.nextBytes(original);
+            long position = block - 50L;
+            mem.storeBytesOffset(position, original);
+            byte[] loaded = new byte[len + 64];
+            mem.loadBytesOffset(position, loaded, 32, len);
+            byte[] sliced = new byte[len];
+            System.arraycopy(loaded, 32, sliced, 0, len);
+            Assert.assertArrayEquals("storeBytesOffset -> loadBytesOffset symmetric (destOffset 32)", original, sliced);
+        } finally {
+            mem.syncStore();
+        }
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectInvalidDestBounds() {
+        DsMemory mem = open(64, 16);
+        try {
+            byte[] dest = new byte[100];
+            mem.loadBytesOffset(0L, dest, 80, 30);
+        } finally {
+            mem.syncStore();
+        }
+    }
 }

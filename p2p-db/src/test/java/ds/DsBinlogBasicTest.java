@@ -251,4 +251,71 @@ public class DsBinlogBasicTest {
             assertEquals(12L, s2Seq.get());  // 2+4+6
         }
     }
+
+    @Test
+    public void testCheckpointFrame() throws Exception {
+        try (DsBinlogStore store = new DsBinlogStore(tmpDir.toFile(), false)) {
+            long o1 = store.append(DsBinlogOpType.INSERT, 1, 1, 1, 0, new int[]{0}, new Object[]{(short) 1});
+            long o2 = store.append(DsBinlogOpType.INSERT, 1, 2, 1, 0, new int[]{0}, new Object[]{(short) 2});
+            long cp = store.appendCheckpoint(1, 3L, 2L, 0L, true, false);
+            assertEquals(512L, cp); // 第三帧，从 0 起算
+            store.forceFlushAll();
+
+            List<DsBinlogEntry> list = new ArrayList<>();
+            store.replayAll((off, e) -> { list.add(e); return true; });
+            assertEquals(3, list.size());
+
+            DsBinlogEntry cpEntry = list.get(2);
+            assertEquals(DsBinlogOpType.CHECKPOINT, cpEntry.opType());
+            assertTrue((cpEntry.flags() & DsBinlogLayout.FLAG_BIT_COMMIT_DURABLE) != 0);
+            assertTrue((cpEntry.flags() & DsBinlogLayout.FLAG_BIT_REPLAY_DURABLE) == 0);
+            long[] seqs = cpEntry.decodeCheckpointSequences(null);
+            assertNotNull(seqs);
+            assertEquals(2L, seqs[0]);
+            assertEquals(0L, seqs[1]);
+
+            long cp2 = store.appendCheckpoint(1, 4L, 2L, 2L, true, true);
+            assertEquals(768L, cp2);
+            store.forceFlushAll();
+
+            list.clear();
+            store.replayAll((off, e) -> { list.add(e); return true; });
+            assertEquals(4, list.size());
+            DsBinlogEntry cpEntry2 = list.get(3);
+            assertTrue((cpEntry2.flags() & DsBinlogLayout.FLAG_BIT_COMMIT_DURABLE) != 0);
+            assertTrue((cpEntry2.flags() & DsBinlogLayout.FLAG_BIT_REPLAY_DURABLE) != 0);
+            long[] seqs2 = cpEntry2.decodeCheckpointSequences(null);
+            assertEquals(2L, seqs2[0]);
+            assertEquals(2L, seqs2[1]);
+        }
+    }
+
+    @Test
+    public void testCheckpointFileSaveLoad() throws Exception {
+        try (DsBinlogStore store = new DsBinlogStore(tmpDir.toFile(), false)) {
+            store.append(DsBinlogOpType.INSERT, 1, 1, 1, 0, new int[]{0}, new Object[]{(short) 1});
+            DsBinlogPosition pos = store.getCurrentPosition();
+            long offset = store.writeAndSaveCheckpoint(1, 2L, 1L, 0L, true, false);
+
+            DsBinlogCheckpoint loaded = store.loadCheckpoint();
+            assertNotNull(loaded);
+            assertEquals(pos.dayKey(), loaded.dayKey());
+            assertEquals(offset, loaded.fixedOffset());
+            assertEquals(2L, loaded.sequence());
+            assertEquals(1L, loaded.committedSequence());
+            assertEquals(0L, loaded.replayedSequence());
+            assertTrue(loaded.isValid());
+            assertEquals(pos.dayKey(), loaded.toPosition().dayKey());
+            assertEquals(offset, loaded.toPosition().fixedOffset());
+        }
+
+        // 重新打开 store，checkpoint 文件仍然可读
+        try (DsBinlogStore store2 = new DsBinlogStore(tmpDir.toFile(), false)) {
+            DsBinlogCheckpoint loaded = store2.loadCheckpoint();
+            assertNotNull(loaded);
+            assertEquals(2L, loaded.sequence());
+            assertEquals(1L, loaded.committedSequence());
+            assertTrue(loaded.isValid());
+        }
+    }
 }

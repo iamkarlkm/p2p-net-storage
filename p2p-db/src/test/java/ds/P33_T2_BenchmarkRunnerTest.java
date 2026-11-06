@@ -12,8 +12,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 /**
- * P33 T2: BenchmarkRunner 编排正确性。 TR 总数 6：TR2.1 warmup 跳过前 10%；TR2.2 measure 收集
- * P50/P95；TR2.3 Recall 计算； TR2.4 指纹 SHA-256 稳定；TR2.5 异常上报；TR2.6 Report 序列化。
+ * P33 T2: BenchmarkRunner 编排正确性。
+ * TR 总数 6：TR2.1 warmup 跳过前 10%；TR2.2 measure 收集 P50/P95；TR2.3 Recall 计算；
+ *         TR2.4 指纹 SHA-256 稳定；TR2.5 异常上报；TR2.6 Report 序列化。
  */
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 public class P33_T2_BenchmarkRunnerTest {
@@ -40,6 +41,7 @@ public class P33_T2_BenchmarkRunnerTest {
     }
 
     // ============== TR2.1 warmup 跳过前 10% ==============
+
     @Test(timeout = 60000)
     public void tr2_1_Warmup_Skips10Percent() {
         // warmup = max(2, 22/10) = 2 → measureTpcH 22 + measureDsl 100 + resilience 20 = 142 次
@@ -54,6 +56,7 @@ public class P33_T2_BenchmarkRunnerTest {
     }
 
     // ============== TR2.2 measure 收集 P50/P95 ==============
+
     @Test(timeout = 60000)
     public void tr2_2_Measure_CollectsP50P95() {
         BenchmarkReport r = BenchmarkRunner.runWithHooks(mockHook(5), null);
@@ -64,6 +67,7 @@ public class P33_T2_BenchmarkRunnerTest {
     }
 
     // ============== TR2.3 Recall 计算 ==============
+
     @Test(timeout = 30000)
     public void tr2_3_RecallComputation() {
         BenchmarkReport r = BenchmarkRunner.runWithHooks(mockHook(1), null);
@@ -71,6 +75,7 @@ public class P33_T2_BenchmarkRunnerTest {
     }
 
     // ============== TR2.4 指纹 SHA-256 稳定 ==============
+
     @Test(timeout = 60000)
     public void tr2_4_Fingerprint_SHA256_Stable() {
         Function<String, Object> hook = new Function<String, Object>() {
@@ -87,6 +92,7 @@ public class P33_T2_BenchmarkRunnerTest {
     }
 
     // ============== TR2.5 异常上报 ==============
+
     @Test(timeout = 60000)
     public void tr2_5_Exception_ReportedGracefully() {
         Function<String, Object> hook = new Function<String, Object>() {
@@ -101,6 +107,7 @@ public class P33_T2_BenchmarkRunnerTest {
     }
 
     // ============== TR2.6 Report 序列化 ==============
+
     @Test(timeout = 30000)
     public void tr2_6_Report_Serializable() {
         BenchmarkReport r = new BenchmarkReport(100.0, 500.0, 0.90, 300.0,

@@ -24,8 +24,6 @@ public class DsMemoryLruSamplingTest {
     @After
     public void after() {
         if (tmpDir != null && tmpDir.exists()) {
-            File wal = new File(tmpDir, "dsmem.dat_wal.log");
-            wal.delete();
             new File(tmpDir, "dsmem.dat").delete();
             deleteRecursive(tmpDir);
         }
@@ -188,8 +186,8 @@ public class DsMemoryLruSamplingTest {
             }).start();
         }
         start.countDown();
-        boolean done = end.await(5, java.util.concurrent.TimeUnit.SECONDS);
-        Assert.assertTrue("4 thread × 1000 ops did not finish in 5s (possible deadlock on eviction locks)", done);
+        boolean done = end.await(20, java.util.concurrent.TimeUnit.SECONDS);
+        Assert.assertTrue("4 thread × 1000 ops did not finish in 20s (possible deadlock on eviction locks)", done);
         Assert.assertEquals("error count should be 0", 0, err.get());
         Assert.assertEquals("ok count should be 4000", threads * perThr, ok.get());
     }

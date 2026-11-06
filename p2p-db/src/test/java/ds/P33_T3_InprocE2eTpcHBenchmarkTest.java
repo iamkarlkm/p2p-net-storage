@@ -110,16 +110,14 @@ public class P33_T3_InprocE2eTpcHBenchmarkTest {
         try {
             if (hjc != null) {
                 hjc.close();
-
-            }
-        } catch (Exception ignore) {
+        
+            }} catch (Exception ignore) {
         }
         try {
             if (ftClient != null) {
                 ftClient.close();
-
-            }
-        } catch (Exception ignore) {
+        
+            }} catch (Exception ignore) {
         }
         try {
             DsDatabaseLocal.forceResetAllIndexesForTest(tmpRoot);
@@ -131,8 +129,8 @@ public class P33_T3_InprocE2eTpcHBenchmarkTest {
         }
         deleteRecursive(tmpRoot);
         if (oldHome == null) {
-            System.clearProperty("p2p.db.home");
-        } else {
+            System.clearProperty("p2p.db.home"); 
+        }else {
             System.setProperty("p2p.db.home", oldHome);
         }
     }

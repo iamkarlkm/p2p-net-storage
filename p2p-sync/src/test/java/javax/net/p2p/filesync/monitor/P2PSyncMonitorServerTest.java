@@ -25,6 +25,11 @@ import javax.net.p2p.filesync.sync.rpc.MultiEndpointRpcSyncEventHandler;
 import org.junit.Assert;
 import org.junit.Test;
 
+import com.q3lives.ds.cluster.DsClusterMonitor;
+import com.q3lives.ds.cluster.DsNodeContext;
+import com.q3lives.ds.cluster.DsServerDirectory;
+import com.q3lives.ds.database.columnar.DsPartitionManager;
+
 
 public class P2PSyncMonitorServerTest {
 
@@ -727,6 +732,83 @@ public class P2PSyncMonitorServerTest {
                 Assert.assertTrue(queuesJson.contains("RETRY_REPLICAS_BY_CATEGORY success=true"));
                 Assert.assertTrue(queuesJson.contains("DISCARD_REPLICAS_BY_CATEGORY success=true"));
             }
+        }
+    }
+
+    @Test
+    public void shouldExposeDbClusterSnapshotWhenDirectoryRegistered() throws Exception {
+        Path nodeHome = Files.createTempDirectory("p2p_sync_monitor_db_cluster_node_");
+        try (DsPartitionManager manager = new DsPartitionManager(nodeHome.toFile(), 4, new String[0])) {
+            DsNodeContext.register(1, manager);
+            DsClusterMonitor.registerDirectory(new DsServerDirectory() {
+                @Override
+                public int[] listServerIds() {
+                    return new int[] { 1 };
+                }
+
+                @Override
+                public Endpoint endpoint(int serverId) {
+                    if (serverId == 1) {
+                        return new Endpoint("127.0.0.1", 20011, 16);
+                    }
+                    return null;
+                }
+            });
+            manager.getStore(0);
+
+            Path root = Files.createTempDirectory("p2p_sync_monitor_db_cluster_root_");
+            Path state = Files.createTempDirectory("p2p_sync_monitor_db_cluster_state_");
+            P2PSyncConfig cfg = new P2PSyncConfig();
+            cfg.setTaskId(300L);
+            cfg.setLocalDir(root.toString());
+            cfg.setDsHome(state.toString());
+            cfg.setMaxRetryCount(3);
+            cfg.setRetryBackoffMillis(2500L);
+
+            try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, null);
+                 P2PSyncMonitorServer server = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
+                svc.start();
+                server.start();
+
+                String json = send("GET", "http://127.0.0.1:" + server.getPort() + "/sync/api/db-cluster", null);
+                Assert.assertTrue(json.contains("\"ok\":true"));
+                Assert.assertTrue(json.contains("\"serverId\":1"));
+                Assert.assertTrue(json.contains("\"host\":\"127.0.0.1\""));
+                Assert.assertTrue(json.contains("\"port\":20011"));
+                Assert.assertTrue(json.contains("\"queueSize\":16"));
+                Assert.assertTrue(json.contains("\"localServerIds\":[1]"));
+                Assert.assertTrue(json.contains("\"partitionCount\":4"));
+                Assert.assertTrue(json.contains("\"occupiedPartitions\":1"));
+                Assert.assertTrue(json.contains("\"partitionId\":0"));
+                Assert.assertTrue(json.contains("\"initialized\":true"));
+                Assert.assertTrue(json.contains("\"occupied\":true"));
+            }
+        } finally {
+            DsClusterMonitor.clear();
+            DsNodeContext.clear();
+        }
+    }
+
+    @Test
+    public void shouldReturnEmptyDbClusterSnapshotWhenDirectoryNotRegistered() throws Exception {
+        Path root = Files.createTempDirectory("p2p_sync_monitor_db_cluster_unregistered_root_");
+        Path state = Files.createTempDirectory("p2p_sync_monitor_db_cluster_unregistered_state_");
+        P2PSyncConfig cfg = new P2PSyncConfig();
+        cfg.setTaskId(301L);
+        cfg.setLocalDir(root.toString());
+        cfg.setDsHome(state.toString());
+        cfg.setMaxRetryCount(3);
+        cfg.setRetryBackoffMillis(2500L);
+
+        try (P2PDirectorySyncService svc = new P2PDirectorySyncService(cfg, null);
+             P2PSyncMonitorServer server = new P2PSyncMonitorServer(svc, new InetSocketAddress("127.0.0.1", 0))) {
+            svc.start();
+            server.start();
+
+            String json = send("GET", "http://127.0.0.1:" + server.getPort() + "/sync/api/db-cluster", null);
+            Assert.assertTrue(json.contains("\"ok\":false"));
+            Assert.assertTrue(json.contains("DsServerDirectory not registered"));
+            Assert.assertTrue(json.contains("\"servers\":[]"));
         }
     }
 

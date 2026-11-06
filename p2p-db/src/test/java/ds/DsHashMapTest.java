@@ -1,18 +1,21 @@
 package ds;
 
-import com.q3lives.ds.collections.DsHashMap;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-
 import java.io.File;
 import java.io.IOException;
-import lombok.extern.slf4j.Slf4j;
 
-import static org.junit.Assert.*;
+import org.junit.After;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import org.junit.Before;
+import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-@Slf4j
+import com.q3lives.ds.collections.DsHashMap;
+
 public class DsHashMapTest {
+    private static final Logger log = LoggerFactory.getLogger(DsHashMapTest.class);
 
     private DsHashMap dsHashMap;
     private File dataFile;
@@ -214,6 +217,67 @@ public class DsHashMapTest {
             log.info("内存占用: {} MB", memoryUsed / (1024 * 1024));
             log.info("GC次数: {}", gcCount);
         }
+    }
+
+    @Test
+    public void testLargeKeyCollision() throws Exception {
+        dsHashMap.clear();
+        long[] keys = {
+                432345564227567616L,
+                432345564227567618L,
+                432345564227567620L,
+                432345564227567623L
+        };
+        for (int i = 0; i < keys.length; i++) {
+            Long old = dsHashMap.put(keys[i], keys[i] * 10 + i);
+            System.out.println("put key=" + keys[i] + " old=" + old);
+        }
+        for (long key : keys) {
+            Long v = dsHashMap.get(key);
+            System.out.println("get key=" + key + " -> " + v);
+            assertNotNull("key=" + key + " should exist", v);
+        }
+    }
+
+    @Test
+    public void testLargeKeySmallValues() throws Exception {
+        dsHashMap.clear();
+        long[] keys = {
+                432345564227567616L,
+                432345564227567618L,
+                432345564227567620L,
+                432345564227567623L
+        };
+        for (int i = 0; i < keys.length; i++) {
+            Long old = dsHashMap.put(keys[i], i + 1L);
+            System.out.println("put key=" + keys[i] + " value=" + (i + 1) + " old=" + old);
+        }
+        for (long key : keys) {
+            Long v = dsHashMap.get(key);
+            System.out.println("get key=" + key + " -> " + v);
+            assertNotNull("key=" + key + " should exist", v);
+        }
+    }
+
+    @Test
+    public void testLargeKeySmallValuesWithUpdate() throws Exception {
+        dsHashMap.clear();
+        long[] keys = {
+                432345564227567616L,
+                432345564227567618L,
+                432345564227567620L,
+                432345564227567623L
+        };
+        for (int i = 0; i < keys.length; i++) {
+            dsHashMap.put(keys[i], i + 1L);
+        }
+        dsHashMap.put(keys[0], 100L);
+        for (long key : keys) {
+            Long v = dsHashMap.get(key);
+            System.out.println("get key=" + key + " -> " + v);
+            assertNotNull("key=" + key + " should exist", v);
+        }
+        assertEquals("updated key0", 100L, dsHashMap.get(keys[0]).longValue());
     }
 
 

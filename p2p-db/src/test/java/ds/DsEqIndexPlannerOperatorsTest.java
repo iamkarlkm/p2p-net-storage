@@ -217,6 +217,95 @@ public class DsEqIndexPlannerOperatorsTest {
     }
 
     @Test
+    public void testOrBranchWithRange() throws Exception {
+        GenericManager<OpUser> m = new GenericManager<>(OpUser.class);
+        m.saveOrUpdate(u("a", 25, 500L, "shanghai"));
+        m.saveOrUpdate(u("b", 30, 850L, "shanghai"));
+        m.saveOrUpdate(u("c", 35, 700L, "guangzhou"));
+        m.saveOrUpdate(u("d", 40, 900L, "shanghai"));
+        m.saveOrUpdate(u("e", 28, 800L, "beijing"));
+
+        QueryWrapper<OpUser> w = m.buildQueryWrapper();
+        w.eq("city", "shanghai");
+        QueryWrapper<OpUser> orAge = m.buildQueryWrapper();
+        orAge.gt("age", 30);
+        QueryWrapper<OpUser> orScore = m.buildQueryWrapper();
+        orScore.gt("score", 800L);
+        w.or(orAge);
+        w.or(orScore);
+
+        List<OpUser> list = m.findList(w);
+        Assert.assertEquals(2, list.size());
+        for (OpUser u : list) {
+            Assert.assertEquals("shanghai", u.city);
+            Assert.assertTrue(u.age > 30 || u.score > 800L);
+        }
+    }
+
+    @Test
+    public void testNestedOrBranchDnf() throws Exception {
+        GenericManager<OpUser> m = new GenericManager<>(OpUser.class);
+        m.saveOrUpdate(u("a", 25, 500L, "shanghai"));
+        m.saveOrUpdate(u("b", 30, 800L, "shanghai"));
+        m.saveOrUpdate(u("c", 35, 900L, "shanghai"));
+        m.saveOrUpdate(u("d", 40, 700L, "beijing"));
+
+        QueryWrapper<OpUser> w = m.buildQueryWrapper();
+        w.eq("city", "shanghai");
+
+        QueryWrapper<OpUser> inner = m.buildQueryWrapper();
+        QueryWrapper<OpUser> orAge = m.buildQueryWrapper();
+        orAge.eq("age", 25);
+        QueryWrapper<OpUser> orScore = m.buildQueryWrapper();
+        orScore.gt("score", 800L);
+        inner.or(orAge);
+        inner.or(orScore);
+
+        w.or(inner);
+
+        List<OpUser> list = m.findList(w);
+        Assert.assertEquals(2, list.size());
+        for (OpUser u : list) {
+            Assert.assertEquals("shanghai", u.city);
+            Assert.assertTrue(u.age == 25 || u.score > 800L);
+        }
+    }
+
+    @Test
+    public void testOrBranchDedup() throws Exception {
+        GenericManager<OpUser> m = new GenericManager<>(OpUser.class);
+        m.saveOrUpdate(u("a", 25, 500L, "shanghai"));
+        m.saveOrUpdate(u("b", 30, 600L, "beijing"));
+
+        QueryWrapper<OpUser> w = m.buildQueryWrapper();
+        QueryWrapper<OpUser> or1 = m.buildQueryWrapper();
+        or1.eq("age", 25);
+        QueryWrapper<OpUser> or2 = m.buildQueryWrapper();
+        or2.eq("city", "shanghai");
+        w.or(or1);
+        w.or(or2);
+
+        List<OpUser> list = m.findList(w);
+        Assert.assertEquals(1, list.size());
+        Assert.assertEquals("a", list.get(0).name);
+    }
+
+    @Test
+    public void testContradictionReturnsEmpty() throws Exception {
+        GenericManager<OpUser> m = new GenericManager<>(OpUser.class);
+        m.saveOrUpdate(u("a", 25, 500L, "shanghai"));
+        m.saveOrUpdate(u("b", 30, 600L, "beijing"));
+
+        QueryWrapper<OpUser> w = m.buildQueryWrapper();
+        w.eq("age", 25);
+        w.eq("age", 30);
+
+        List<OpUser> list = m.findList(w);
+        Assert.assertEquals(0, list.size());
+        Assert.assertEquals(0, m.count(w));
+    }
+
+    @Test
     public void testCountEmptyWrapper() throws Exception {
         GenericManager<OpUser> m = new GenericManager<>(OpUser.class);
         m.saveOrUpdate(u("a", 25, 500L, "shanghai"));
@@ -282,5 +371,28 @@ public class DsEqIndexPlannerOperatorsTest {
 
         List<OpUser> list = m.findList(w);
         Assert.assertEquals(2, list.size());
+    }
+
+    @Test
+    public void testExistsCorrelatedByOuterField() throws Exception {
+        GenericManager<OpUser> m = new GenericManager<>(OpUser.class);
+        GenericManager<OpOrder> om = new GenericManager<>(OpOrder.class);
+
+        OpUser u1 = u("a", 25, 100L, "shanghai");
+        m.saveOrUpdate(u1);
+        OpUser u2 = u("b", 30, 200L, "beijing");
+        m.saveOrUpdate(u2);
+
+        om.saveOrUpdate(o(u1.getId(), 1));
+        om.saveOrUpdate(o(100L, 2)); // userId 等于 u1.score
+
+        QueryWrapper<OpUser> w = m.buildQueryWrapper();
+        QueryWrapper<OpOrder> sub = new QueryWrapper<>();
+        sub.eq("status", 2);
+        w.exists(OpOrder.class, "user_id", "score", sub);
+
+        List<OpUser> list = m.findList(w);
+        Assert.assertEquals(1, list.size());
+        Assert.assertEquals(u1.getId(), list.get(0).getId());
     }
 }

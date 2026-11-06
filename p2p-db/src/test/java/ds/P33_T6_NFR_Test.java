@@ -15,9 +15,12 @@ import java.util.Set;
 import java.util.function.Function;
 
 /**
- * P33 T6: NFR 5 TR. TR6.1 benchmark P95 ≤ 80s 30× TR6.2 4 类 Javadoc ≥ 10 行
- * TR6.3 CPD dup ≤ 1（160 token） TR6.4 0 println/printStackTrace + ≥8 IAE TR6.5 4
- * 报表字段 6 场景 20× 100%
+ * P33 T6: NFR 5 TR.
+ * TR6.1 benchmark P95 ≤ 80s 30×
+ * TR6.2 4 类 Javadoc ≥ 10 行
+ * TR6.3 CPD dup ≤ 1（160 token）
+ * TR6.4 0 println/printStackTrace + ≥8 IAE
+ * TR6.5 4 报表字段 6 场景 20× 100%
  */
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 public class P33_T6_NFR_Test {
@@ -25,6 +28,7 @@ public class P33_T6_NFR_Test {
     private static final String PKG_BENCHMARK = "com/q3lives/ds/database/fulltext/cluster/benchmark";
 
     // ============== TR6.1 benchmark P95 ≤ 80s 30× ==============
+
     @Test(timeout = 180000)
     public void tr6_1_BenchmarkP95_Under80s() throws Exception {
         int RUNS = 30;
@@ -41,6 +45,7 @@ public class P33_T6_NFR_Test {
     }
 
     // ============== TR6.2 4 类 Javadoc ≥ 10 行 ==============
+
     @Test(timeout = 30000)
     public void tr6_2_FourClassesJavadocAtLeast10Lines() throws Exception {
         File srcRoot = new File(System.getProperty("user.dir"), "src/main/java");
@@ -56,15 +61,14 @@ public class P33_T6_NFR_Test {
             while (m.find()) {
                 String body = m.group(1);
                 int lines = body.split("\n").length;
-                if (lines > maxLines) {
-                    maxLines = lines;
-                }
+                if (lines > maxLines) maxLines = lines;
             }
             Assert.assertTrue(cn + " Javadoc should have at least 10 lines, got " + maxLines, maxLines >= 10);
         }
     }
 
     // ============== TR6.3 CPD dup ≤ 1 (160 token) ==============
+
     @Test(timeout = 30000)
     public void tr6_3_NoCopyPasteDuplication() throws Exception {
         File srcRoot = new File(System.getProperty("user.dir"), "src/main/java");
@@ -72,9 +76,7 @@ public class P33_T6_NFR_Test {
         java.util.List<String> bodies = new java.util.ArrayList<>();
         for (String cn : coreClasses) {
             File javaFile = new File(srcRoot, PKG_BENCHMARK.replace("/", File.separator) + File.separator + cn + ".java");
-            if (!javaFile.exists()) {
-                continue;
-            }
+            if (!javaFile.exists()) continue;
             String content = new String(java.nio.file.Files.readAllBytes(javaFile.toPath()),
                     java.nio.charset.StandardCharsets.UTF_8);
             content = content.replaceAll("/\\*\\*([\\s\\S]*?)\\*/", "");
@@ -90,9 +92,7 @@ public class P33_T6_NFR_Test {
                 int totalChecked = 0;
                 for (int s = 0; s + 160 <= a.length() && totalChecked < 5; s += Math.max(1, a.length() / 10)) {
                     String window = a.substring(s, s + 160);
-                    if (b.contains(window)) {
-                        hitCount++;
-                    }
+                    if (b.contains(window)) hitCount++;
                     totalChecked++;
                 }
                 if (hitCount >= 3) {
@@ -104,6 +104,7 @@ public class P33_T6_NFR_Test {
     }
 
     // ============== TR6.4 0 println/printStackTrace + ≥8 IAE ==============
+
     @Test(timeout = 30000)
     public void tr6_4_NoStdoutPrint_AtLeast8IAE() throws Exception {
         File srcRoot = new File(System.getProperty("user.dir"), "src/main/java");
@@ -127,6 +128,7 @@ public class P33_T6_NFR_Test {
     }
 
     // ============== TR6.5 4 报表字段 6 场景 20× 100% ==============
+
     @Test(timeout = 60000)
     public void tr6_5_FourReportFieldsSixScenes_100Percent() {
         int RUNS = 20;
@@ -135,9 +137,7 @@ public class P33_T6_NFR_Test {
         for (int i = 0; i < RUNS; i++) {
             BenchmarkReport r = new BenchmarkReport(100.0, 200.0, 0.9, 50.0,
                     "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 1.0);
-            if (r.getTpcHP50Ms() <= r.getTpcHP95Ms()) {
-                s1++;
-            }
+            if (r.getTpcHP50Ms() <= r.getTpcHP95Ms()) s1++;
         }
         Assert.assertTrue("P50 ≤ P95 scene should pass 100%, got " + s1, s1 == RUNS);
 
@@ -147,9 +147,7 @@ public class P33_T6_NFR_Test {
             double recall = (double) i / RUNS;
             BenchmarkReport r = new BenchmarkReport(0.0, 0.0, recall, 0.0,
                     "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 0.0);
-            if (r.getTpcHRecallAt10() >= 0.0 && r.getTpcHRecallAt10() <= 1.0) {
-                s2++;
-            }
+            if (r.getTpcHRecallAt10() >= 0.0 && r.getTpcHRecallAt10() <= 1.0) s2++;
         }
         Assert.assertTrue("Recall range scene should pass 100%, got " + s2, s2 == RUNS);
 
@@ -159,9 +157,7 @@ public class P33_T6_NFR_Test {
             // 64-char hex (SHA-256)
             String fp = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
             BenchmarkReport r = new BenchmarkReport(0.0, 0.0, 0.5, 0.0, fp, 0.0);
-            if (r.getDslFingerprint().length() == 64) {
-                s3++;
-            }
+            if (r.getDslFingerprint().length() == 64) s3++;
         }
         Assert.assertTrue("Fingerprint 64-char scene should pass 100%, got " + s3, s3 == RUNS);
 
@@ -170,18 +166,14 @@ public class P33_T6_NFR_Test {
         for (int i = 0; i < RUNS; i++) {
             BenchmarkReport r = new BenchmarkReport(500.0, 2000.0, 0.85, 1000.0,
                     "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 10.0);
-            if (r.isAcceptable()) {
-                s4++;
-            }
+            if (r.isAcceptable()) s4++;
         }
         Assert.assertTrue("Acceptable scene should pass 100%, got " + s4, s4 == RUNS);
 
         // 场景 5: TpcHQuery 22 条与 DslCorpus 100 条
         int s5 = 0;
         for (int i = 0; i < RUNS; i++) {
-            if (TpcHQuery.COUNT == 22 && DslCorpus.COUNT == 100) {
-                s5++;
-            }
+            if (TpcHQuery.COUNT == 22 && DslCorpus.COUNT == 100) s5++;
         }
         Assert.assertTrue("Corpus size scene should pass 100%, got " + s5, s5 == RUNS);
 
@@ -192,9 +184,7 @@ public class P33_T6_NFR_Test {
                     "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", 4.0);
             String s = r.toString();
             if (s.contains("tpcH_p50_ms") && s.contains("tpcH_p95_ms") && s.contains("dsl_fingerprint")
-                    && s.contains("acceptable")) {
-                s6++;
-            }
+                    && s.contains("acceptable")) s6++;
         }
         Assert.assertTrue("ToString scene should pass 100%, got " + s6, s6 == RUNS);
     }
