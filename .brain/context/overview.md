@@ -8,6 +8,7 @@ Primary runtime: `unknown`
 ## Repo Map
 
 - `.brain/`
+- `.trae/`
 - `.vscode/`
 - `docs/`
 - `examples/`

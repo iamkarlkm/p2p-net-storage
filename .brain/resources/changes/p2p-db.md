@@ -1,10 +1,7 @@
 ---
-updated: "2026-05-04T11:35:04Z"
+title: Verification for p2p-db
+updated: "2026-08-25T01:29:40Z"
 ---
-## Verification for ??? p2p-db ?????????
+## Verification for p2p-db backup & restore regression
 
-- `mvn -pl p2p-db "-Dtest=com.q3lives.ds.collections.DsTableAdapterTest" test`
-- `mvn -pl p2p-db "-Dtest=ds.DsFixedBucketStoreCrossBlockZeroFillTest" test`
-- `mvn -pl p2p-db test`
-
-
+- `mvn test -pl p2p-db "-Dtest=com.q3lives.ds.backup.DsIncrementalBackupTest,com.q3lives.ds.backup.DsFullBackupTest" "-Dsurefire.useFile=false"`
