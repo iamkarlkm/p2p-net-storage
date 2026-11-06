@@ -58,3 +58,6 @@ __pycache__/
 # --- 测试运行产生的本地库目录 / 临时调试输出 ---
 dsdb/
 _debug.txt
+
+# --- docs/diagrams 生成期脚手架脚本（一次性 _* 工具）---
+docs/diagrams/_*
