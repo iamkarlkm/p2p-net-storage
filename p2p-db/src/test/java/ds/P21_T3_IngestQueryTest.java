@@ -68,7 +68,7 @@ public class P21_T3_IngestQueryTest {
         Assert.assertTrue("doc1 level>0 单元数非 0", st1.rowsPerLevel[1] > 0);
         Assert.assertTrue("doc2 level>0 单元数非 0", st2.rowsPerLevel[1] > 0);
         Assert.assertTrue("doc3 level>0 单元数非 0", st3.rowsPerLevel[1] > 0);
-        // 每 doc pairsTotal = Σ_level n*(n-1)/2（n≥2 才有 pair）
+        // 每 doc pairsTotal = Σ_{lv≥1} n*(n-1)/2（char 层 level 0 不建 DIST 倒排，n≥2 才有 pair）
         checkPairs(st1);
         checkPairs(st2);
         checkPairs(st3);
@@ -97,11 +97,13 @@ public class P21_T3_IngestQueryTest {
         return true;
     }
     private void checkPairs(IngestStat st) {
+        // char 层（level 0）仅作兜底词解析、不建成对 DIST 倒排，故 pairsTotal 只累计 level ≥ 1
         long calc = 0;
-        for (int n : st.rowsPerLevel) {
+        for (int lv = 1; lv < st.rowsPerLevel.length; lv++) {
+            int n = st.rowsPerLevel[lv];
             if (n >= 2) calc += (long)n * (n-1) / 2L;
         }
-        Assert.assertEquals("doc "+st.docId+" pairsTotal 计算不一致 Σ(n*(n-1)/2)", calc, st.pairsTotal);
+        Assert.assertEquals("doc "+st.docId+" pairsTotal 计算不一致 Σ_{lv≥1}(n*(n-1)/2)", calc, st.pairsTotal);
     }
     private String[] listLevelSeqWords(String text, int level, long docId) throws IOException {
         // 按 (doc, parent=doc*10+level, level) 查 IDX1 seq 升序，取 text 数组

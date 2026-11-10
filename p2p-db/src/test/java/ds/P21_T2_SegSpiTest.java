@@ -13,6 +13,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import com.q3lives.ds.database.HanLpProvider;
 import com.q3lives.ds.database.fulltext.FulltextSegmenter;
 import com.q3lives.ds.database.fulltext.FulltextSegmenter.CutUnit;
 import com.q3lives.ds.database.fulltext.FulltextStore;
@@ -90,5 +91,28 @@ public class P21_T2_SegSpiTest {
         Iterator<CutUnit> ei = seg5.cut(null, 1, opts);
         int cnt = 0; while (ei.hasNext()) { ei.next(); cnt++; }
         Assert.assertTrue("null 切分应空/空迭代："+cnt, cnt <= 1);
+    }
+
+    // T2-TR-2b【REV7】HanLP 可选插件 NG-3 零硬依赖：jar 缺席 → available=false → resolveSegmenter 跳过并 fallback
+    @Test public void tr2b_hanlpOptionalProviderNg3Compliant() throws Exception {
+        HanLpProvider hanlp = new HanLpProvider();
+        Assert.assertEquals("HanLpProvider priority 应为 100", 100, hanlp.priority());
+        FulltextSegmenter.SegOptions opts = FulltextSegmenter.SegOptions.defaults();
+        FulltextSegmenter winner = store.resolveSegmenter();
+        if (hanlp.available()) {
+            // classpath 有 HanLP：priority=100 最高 → 应被选为 winner（生产可选接入生效）
+            Assert.assertEquals("HanLP 可用时应被 resolveSegmenter 选中",
+                HanLpProvider.class.getName(), winner.getClass().getName());
+        } else {
+            // NG-3：p2p-db 不引 HanLP 实依赖 → 本项目 classpath 缺席 → 必须不可用
+            Assert.assertNotEquals("HanLP 缺席时不应选到不可用 provider",
+                HanLpProvider.class.getName(), winner.getClass().getName());
+            // 缺席时 WORD 层切分退回 Seg5，语义与内置一致
+            List<CutUnit> viaHanlp = new ArrayList<>();
+            hanlp.cut("中文字符测试", 1, opts).forEachRemaining(viaHanlp::add);
+            List<CutUnit> viaSeg5 = new ArrayList<>();
+            store.getSeg5Builtin().cut("中文字符测试", 1, opts).forEachRemaining(viaSeg5::add);
+            Assert.assertEquals("HanLP 缺席时 WORD 层应退回 Seg5 切分", viaSeg5.size(), viaHanlp.size());
+        }
     }
 }

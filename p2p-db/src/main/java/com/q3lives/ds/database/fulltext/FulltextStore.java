@@ -1192,7 +1192,12 @@ public class FulltextStore implements AutoCloseable {
         }
     }
 
-    /** 把邻居 uid 追加到 src key 的 bucket；上下文隔离 key = mix4(docId,parentId,level,srcUid)；bucket 存 long[] neighborUids。 */
+    /**
+     * 把邻居 uid 追加到 src key 的 bucket；上下文隔离 key = mix4(docId,parentId,level,srcUid)；bucket 存 long[] neighborUids。
+     *
+     * <p>追加友好（append-friendly）：bucket 单元尚有空位时，仅在原位追加 8B uid + 4B count（{@link DsFixedBucketStore#update}），
+     * id 不变、不迁移、不整段重写；只有容量耗尽时才迁移到容量翻倍的新 bucket（几何增长 → 均摊 O(1)）。</p>
+     */
     private void appendNeighbor(int d, long docId, long parentId, int level, DsHashMap map, long srcUid, long neighborUid) throws IOException {
         long ctxKey = FarmHash64.mix4(docId, parentId, (long)level, srcUid);
         Long curBucketId = map.get(ctxKey);
@@ -1204,7 +1209,7 @@ public class FulltextStore implements AutoCloseable {
                 byte[] h4 = distNeighborStore.get(SPACE_FT, DIST_NEIGHBOR_TYPE, bucketId, 0, 4);
                 int len = ByteBuffer.wrap(h4).getInt();
                 curBytes = distNeighborStore.get(SPACE_FT, DIST_NEIGHBOR_TYPE, bucketId, 0, 4 + len * 8);
-            } catch (Exception ignore) { curBytes = null; }
+            } catch (Exception ignore) { curBytes = null; bucketId = 0L; }
         }
         int count = 0; long[] curr = new long[0];
         if (curBytes != null) {
@@ -1213,25 +1218,29 @@ public class FulltextStore implements AutoCloseable {
             curr = new long[count];
             for (int k = 0; k < count; k++) curr[k] = bb.getLong();
         }
-        boolean dup = false;
-        for (int k = 0; k < count; k++) if (curr[k] == neighborUid) { dup = true; break; }
-        if (!dup) {
-            long[] newArr = new long[count + 1];
-            System.arraycopy(curr, 0, newArr, 0, count);
-            newArr[count] = neighborUid;
-            ByteBuffer bb = ByteBuffer.allocate(4 + newArr.length * 8);
-            bb.putInt(newArr.length);
-            for (long x : newArr) bb.putLong(x);
-            byte[] newBytes = bb.array();
-            if (curBytes == null) {
-                bucketId = distNeighborStore.put(SPACE_FT, DIST_NEIGHBOR_TYPE, newBytes);
-                map.put(ctxKey, bucketId);
-            } else {
-                distNeighborStore.remove(SPACE_FT, DIST_NEIGHBOR_TYPE, bucketId);
-                bucketId = distNeighborStore.put(SPACE_FT, DIST_NEIGHBOR_TYPE, newBytes);
-                map.put(ctxKey, bucketId);
+        for (int k = 0; k < count; k++) if (curr[k] == neighborUid) return; // dup：幂等跳过
+        if (curBytes != null) {
+            int cap = ((1 << DsFixedBucketStore.decodePower(bucketId)) - 4) / 8; // bucket 单元可容纳的 uid 上限
+            if (count < cap) {
+                byte[] seg = new byte[12];
+                ByteBuffer sb = ByteBuffer.wrap(seg);
+                sb.putLong(neighborUid); // 先落 uid：保证读到新 count 时尾部数据已可见
+                distNeighborStore.update(SPACE_FT, DIST_NEIGHBOR_TYPE, bucketId, 4 + count * 8, seg, 0, 8);
+                sb.putInt(0, count + 1);
+                distNeighborStore.update(SPACE_FT, DIST_NEIGHBOR_TYPE, bucketId, 0, seg, 0, 4);
+                return;
             }
         }
+        // 无 bucket 或容量耗尽：写扩容后的整段（新 bucket 单元翻倍），再回收旧 bucket
+        long[] newArr = new long[count + 1];
+        System.arraycopy(curr, 0, newArr, 0, count);
+        newArr[count] = neighborUid;
+        ByteBuffer bb = ByteBuffer.allocate(4 + newArr.length * 8);
+        bb.putInt(newArr.length);
+        for (long x : newArr) bb.putLong(x);
+        long newId = distNeighborStore.put(SPACE_FT, DIST_NEIGHBOR_TYPE, bb.array());
+        if (curBytes != null) distNeighborStore.remove(SPACE_FT, DIST_NEIGHBOR_TYPE, bucketId);
+        map.put(ctxKey, newId);
     }
 
     /** 上下文隔离读邻居 long[]：ctxKey=mix4(docId,parentId,level,targetUid)。 */
@@ -1299,36 +1308,39 @@ public class FulltextStore implements AutoCloseable {
             }
             stat.rowsPerLevel[lv] = seq;
             if (seq < 2) continue; // 0/1 单元无 pair
-            long[] uids = new long[seq];
-            for (int k = 0; k < seq; k++) uids[k] = seqList.get(k)[0];
+            // char 层（DS0_CHAR）仅作兜底词/词组/句子解析源，不建成对 DIST 倒排，避免 O(C²) 存储浪费
+            if (lv != DS0_CHAR) {
+                long[] uids = new long[seq];
+                for (int k = 0; k < seq; k++) uids[k] = seqList.get(k)[0];
 
-            // Step4 DIST：枚举两两对 (i<j)
-            for (int i = 0; i < seq; i++) {
-                long lUid = uids[i];
-                for (int j = i + 1; j < seq; j++) {
-                    long rUid = uids[j];
-                    int d = Math.min(j - i, DIST_MAX);
+                // Step4 DIST：枚举两两对 (i<j)
+                for (int i = 0; i < seq; i++) {
+                    long lUid = uids[i];
+                    for (int j = i + 1; j < seq; j++) {
+                        long rUid = uids[j];
+                        int d = Math.min(j - i, DIST_MAX);
 
-                    // HC-6：PAIR_MAP key 混合 (l,r,p,lv,i,j) 六元 → 同一上下文同 l/r 多次出现独立 key；完全相同 i,j 再写才检测 d 冲突
-                    long base = FarmHash64.mix4(lUid, rUid, parentId, (long)lv);
-                    long pairKey = FarmHash64.mix4(base, (long)i, (long)j, 0xC0FFEEL);
-                    Long curD = distPairMap.get(pairKey);
-                    if (curD != null) {
-                        int cur = curD.intValue();
-                        if (cur != d) throw new IllegalStateException("dist inconsistent (HC-6) pair(l="+lUid+",r="+rUid+",p="+parentId+",lv="+lv+",i="+i+",j="+j+"): old="+cur+" new="+d);
-                    } else {
-                        distPairMap.put(pairKey, (long)d);
+                        // HC-6：PAIR_MAP key 混合 (l,r,p,lv,i,j) 六元 → 同一上下文同 l/r 多次出现独立 key；完全相同 i,j 再写才检测 d 冲突
+                        long base = FarmHash64.mix4(lUid, rUid, parentId, (long)lv);
+                        long pairKey = FarmHash64.mix4(base, (long)i, (long)j, 0xC0FFEEL);
+                        Long curD = distPairMap.get(pairKey);
+                        if (curD != null) {
+                            int cur = curD.intValue();
+                            if (cur != d) throw new IllegalStateException("dist inconsistent (HC-6) pair(l="+lUid+",r="+rUid+",p="+parentId+",lv="+lv+",i="+i+",j="+j+"): old="+cur+" new="+d);
+                        } else {
+                            distPairMap.put(pairKey, (long)d);
+                        }
+
+                        // L/R bucket 追加邻居（上下文隔离）
+                        appendNeighbor(d, docId, parentId, lv, ensureDistL(d), lUid, rUid);
+                        appendNeighbor(d, docId, parentId, lv, ensureDistR(d), rUid, lUid);
+
+                        // UID_RING offerUnique d
+                        uidRing(lUid).offerUnique(d);
+                        uidRing(rUid).offerUnique(d);
+
+                        stat.pairsTotal++;
                     }
-
-                    // L/R bucket 追加邻居（上下文隔离）
-                    appendNeighbor(d, docId, parentId, lv, ensureDistL(d), lUid, rUid);
-                    appendNeighbor(d, docId, parentId, lv, ensureDistR(d), rUid, lUid);
-
-                    // UID_RING offerUnique d
-                    uidRing(lUid).offerUnique(d);
-                    uidRing(rUid).offerUnique(d);
-
-                    stat.pairsTotal++;
                 }
             }
             List<Long> lvUidSeq = new ArrayList<>(seq);
@@ -1485,29 +1497,43 @@ public class FulltextStore implements AutoCloseable {
 
     // ---------------- T4 putDoc 覆盖写旧清理 ----------------
 
-    /** 从 distL[d]/distR[d] 的上下文邻居列表中移除 targetNeighborUid（上下文隔离 key）。 */
+    /**
+     * 从 distL[d]/distR[d] 的上下文邻居列表中移除 targetNeighborUid（上下文隔离 key）。
+     *
+     * <p>收缩友好（shrink-friendly）：bucket 仍有元素时，仅在原位把被删槽之后的 8B 元素整体左移覆盖，
+     * 再写回新 count（{@link DsFixedBucketStore#update}）；id 不变、不迁移、不整段重写。</p>
+     */
     private void removeNeighbor(int d, long docId, long parentId, int level, DsHashMap map, long srcUid, long targetNeighborUid) throws IOException {
         long ctxKey = FarmHash64.mix4(docId, parentId, (long)level, srcUid);
         Long bucketId = map.get(ctxKey);
         if (bucketId == null || bucketId.longValue() == 0L) return;
-        byte[] h4 = distNeighborStore.get(SPACE_FT, DIST_NEIGHBOR_TYPE, bucketId.longValue(), 0, 4);
+        long id = bucketId.longValue();
+        byte[] h4 = distNeighborStore.get(SPACE_FT, DIST_NEIGHBOR_TYPE, id, 0, 4);
         int count = ByteBuffer.wrap(h4).getInt();
         if (count <= 0) return;
-        byte[] body = distNeighborStore.get(SPACE_FT, DIST_NEIGHBOR_TYPE, bucketId.longValue(), 0, 4 + count * 8);
+        byte[] body = distNeighborStore.get(SPACE_FT, DIST_NEIGHBOR_TYPE, id, 0, 4 + count * 8);
         ByteBuffer bb = ByteBuffer.wrap(body); bb.getInt();
         long[] cur = new long[count];
-        for (int k = 0; k < count; k++) cur[k] = bb.getLong();
-        long[] out = new long[count]; int on = 0;
-        boolean removed = false;
-        for (long x : cur) if (x == targetNeighborUid) removed = true; else out[on++] = x;
-        if (!removed) return;
-        distNeighborStore.remove(SPACE_FT, DIST_NEIGHBOR_TYPE, bucketId.longValue());
-        if (on == 0) { map.remove(ctxKey); return; }
-        long[] shrunk = new long[on]; System.arraycopy(out, 0, shrunk, 0, on);
-        ByteBuffer nb = ByteBuffer.allocate(4 + on * 8);
-        nb.putInt(on); for (long x : shrunk) nb.putLong(x);
-        long newBucketId = distNeighborStore.put(SPACE_FT, DIST_NEIGHBOR_TYPE, nb.array());
-        map.put(ctxKey, newBucketId);
+        int rIdx = -1;
+        for (int k = 0; k < count; k++) { cur[k] = bb.getLong(); if (rIdx < 0 && cur[k] == targetNeighborUid) rIdx = k; }
+        if (rIdx < 0) return; // 不在列表中：幂等跳过
+        int on = count - 1;
+        if (on == 0) { // 清空：回收 bucket 单元并移除 key
+            distNeighborStore.remove(SPACE_FT, DIST_NEIGHBOR_TYPE, id);
+            map.remove(ctxKey);
+            return;
+        }
+        // 原位收缩：先写数据（尾部元素左移覆盖被删槽），再写新 count，保证读到新 count 时数据已一致
+        int segLen = (on - rIdx) * 8;
+        if (segLen > 0) {
+            byte[] seg = new byte[segLen];
+            ByteBuffer sb = ByteBuffer.wrap(seg);
+            for (int k = rIdx + 1; k < count; k++) sb.putLong(cur[k]);
+            distNeighborStore.update(SPACE_FT, DIST_NEIGHBOR_TYPE, id, 4 + rIdx * 8, seg, 0, segLen);
+        }
+        byte[] c4 = new byte[4];
+        ByteBuffer.wrap(c4).putInt(on);
+        distNeighborStore.update(SPACE_FT, DIST_NEIGHBOR_TYPE, id, 0, c4, 0, 4);
     }
 
     /**

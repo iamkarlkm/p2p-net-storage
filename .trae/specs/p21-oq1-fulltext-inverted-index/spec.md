@@ -1,7 +1,8 @@
-# P21 OQ1 全文分层倒排索引（6 层语义 + 层级化两两正距离）—— spec.md（**REV6 GATE C 实装对齐版，2026-10-04**）
+# P21 OQ1 全文分层倒排索引（6 层语义 + 层级化两两正距离）—— spec.md（**REV7 GATE C 实装对齐版，2026-11-10**）
 
-**绝对日期：2026-10-04**
+**绝对日期：2026-11-10**
 **REV5→REV6 关键差异**：① PAIR_MAP 四元→六元（加 i,j 下标 HC-6）；② DIST_BUCKET ctxKey 上下文隔离；③ §7 KT-1~KT-5 实装 Tradeoffs 写死（distanceBetween 查 DIST_BUCKET L 桶，不查 PAIR_MAP）。
+**REV6→REV7 关键差异（用户 2026-11-10 澄清偏差修正）**：① **CHAR 层（DS0_CHAR）不再建 DIST 倒排**（成对 PAIR_MAP/DIST_BUCKET/UID_RING 全部跳过），仅保留 text_units 实例行作为「兜底词/词组/句子解析源」；DIST 最低层下沉为 WORD(level 1)，消除 char 层 O(C²) 存储浪费（见 §2.9 HC-8 与 §7 KT-6）；② HanLP 中文分词插件按 NG-3 零硬依赖以**反射式可选 Provider** 接入（见 §7 KT-7）。
 **核心设计对齐用户 VERBATIM 原方案（严格实施）**：
 
 ---
@@ -20,7 +21,7 @@
 
 ---
 
-1. **6 层 unit 抽象（同前）**：CHAR(0) → WORD(1) → PHRASE(2) → SENTENCE(3) → BLOCK(4) → DOC_STRUCT(5)；**每层只存「父包含子、子 seq、同父同层两两正距离」3 类最小信息；跨层 0 距离重复写。**
+1. **6 层 unit 抽象（同前）**：CHAR(0) → WORD(1) → PHRASE(2) → SENTENCE(3) → BLOCK(4) → DOC_STRUCT(5)；**每层只存「父包含子、子 seq、同父同层两两正距离」3 类最小信息；跨层 0 距离重复写。**【REV7 修订】CHAR(0) 层**不建 DIST 倒排**（见 HC-8）：char 层仅作为「兜底获取词/词组/句子」的解析源并保留 text_units 实例行，其两两成对距离由 WORD(1)/PHRASE(2) 层承担；DIST 倒排的实际最低层为 **WORD(level 1)**。
 
 2. **【USER-HC-0 严格对齐】unit_id = 纯文本 DsString.indexId 全局唯一，level 零关联**：
    - `term_dict = DsString(root, "string_store_ft_all")` 单实例；字典 key = **纯文本 UTF-8 字节**（无前缀、无分隔符、无 level 任何字节）
@@ -146,6 +147,13 @@ fulltext/ft, inverted/inv, term_dict/td, text_units/tu, unit_distances/ud, segme
 
 白名单：3 主类 FulltextStore/TermDictStore/FulltextSegmenter + 1 测试 + TermDict 内嵌类。
 
+### §2.9 P21-HC-8：CHAR 层不建 DIST 倒排（REV7 新增，用户 2026-11-10 澄清）
+
+- **语义**：`ingestDoc` Step4 的成对 DIST 枚举（PAIR_MAP 六元 + DIST_BUCKET[d] L/R + UID_RING.offerUnique）**仅对 level ≥ 1 执行**；level == DS0_CHAR 跳过整段 DIST，只保留 Step1/2/3 的切分与 text_units 实例行。
+- **依据**：char 层逐 code point（N=字符数），同父两两对 = N(N-1)/2 → 长文本 O(C²)。CJK 场景下 char 逐字与 word 一字一词 uid 近乎同构，char 层 DIST 纯属冗余（约 32B/pair：PAIR_MAP key/value + distL 8B + distR 8B）。
+- **豁免边界**：`updateWeightForLevel` / `writePositionsForLevel` 对 level 0 **仍执行**（char 层 tf/positions 保留，供 charLevelSearch 兜底查询）；`clearDoc` 对 char 层幂等安全（无 bucket → `removeNeighbor` 早返回）。
+- **Gatekeeper**：`P21_T3_IngestQueryTest.checkPairs` 断言 `pairsTotal == Σ_{lv≥1} n(n-1)/2`（排除 level 0）；HC-6 一致性红线在 level ≥ 1 内继续生效。
+
 ---
 
 ## 3. 功能需求 FR（严格对齐 USER-HC-0）
@@ -240,3 +248,13 @@ USER-HC-0 与 Ds Core Spec 的 **位运算 ID 编码偏好**不存在冲突：Ds
 - fulltext 包独立类白名单 = { TermDictStore, FulltextStore, FulltextSegmenter } 三主类（[P21_T5_GatekeeperZeroLeakTest TR3](file:///I:/2026/code/p2p-net-storage/p2p-db/src/test/java/ds/P21_T5_GatekeeperZeroLeakTest.java) 扫描检查）。
 - 其余 CutUnit / SegOptions / TuRow / FarmHash64 等必须用 `static` 内嵌类；Seg5BuiltinProvider 必须放在 `com.q3lives.ds.database`（非 fulltext 包），禁止放 fulltext。
 - NG-3 零依赖：`Class.forName("com.huaban.analysis.jieba.JiebaSegmenter" | "org.wltea.analyzer.core.IKSegmenter" | "com.hankcs.hanlp.HanLP" | "spacy.SpaCy")` 全抛 ClassNotFoundException（插件放 classpath 才生效，p2p-db 自身 0 实 jar 依赖）。
+
+**KT-6 CHAR 层去 DIST 倒排（HC-8 实装落地，REV7）**：
+- 实装点：[FulltextStore.ingestDoc Step4](file:///I:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/fulltext/FulltextStore.java) 用 `if (lv != DS0_CHAR)` 包裹成对 DIST 枚举；char 层仅保留 text_units 实例行（Step2/3）。
+- 收益：省去 char 层 N(N-1)/2 对写（约 32B/pair）—— C=1,000 字符/doc ≈ 16MB；C=10,000 字符/doc ≈ 1.6GB。word/phrase/sentence/block/doc 五层 DIST 全保留。
+- 兼容：`queryMetrics`/`charLevelSearch`（默认 false）不受影响；charLevelSearch=true 时仍可切 CHAR+WORD+PHRASE 三层做兜底召回（DIST 缺失不影响 byTerm 实例查询）。
+
+**KT-7 HanLP 中文分词以反射式可选 Provider 接入（NG-3 零硬依赖，REV7）**：
+- 实装：`com.q3lives.ds.database.HanLpProvider`（非 fulltext 包，规避 ZeroLeak 13 词类名扫描），`priority=100`（> MockJieba=10 > Seg5=0），注册于 `src/main/resources/META-INF/services/com.q3lives.ds.database.fulltext.FulltextSegmenter`。
+- 反依赖机制：构造函数/`available()` 仅 `Class.forName("com.hankcs.hanlp.HanLP")` 探测；jar 缺失 → `available()==false` → `resolveSegmenter` 跳过 → fallback 次高优先级（测试 MockJieba，生产 Seg5）。**pom.xml 不新增任何 hanlp/jieba/ik/spacy 依赖**（否则 P21~P29_T5 Gatekeeper 的 `Class.forName` CNF 断言全部 fail）。
+- 切分范围：仅 `level == DS1_WORD` 走 HanLP 反射（`HanLP.segment(text)` → `Term.offset/word`）；其余 5 层直接委托 `Seg5BuiltinSegmenter`，保证层级语义不变。反射异常 → 退回 Seg5，不抛。
