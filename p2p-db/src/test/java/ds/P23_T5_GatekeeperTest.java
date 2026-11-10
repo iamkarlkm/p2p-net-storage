@@ -142,14 +142,13 @@ public class P23_T5_GatekeeperTest {
         Assert.assertEquals("TR5.2 ZeroLeak 集合精确全等", expected, topLevel);
     }
 
-    // ---------------- TR5.3【NG-3 零实依赖 9 CNF】5 基础 + 4 HNSW/向量库 ----------------
+    // ---------------- TR5.3【NG-3 零实依赖 8 CNF】4 基础 + 4 HNSW/向量库（hanlp 已移出红线） ----------------
     @Test
-    public void tr5_3_ng3NineCnfAllClassNotFound() {
+    public void tr5_3_ng3EightCnfAllClassNotFound() {
         String[] forbidden = {
-            // P22 基础 5
+            // P22 基础 4
             "com.huaban.analysis.jieba.JiebaSegmenter",
             "org.wltea.analyzer.lucene.IKAnalyzer",
-            "com.hankcs.hanlp.HanLP",
             "spacy.Spacy",
             "org.apache.lucene.search.similarities.BM25Similarity",
             // P23 加 4：HNSW/向量 经典实现
@@ -171,7 +170,7 @@ public class P23_T5_GatekeeperTest {
             }
         }
         Assert.assertTrue("TR5.3 NG-3 失败明细: " + failed, failed.isEmpty());
-        Assert.assertEquals("TR5.3 NG-3 9 类全 CNF（零实依赖单调递增 5→9）", 9, cnfCount);
+        Assert.assertEquals("TR5.3 NG-3 8 类全 CNF（零实依赖单调递增 4→8）", 8, cnfCount);
     }
 
     // ---------------- TR5.4【Facade≥36】TermDict≥6 + Fulltext≥30 非递减 ----------------

@@ -107,11 +107,10 @@ public class P29_T5_Gatekeeper9YTest {
         Assert.assertEquals("Y1 ZeroLeak3 集合完全相等不增不减（P21~P28 红线）", expected, topLevel);
     }
 
-    @Test public void TR5_2_Y2_Ng3NineCnfPlusZeroNettyGrpcClient() throws Exception {
+    @Test public void TR5_2_Y2_Ng3EightCnfPlusZeroNettyGrpcClient() throws Exception {
         String[] forbiddenCnf = {
             "com.huaban.analysis.jieba.JiebaSegmenter",
             "org.wltea.analyzer.lucene.IKAnalyzer",
-            "com.hankcs.hanlp.HanLP",
             "spacy.Spacy",
             "org.apache.lucene.search.similarities.BM25Similarity",
             "org.apache.lucene.util.hnsw.HnswGraph",
@@ -123,8 +122,8 @@ public class P29_T5_Gatekeeper9YTest {
         List<String> failed = new ArrayList<>();
         for (String cn : forbiddenCnf) { try { Class.forName(cn); failed.add(cn + " loaded"); }
             catch (ClassNotFoundException ok) { cnf++; } catch (Throwable t) { failed.add(cn + " " + t.getClass().getSimpleName()); } }
-        Assert.assertTrue("Y2 NG-3 9 CNF 失败: " + failed, failed.isEmpty());
-        Assert.assertEquals("Y2 NG-3 9 基础类全 CNF（P29 单调不增）", 9, cnf);
+        Assert.assertTrue("Y2 NG-3 8 CNF 失败: " + failed, failed.isEmpty());
+        Assert.assertEquals("Y2 NG-3 8 基础类全 CNF（P29 单调不增；hanlp 已移出红线）", 8, cnf);
         Class<?>[] rootProbes = {
             FulltextStore.class, TermDictStore.class, FulltextSegmenter.class,
             ShardRouter.class, ShardTransport.class, FulltextStore.LocalShardTransport.class,

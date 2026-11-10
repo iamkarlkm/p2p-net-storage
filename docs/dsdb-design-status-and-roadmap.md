@@ -4,6 +4,8 @@
 > 目标读者：p2p-net-storage 核心开发
 > 配套模块：`p2p-db`（核心存储引擎）、`p2p-sync`（主使用方）、`p2p-core`（P2P RPC 通道）
 
+> **REV7 变更（2026-11-10，全文检索 HanLP 硬依赖）**：HanLP 中文分词由「反射式可选插件」改为 **compile 硬依赖**（`com.hankcs:hanlp:portable-1.8.6`）。**NG-3 红线修订：hanlp 移出红线**，剩余禁忌为 jieba / IKAnalyzer / SpaCy / Lucene / HNSW / 向量库。影响：① `HanLpProvider`（priority=100）直连 `HanLP.segment(...)`，Word 层恒用 HanLP 切分（生产+测试全量生效）；② P21~P29_T5 Gatekeeper 的 `Class.forName` CNF 断言移除 `com.hankcs.hanlp.HanLP`（计数 5→4、9→8 等），P21_T2/P21_T5 winner 断言改为 `priority>=100`；③ 下文 P21~P31 历史 CLOSED 记录中的「NG-3 N CNF / 0 新 Maven 依赖（含 hanlp）」描述为其**当时闭合状态**，现已被本 REV7 取代（CNF 计数各 -1）。详见 `.trae/specs/p21-oq1-fulltext-inverted-index/spec.md` §7 KT-7。
+
 ---
 
 ## 一、现状：四层架构总览

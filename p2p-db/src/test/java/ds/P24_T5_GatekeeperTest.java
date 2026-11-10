@@ -95,12 +95,11 @@ public class P24_T5_GatekeeperTest {
         Assert.assertEquals("tr52 ZeroLeak 独立类集合精确全等", expected, topLevel);
     }
 
-    // ---------- TR5.3 NG-3 11 CNF ----------
-    @Test public void tr53_ng3ElevenCnfAllClassNotFound() {
+    // ---------- TR5.3 NG-3 8 CNF（hanlp 已移出红线） ----------
+    @Test public void tr53_ng3EightCnfAllClassNotFound() {
         String[] forbiddenCnf = {
             "com.huaban.analysis.jieba.JiebaSegmenter",
             "org.wltea.analyzer.lucene.IKAnalyzer",
-            "com.hankcs.hanlp.HanLP",
             "spacy.Spacy",
             "org.apache.lucene.search.similarities.BM25Similarity",
             "org.apache.lucene.util.hnsw.HnswGraph",
@@ -111,9 +110,9 @@ public class P24_T5_GatekeeperTest {
         int cnf=0; java.util.List<String> failed = new java.util.ArrayList<>();
         for(String cn:forbiddenCnf){ try { Class.forName(cn); failed.add(cn+" loaded"); }
             catch(ClassNotFoundException ok){cnf++;} catch(Throwable t){failed.add(cn+" "+t.getClass().getSimpleName());} }
-        // 9 基础类必须 CNF
-        Assert.assertTrue("tr53 NG-3 基础 9 CNF 失败: "+failed, failed.isEmpty());
-        Assert.assertEquals("tr53 NG-3 9 基础类全 CNF（P21~P23 基线）", 9, cnf);
+        // 8 基础类必须 CNF
+        Assert.assertTrue("tr53 NG-3 基础 8 CNF 失败: "+failed, failed.isEmpty());
+        Assert.assertEquals("tr53 NG-3 8 基础类全 CNF（P21~P23 基线）", 8, cnf);
 
         // P24 +2 netty/grpc：fulltext 包 0 引用符号（反射扫描 FulltextStore 及其内嵌类所有签名类型）
         Class<?>[] probeClasses = {

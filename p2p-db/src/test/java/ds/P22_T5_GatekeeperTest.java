@@ -150,13 +150,12 @@ public class P22_T5_GatekeeperTest {
         Assert.assertEquals("TR5.2 ZeroLeak 独立类集合精确全等", expected, topLevel);
     }
 
-    // ---------------- TR5.3【NG-3 零实依赖】5 类 Class.forName 全抛 CNF ----------------
+    // ---------------- TR5.3【NG-3 零实依赖】4 类 Class.forName 全抛 CNF（hanlp 已移出红线） ----------------
     @Test
-    public void tr5_3_ng3NoRealDependenciesFiveCnf() {
+    public void tr5_3_ng3NoRealDependenciesFourCnf() {
         String[] forbidden = {
             "com.huaban.analysis.jieba.JiebaSegmenter",
             "org.wltea.analyzer.lucene.IKAnalyzer",
-            "com.hankcs.hanlp.HanLP",
             "spacy.Spacy",
             "org.apache.lucene.search.similarities.BM25Similarity"
         };
@@ -174,7 +173,7 @@ public class P22_T5_GatekeeperTest {
             }
         }
         Assert.assertTrue("TR5.3 NG-3 失败明细: " + failed, failed.isEmpty());
-        Assert.assertEquals("TR5.3 NG-3 5 类全 CNF", 5, cnfCount);
+        Assert.assertEquals("TR5.3 NG-3 4 类全 CNF", 4, cnfCount);
     }
 
     // ---------------- TR5.4【Facade 非递减 ≥28】TermDictStore public≥6 + FulltextStore public≥22，且 P21 方法子集 ----------------

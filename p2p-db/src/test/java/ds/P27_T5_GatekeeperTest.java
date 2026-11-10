@@ -92,13 +92,12 @@ public class P27_T5_GatekeeperTest {
     }
 
     // ====================================================================
-    // Y2=TR5.2 NG-3：9 CNF（禁第三方） + fulltext 根包 0 netty/grpc/javax.net.p2p.client 引用
+    // Y2=TR5.2 NG-3：8 CNF（禁第三方，hanlp 已移出红线） + fulltext 根包 0 netty/grpc/javax.net.p2p.client 引用
     // ====================================================================
-    @Test public void tr52_ng3NineCnfPlusZeroNettyGrpcClientRootP27() throws Exception {
+    @Test public void tr52_ng3EightCnfPlusZeroNettyGrpcClientRootP27() throws Exception {
         String[] forbiddenCnf = {
             "com.huaban.analysis.jieba.JiebaSegmenter",
             "org.wltea.analyzer.lucene.IKAnalyzer",
-            "com.hankcs.hanlp.HanLP",
             "spacy.Spacy",
             "org.apache.lucene.search.similarities.BM25Similarity",
             "org.apache.lucene.util.hnsw.HnswGraph",
@@ -110,8 +109,8 @@ public class P27_T5_GatekeeperTest {
         List<String> failed = new ArrayList<>();
         for (String cn : forbiddenCnf) { try { Class.forName(cn); failed.add(cn + " loaded"); }
             catch (ClassNotFoundException ok) { cnf++; } catch (Throwable t) { failed.add(cn + " " + t.getClass().getSimpleName()); } }
-        Assert.assertTrue("Y2 NG-3 9 CNF 失败: " + failed, failed.isEmpty());
-        Assert.assertEquals("Y2 NG-3 9 基础类全 CNF（P27 单调不增）", 9, cnf);
+        Assert.assertTrue("Y2 NG-3 8 CNF 失败: " + failed, failed.isEmpty());
+        Assert.assertEquals("Y2 NG-3 8 基础类全 CNF（P27 单调不增）", 8, cnf);
         Class<?>[] rootProbes = {
             FulltextStore.class, TermDictStore.class, FulltextSegmenter.class,
             ShardRouter.class, FulltextStore.ShardTransport.class, FulltextStore.LocalShardTransport.class,

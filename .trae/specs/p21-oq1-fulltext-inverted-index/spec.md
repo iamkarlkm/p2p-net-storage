@@ -2,7 +2,7 @@
 
 **绝对日期：2026-11-10**
 **REV5→REV6 关键差异**：① PAIR_MAP 四元→六元（加 i,j 下标 HC-6）；② DIST_BUCKET ctxKey 上下文隔离；③ §7 KT-1~KT-5 实装 Tradeoffs 写死（distanceBetween 查 DIST_BUCKET L 桶，不查 PAIR_MAP）。
-**REV6→REV7 关键差异（用户 2026-11-10 澄清偏差修正）**：① **CHAR 层（DS0_CHAR）不再建 DIST 倒排**（成对 PAIR_MAP/DIST_BUCKET/UID_RING 全部跳过），仅保留 text_units 实例行作为「兜底词/词组/句子解析源」；DIST 最低层下沉为 WORD(level 1)，消除 char 层 O(C²) 存储浪费（见 §2.9 HC-8 与 §7 KT-6）；② HanLP 中文分词插件按 NG-3 零硬依赖以**反射式可选 Provider** 接入（见 §7 KT-7）。
+**REV6→REV7 关键差异（用户 2026-11-10 澄清偏差修正）**：① **CHAR 层（DS0_CHAR）不再建 DIST 倒排**（成对 PAIR_MAP/DIST_BUCKET/UID_RING 全部跳过），仅保留 text_units 实例行作为「兜底词/词组/句子解析源」；DIST 最低层下沉为 WORD(level 1)，消除 char 层 O(C²) 存储浪费（见 §2.9 HC-8 与 §7 KT-6）；② HanLP 中文分词**改为硬依赖 hanlp jar**（`com.hankcs:hanlp:portable-1.8.6`，compile scope）以 Provider 接入（见 §7 KT-7）。**REV7 修订（用户 2026-11-10 推翻"反射式零硬依赖"方案）**：NG-3 红线原禁止 p2p-db 实依赖 hanlp，现**将 hanlp 移出红线**（剩余 jieba/ik/spacy/lucene/HNSW/向量库仍禁）；HanLpProvider 直连 `HanLP.segment(...)`，`available()` 恒 true、`priority()=100`；P21~P29_T5 Gatekeeper 已同步移除对 hanlp 的 `Class.forName` CNF 断言（计数 5→4 等）。
 **核心设计对齐用户 VERBATIM 原方案（严格实施）**：
 
 ---
@@ -58,7 +58,7 @@
    ② `INSERT INTO text_units(uid, docId, parentId, level, seq, soff, eoff, text_sid=uid)`（复合主键保证同 doc 同 parent 同 level 同 uid 不重复）
    ③ 同父同层 seq 排序后，`i<j d=j-i` 写三 distances store（PAIR_MAP / DIST_BUCKET[d] / UID_RING[u_i].offerUnique(d) + UID_RING[u_j].offerUnique(d)）
 
-5. **Seg SPI 可插拔 NLP 分词（对齐用户要求）**：FulltextSegmenter SPI ServiceLoader 接口（决策 E-A Iterator 流式）；内置 Seg5 priority=0 白名单；IK/Jieba/HanLP/SpaCy 插件 classpath 放入 META-INF/services 即插即用，scope=provided，p21-core 0 新依赖；load 失败 fallback Seg5 不抛异常。MockJiebaPlugin priority=10 测试覆盖优先级。
+5. **Seg SPI 可插拔 NLP 分词（对齐用户要求）**：FulltextSegmenter SPI ServiceLoader 接口（决策 E-A Iterator 流式）；内置 Seg5 priority=0 白名单；**HanLP 为 compile 硬依赖**（`HanLpProvider` priority=100，见 §7 KT-7），IK/Jieba/SpaCy 仍以插件方式 classpath 放入 META-INF/services 即插即用，scope=provided；load 失败 fallback Seg5 不抛异常。MockJiebaPlugin priority=10 测试覆盖优先级。
 
 6. **5 条核心查询原语（严格对齐 unit_id 纯文本唯一）**：
    ① `byTerm(text) → List<Instance>`：→ uid = DsString.getIndexId(text, false) → null 空集；非空扫 text_units IDX2 → 所有 (doc_id, parent_id, level, seq) 实例
@@ -91,7 +91,7 @@
 
 ## 1.4 Non-Goals（同前修订）
 
-✅ Seg SPI + IK/Jieba/HanLP/SpaCy 插件纳入 Goals（scope=provided）。
+✅ Seg SPI 纳入 Goals；**HanLP 为 compile 硬依赖**（`HanLpProvider` priority=100）；IK/Jieba/SpaCy 插件纳入 Goals（scope=provided）。
 ❌ 权重/TF-IDF/BM25/embedding 仍非 Goals（P22）。
 ❌ 分布式分片/增量 patch/自动 n-gram/跨库字典共享 仍非 Goals（P21b 后续）。
 
@@ -247,14 +247,16 @@ USER-HC-0 与 Ds Core Spec 的 **位运算 ID 编码偏好**不存在冲突：Ds
 **KT-5 ZeroLeak13 独立类白名单（fulltext 包外实现规避）**：
 - fulltext 包独立类白名单 = { TermDictStore, FulltextStore, FulltextSegmenter } 三主类（[P21_T5_GatekeeperZeroLeakTest TR3](file:///I:/2026/code/p2p-net-storage/p2p-db/src/test/java/ds/P21_T5_GatekeeperZeroLeakTest.java) 扫描检查）。
 - 其余 CutUnit / SegOptions / TuRow / FarmHash64 等必须用 `static` 内嵌类；Seg5BuiltinProvider 必须放在 `com.q3lives.ds.database`（非 fulltext 包），禁止放 fulltext。
-- NG-3 零依赖：`Class.forName("com.huaban.analysis.jieba.JiebaSegmenter" | "org.wltea.analyzer.core.IKSegmenter" | "com.hankcs.hanlp.HanLP" | "spacy.SpaCy")` 全抛 ClassNotFoundException（插件放 classpath 才生效，p2p-db 自身 0 实 jar 依赖）。
+- NG-3 依赖红线（REV7 修订）：`Class.forName("com.huaban.analysis.jieba.JiebaSegmenter" | "org.wltea.analyzer.core.IKSegmenter" | "spacy.SpaCy")` 全抛 ClassNotFoundException（上述插件放 classpath 才生效，p2p-db 自身 0 实 jar 依赖）。**hanlp 已移出红线**：`com.hankcs:hanlp:portable-1.8.6` 为 compile 实依赖，Gatekeeper 不再对 `com.hankcs.hanlp.HanLP` 断言 CNF。
 
 **KT-6 CHAR 层去 DIST 倒排（HC-8 实装落地，REV7）**：
 - 实装点：[FulltextStore.ingestDoc Step4](file:///I:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/fulltext/FulltextStore.java) 用 `if (lv != DS0_CHAR)` 包裹成对 DIST 枚举；char 层仅保留 text_units 实例行（Step2/3）。
 - 收益：省去 char 层 N(N-1)/2 对写（约 32B/pair）—— C=1,000 字符/doc ≈ 16MB；C=10,000 字符/doc ≈ 1.6GB。word/phrase/sentence/block/doc 五层 DIST 全保留。
 - 兼容：`queryMetrics`/`charLevelSearch`（默认 false）不受影响；charLevelSearch=true 时仍可切 CHAR+WORD+PHRASE 三层做兜底召回（DIST 缺失不影响 byTerm 实例查询）。
 
-**KT-7 HanLP 中文分词以反射式可选 Provider 接入（NG-3 零硬依赖，REV7）**：
+**KT-7 HanLP 中文分词以硬依赖 Provider 接入（NG-3 红线修订，REV7）**：
 - 实装：`com.q3lives.ds.database.HanLpProvider`（非 fulltext 包，规避 ZeroLeak 13 词类名扫描），`priority=100`（> MockJieba=10 > Seg5=0），注册于 `src/main/resources/META-INF/services/com.q3lives.ds.database.fulltext.FulltextSegmenter`。
-- 反依赖机制：构造函数/`available()` 仅 `Class.forName("com.hankcs.hanlp.HanLP")` 探测；jar 缺失 → `available()==false` → `resolveSegmenter` 跳过 → fallback 次高优先级（测试 MockJieba，生产 Seg5）。**pom.xml 不新增任何 hanlp/jieba/ik/spacy 依赖**（否则 P21~P29_T5 Gatekeeper 的 `Class.forName` CNF 断言全部 fail）。
-- 切分范围：仅 `level == DS1_WORD` 走 HanLP 反射（`HanLP.segment(text)` → `Term.offset/word`）；其余 5 层直接委托 `Seg5BuiltinSegmenter`，保证层级语义不变。反射异常 → 退回 Seg5，不抛。
+- **硬依赖**：`pom.xml` 新增 `<dependency>com.hankcs:hanlp:portable-1.8.6</dependency>`（compile scope）；`available()` 恒 `true`、`priority()=100`，`resolveSegmenter` winner 恒为 HanLpProvider（生产 + 测试全量生效）。NG-3 红线**已将 hanlp 移出**，剩余禁忌为 jieba/IKAnalyzer/SpaCy/Lucene/HNSW/向量库。
+- **Gatekeeper 同步**：P21~P29_T5 的 NG-3 `Class.forName` CNF 断言移除 `com.hankcs.hanlp.HanLP`（计数 5→4、9→8 等），`Java_21_起单调递增` 断言随之下调；P21_T2/P21_T5 winner 断言由 `priority>=10` 改为 `priority>=100`。
+- 切分范围：仅 `level == DS1_WORD` 直连 HanLP（`HanLP.segment(text)` → `Term.offset/word`）；其余 5 层直接委托 `Seg5BuiltinSegmenter`，保证层级语义不变。
+- 语义变更：HanLP WORD 层切分与 Seg5 逐字切分不同（CJK 检索语义变更），受影响的 CJK 检索测试须重基线（如 P25_T1 tr13 由 ASCII 整词改用 HanLP 认可整词）。

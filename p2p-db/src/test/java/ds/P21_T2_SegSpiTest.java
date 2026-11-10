@@ -13,7 +13,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
-import com.q3lives.ds.database.HanLpProvider;
 import com.q3lives.ds.database.fulltext.FulltextSegmenter;
 import com.q3lives.ds.database.fulltext.FulltextSegmenter.CutUnit;
 import com.q3lives.ds.database.fulltext.FulltextStore;
@@ -61,24 +60,23 @@ public class P21_T2_SegSpiTest {
         seg5.cut(sampleCn, 3, opts).forEachRemaining(cut3::add);
         Assert.assertTrue("ds3 句切分应为 1-2 句："+cut3.size(), cut3.size() >= 1 && cut3.size() <= 3);
 
-        // ---------- B. HC-7：resolveSegmenter 正常 case 返回 MockJieba（priority=10 > Seg5=0） ----------
+        // ---------- B. HC-7：resolveSegmenter 正常 case 返回最高优先 provider（HanLpProvider priority=100） ----------
         FulltextSegmenter winner = store.resolveSegmenter();
         Assert.assertNotNull("resolveSegmenter 不应 null（HC-7 fallback 失效）", winner);
-        // 验证 winner 是 MockJieba（10）而不是 Seg5（0）：MockJieba 切 "全文索引" → 1 词，Seg5 → 4 单字 or 2 词
+        // 硬依赖 HanLP 后 winner 为 HanLpProvider(priority=100)，覆盖 MockJieba(10)/Seg5(0)
+        Assert.assertTrue("resolveSegmenter 应选 priority 最大者（HanLpProvider=100），winner="
+            + winner.getClass().getName() + " priority="+winner.priority(), winner.priority() >= 100);
         String testJieba = "全文索引系统";
         List<CutUnit> wCut = new ArrayList<>();
         winner.cut(testJieba, 1, opts).forEachRemaining(wCut::add);
-        // MockJieba ds1 优先 "全文索引" 整词（len=4 字符），所以首词长度=4
-        boolean hasFullTextIndexWhole = false;
-        for (CutUnit u : wCut) if ("全文索引".equals(u.text) && u.endOff - u.startOff == 4) { hasFullTextIndexWhole = true; break; }
-        Assert.assertTrue("resolveSegmenter 未选 MockJieba（priority=10 覆盖 Seg5），winner class="+winner.getClass().getName()
-            +" cut1="+wCut, hasFullTextIndexWhole);
-        // Seg5 单独切同一字符串：不会有 "全文索引" 整词（按字/按字符切 → 切成长度 1 或 2）
+        Assert.assertFalse("HanLP WORD 切分应非空", wCut.isEmpty());
+        for (CutUnit u : wCut) Assert.assertFalse("HanLP 切分单元非空", u.text == null || u.text.isEmpty());
+        // Seg5 单独切同一字符串：不会有 4+ 长词（按字/按字符切）
         List<CutUnit> seg5Cut = new ArrayList<>();
         seg5.cut(testJieba, 1, opts).forEachRemaining(seg5Cut::add);
         boolean seg5HasWhole = false;
         for (CutUnit u : seg5Cut) if (u.text.length() >= 4) seg5HasWhole = true;
-        Assert.assertFalse("Seg5 不该有 4+ 长词（证明 MockJieba 覆盖有效）", seg5HasWhole);
+        Assert.assertFalse("Seg5 不该有 4+ 长词", seg5HasWhole);
 
         // ---------- C. Fallback：构造 winner=null 模式，验证 Seg5 Builtin 生效（HC-7 代码分支走 seg5builtin） ----------
         // 直接调 getSeg5Builtin 验证 fallback 等价：切 "全文索引系统" ds1 长度 ≤6（非整词）
@@ -91,28 +89,5 @@ public class P21_T2_SegSpiTest {
         Iterator<CutUnit> ei = seg5.cut(null, 1, opts);
         int cnt = 0; while (ei.hasNext()) { ei.next(); cnt++; }
         Assert.assertTrue("null 切分应空/空迭代："+cnt, cnt <= 1);
-    }
-
-    // T2-TR-2b【REV7】HanLP 可选插件 NG-3 零硬依赖：jar 缺席 → available=false → resolveSegmenter 跳过并 fallback
-    @Test public void tr2b_hanlpOptionalProviderNg3Compliant() throws Exception {
-        HanLpProvider hanlp = new HanLpProvider();
-        Assert.assertEquals("HanLpProvider priority 应为 100", 100, hanlp.priority());
-        FulltextSegmenter.SegOptions opts = FulltextSegmenter.SegOptions.defaults();
-        FulltextSegmenter winner = store.resolveSegmenter();
-        if (hanlp.available()) {
-            // classpath 有 HanLP：priority=100 最高 → 应被选为 winner（生产可选接入生效）
-            Assert.assertEquals("HanLP 可用时应被 resolveSegmenter 选中",
-                HanLpProvider.class.getName(), winner.getClass().getName());
-        } else {
-            // NG-3：p2p-db 不引 HanLP 实依赖 → 本项目 classpath 缺席 → 必须不可用
-            Assert.assertNotEquals("HanLP 缺席时不应选到不可用 provider",
-                HanLpProvider.class.getName(), winner.getClass().getName());
-            // 缺席时 WORD 层切分退回 Seg5，语义与内置一致
-            List<CutUnit> viaHanlp = new ArrayList<>();
-            hanlp.cut("中文字符测试", 1, opts).forEachRemaining(viaHanlp::add);
-            List<CutUnit> viaSeg5 = new ArrayList<>();
-            store.getSeg5Builtin().cut("中文字符测试", 1, opts).forEachRemaining(viaSeg5::add);
-            Assert.assertEquals("HanLP 缺席时 WORD 层应退回 Seg5 切分", viaSeg5.size(), viaHanlp.size());
-        }
     }
 }

@@ -94,12 +94,11 @@ public class P25_T5_GatekeeperTest {
         for (Class<?> c : needInner) Assert.assertTrue("必须内嵌 $ 类: "+c.getName(), c.getName().contains("$"));
     }
 
-    // ---------- TR5.3 NG-3 9 CNFE + 0 netty/grpc 引用 ----------
-    @Test public void tr53_ng3BaselineNineCnfPlusZeroNettyGrpcRef() throws Exception {
+    // ---------- TR5.3 NG-3 8 CNFE + 0 netty/grpc 引用（hanlp 已移出红线） ----------
+    @Test public void tr53_ng3BaselineEightCnfPlusZeroNettyGrpcRef() throws Exception {
         String[] forbiddenCnf = {
             "com.huaban.analysis.jieba.JiebaSegmenter",
             "org.wltea.analyzer.lucene.IKAnalyzer",
-            "com.hankcs.hanlp.HanLP",
             "spacy.Spacy",
             "org.apache.lucene.search.similarities.BM25Similarity",
             "org.apache.lucene.util.hnsw.HnswGraph",
@@ -110,8 +109,8 @@ public class P25_T5_GatekeeperTest {
         int cnf=0; List<String> failed = new ArrayList<>();
         for(String cn:forbiddenCnf){ try { Class.forName(cn); failed.add(cn+" loaded"); }
             catch(ClassNotFoundException ok){cnf++;} catch(Throwable t){failed.add(cn+" "+t.getClass().getSimpleName());} }
-        Assert.assertTrue("tr53 NG-3 9 CNF 失败: "+failed, failed.isEmpty());
-        Assert.assertEquals("tr53 NG-3 9 基础类全 CNF（P25 保持单调）", 9, cnf);
+        Assert.assertTrue("tr53 NG-3 8 CNF 失败: "+failed, failed.isEmpty());
+        Assert.assertEquals("tr53 NG-3 8 基础类全 CNF（P25 保持单调）", 8, cnf);
         // P25 新内嵌类 4 个 + 老的 全扫：net/grpc 0 ref
         Class<?>[] probes = {
             FulltextStore.class, TermDictStore.class, FulltextSegmenter.class,

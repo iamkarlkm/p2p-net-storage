@@ -92,13 +92,12 @@ public class P21_T5_GatekeeperZeroLeakTest {
         Assert.assertEquals("unit_id = HC-0 id", uidChar, firstRowUid.longValue());
     }
 
-    // ---------------- TR2【HC-7 Seg SPI & NG3 零依赖】priority 最大优先；pom.xml provided scope 无 jieba/ik/hanlp/spacy 实依赖
+    // ---------------- TR2【HC-7 Seg SPI & NG3 零依赖】priority 最大优先；pom.xml 无 jieba/ik/spacy 实依赖（hanlp 为硬依赖，已移出红线）
     @Test
     public void tr2_hc7_segSpiPriorityNg3ZeroDeps() throws IOException {
         // HC-7：FulltextStore.resolveSegmenter() 内部用 ServiceLoader 选 priority 最大；
-        //   测试类路径下 MockJiebaProvider(priority=10) > Seg5Builtin(priority=0)；
-        //   获取 FulltextSegmenter Iterator<CutUnit>；检测 priority = 10 的类为 "com.q3lives.ds.database.MockJiebaProvider"
-        //   通过实际切分结果验证：MockJieba 故意合并 "全文索引" 4 字 → 1 CutUnit；Seg5 会逐字 → 4 CutUnit
+        //   HanLpProvider(priority=100,available=true) > MockJiebaProvider(10) > Seg5Builtin(0)；
+        //   resolveSegmenter 返回 priority 最大的可用 provider（硬依赖下为 HanLpProvider）
         FulltextSegmenter seg = store.resolveSegmenter();
         Assert.assertNotNull("loadBest 非空", seg);
         Iterator<CutUnit> it = seg.cut("全文倒排索引", 1, SegOptions.defaults());
@@ -109,18 +108,16 @@ public class P21_T5_GatekeeperZeroLeakTest {
         // 但 Seg5 也会 merge ASCII token；这里用字符串 "abc fulltext 123" Seg5 默认 merge，
         // 改用最稳的断言：所有 provider 的 ServiceLoader 列表中至少有 2 个（Seg5Builtin + MockJieba），
         // 且 loadBest() 返回的实例优先级 ≥ 10（MockJieba 的 priority=10）
-        Assert.assertTrue("seg.priority() ≥10（MockJieba 覆盖 Seg5=0），actual="+seg.priority(), seg.priority() >= 10);
+        Assert.assertTrue("seg.priority() ≥100（HanLpProvider 硬依赖覆盖 MockJieba=10/Seg5=0），actual="+seg.priority(), seg.priority() >= 100);
         java.util.ServiceLoader<FulltextSegmenter> loader = java.util.ServiceLoader.load(FulltextSegmenter.class);
         int nProv = 0;
         for (@SuppressWarnings("unused") FulltextSegmenter s : loader) nProv++;
         Assert.assertTrue("ServiceLoader 至少 2 provider（Seg5Builtin + MockJieba）", nProv >= 2);
-        // NG3：pom.xml 依赖中 不存在 jieba/ik/hanlp/spacy 的 compile scope 依赖（仅 provided 或不存在）
-        // 简单替代：类路径 Class.forName(com.huaban.analysis.jieba.JiebaSegmenter) → ClassNotFoundException；
-        //   其他 3 个类同理（IKAnalyzer/HanLP/SpaCy wrapper）均抛 CNF，证明 NG3 零依赖
+        // NG3（修订）：hanlp 已移出红线（现为硬依赖），剩余 jieba/ik/spacy 仍禁；
+        //   类路径 Class.forName(jieba / IKAnalyzer / SpacyApi) → ClassNotFoundException，证明其余三方 NLP 零依赖
         String[] mustNotExistClasses = new String[] {
             "com.huaban.analysis.jieba.JiebaSegmenter",
             "org.wltea.analyzer.lucene.IKAnalyzer",
-            "com.hankcs.hanlp.HanLP",
             "org.openapitools.client.api.SpacyApi"
         };
         for (String cn : mustNotExistClasses) {

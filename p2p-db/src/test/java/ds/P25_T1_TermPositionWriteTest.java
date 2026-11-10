@@ -112,7 +112,7 @@ public class P25_T1_TermPositionWriteTest {
 
     @Test
     public void tr13_idempotentClearOnlyTargetDoc() throws Exception {
-        String share = "SHARED_COMMON_P25T13";  // ASCII: MockJieba 整成 1 term
+        String share = "数据";  // HanLP WORD 层整词（硬依赖 HanLP 取代 MockJieba 的 ASCII 整词后，须用 HanLP 认可的整词）
         long d0 = 7L, d1 = 8L;
         store.putDoc(d0, "doc D0 prefix " + share + " suffix end");
         store.putDoc(d1, "doc D1 other text but also " + share + " final tail");

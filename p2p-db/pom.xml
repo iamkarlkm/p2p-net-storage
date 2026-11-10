@@ -169,6 +169,14 @@
             <version>0.5</version>
             <type>jar</type>
         </dependency>
+
+        <!-- HanLP 中文分词（硬依赖）：FulltextStore Word 层真词切分（HanLpProvider, priority=100）。
+             注：该依赖刻意打破 p21 NG-3「0 NLP 实依赖」红线，故 P21~P29_T5 Gatekeeper 已同步移除 hanlp 的 CNF 断言。 -->
+        <dependency>
+            <groupId>com.hankcs</groupId>
+            <artifactId>hanlp</artifactId>
+            <version>portable-1.8.6</version>
+        </dependency>
     </dependencies>
 
     <build>
