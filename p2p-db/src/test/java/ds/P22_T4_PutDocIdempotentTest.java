@@ -65,16 +65,22 @@ public class P22_T4_PutDocIdempotentTest {
 
     private long parentOf(long docId) { return docId * 10L + LV_WORD; }
 
+    /** T7-1：WORD 行 parentId = 句实体 uid（真实父实体），不再 docId*10+lv → 从索引动态取。 */
+    private long wordParent(long docId) throws IOException {
+        List<TermDictStore.TuRow> rows = store.selectByDocLevel(docId, LV_WORD);
+        return rows.isEmpty() ? -1L : rows.get(0).parentId;
+    }
+
     // ---------------- TR4.1【3 次 putDoc 幂等 Weight 全等】tf/docLen/nTerms 逐 int 全相同 ----------------
     @Test
     public void tr4_1_putDocThreeTimesWeightExactEqual() throws IOException {
         long docId = 401L;
-        long p = parentOf(docId);
         int[] tf1 = new int[U2_TERMS.length]; int[] tf2 = new int[U2_TERMS.length]; int[] tf3 = new int[U2_TERMS.length];
         WeightDocStatRow ds1, ds2, ds3;
 
         // putDoc 第 1 次
         store.putDoc(docId, TEXT_U2);
+        long p = wordParent(docId); // T7-1：WORD 行 parentId = 句实体 uid
         for (int i = 0; i < U2_TERMS.length; i++) tf1[i] = store.getTfForTest(td.toUid(U2_TERMS[i], false), docId, p, LV_WORD);
         ds1 = store.getDocStatForTest(docId);
         Assert.assertNotNull("第1次 docStat 非空", ds1);
@@ -103,7 +109,7 @@ public class P22_T4_PutDocIdempotentTest {
         Assert.assertEquals("TR4.1 docLen3 与 docLen1 全等", ds1.docLen[LV_WORD], ds3.docLen[LV_WORD]);
         Assert.assertEquals("TR4.1 nTerms3 与 nTerms1 全等", ds1.nTerms[LV_WORD], ds3.nTerms[LV_WORD]);
         // 额外：DIST_BUCKET 语义零破坏：3 次 putDoc 后 distanceBetween 结果稳定（d(中,国)=1，中 2 次出现取 seq=0 的距离 1）
-        long pId = parentOf(docId);
+        long pId = p;
         Assert.assertTrue("TR4.1 额外：3 次 putDoc 后中-国距离 1 或 -1（d 有效值）",
             store.distanceBetween("中", "国", docId, pId, LV_WORD) >= -1);
     }
@@ -155,11 +161,11 @@ public class P22_T4_PutDocIdempotentTest {
     @Test
     public void tr4_3_clearDocWeightAndSearchCleanup() throws IOException {
         long docId = 421L;
-        long p = parentOf(docId);
         long docOther = 422L;
 
         // doc1 = 中 国 ...（U2），docOther = 无关内容 用作 search 对照
         store.putDoc(docId, TEXT_U2);
+        long p = wordParent(docId); // T7-1：WORD 行 parentId = 句实体 uid
         store.putDoc(docOther, "机器学习 人工智能 神经网络"); // 无关 doc
 
         // -------- 先断言 clear 前有效 --------

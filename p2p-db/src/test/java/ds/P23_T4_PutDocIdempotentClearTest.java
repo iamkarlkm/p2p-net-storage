@@ -61,7 +61,11 @@ public class P23_T4_PutDocIdempotentClearTest {
     private static final String VEC_WORD_B = "VECB";
     private static final int VEC_DIM = 16;
 
-    private long parentOf(long docId) { return docId * 10L + LV_WORD; }
+    /** T7-1：WORD 行 parentId = 句实体 uid（真实父实体），不再 docId*10+lv → 从索引动态取。 */
+    private long wordParent(long docId) throws IOException {
+        List<TermDictStore.TuRow> rows = store.selectByDocLevel(docId, LV_WORD);
+        return rows.isEmpty() ? -1L : rows.get(0).parentId;
+    }
 
     private static float[] vecForA() {
         float[] r = new float[VEC_DIM];
@@ -85,7 +89,6 @@ public class P23_T4_PutDocIdempotentClearTest {
     @Test
     public void tr4_1_putDocThreeTimesInclVectorExactEqual() throws IOException {
         long docId = 501L;
-        long p = parentOf(docId);
 
         // 先写 term vector（写入 VECA / VECB 的 16 维 float payload）
         long uA = td.toUid(VEC_WORD_A, true);
@@ -104,6 +107,7 @@ public class P23_T4_PutDocIdempotentClearTest {
 
         for (int round = 0; round < 3; round++) {
             store.putDoc(docId, text);
+            long p = wordParent(docId); // T7-1：WORD 行 parentId = 句实体 uid
             for (int i = 0; i < U2_TERMS.length; i++)
                 tf[round][i] = store.getTfForTest(td.toUid(U2_TERMS[i], false), docId, p, LV_WORD);
             tf[round][U2_TERMS.length] = store.getTfForTest(uA, docId, p, LV_WORD);
@@ -165,7 +169,7 @@ public class P23_T4_PutDocIdempotentClearTest {
         store.putDoc(docA, t2);
 
         // 断言：VECA tf 仍=1，VECB tf=0（因为在新 docA 中不出现），但 VECB 的 termVector 不被删除
-        long pA = parentOf(docA);
+        long pA = wordParent(docA);
         Assert.assertEquals("TR4.2 改内容后 docA VECA tf=1", 1, store.getTfForTest(uA, docA, pA, LV_WORD));
         Assert.assertEquals("TR4.2 改内容后 docA VECB tf=0（docA 不再含 VECB）", 0, store.getTfForTest(uB, docA, pA, LV_WORD));
 
@@ -182,7 +186,7 @@ public class P23_T4_PutDocIdempotentClearTest {
         Assert.assertEquals("TR4.2 VECB idf 保留（不重算）", idfBBefore, tsbAfter.idf, 1e-300);
 
         // 再额外：docB 的 VECA tf 不受 docA 改写影响（独立 doc 隔离）
-        long pB = parentOf(docB);
+        long pB = wordParent(docB);
         Assert.assertEquals("TR4.2 独立 docB VECA tf=1（不受 docA 改写影响）", 1,
             store.getTfForTest(uA, docB, pB, LV_WORD));
     }
@@ -245,7 +249,6 @@ public class P23_T4_PutDocIdempotentClearTest {
     @Test
     public void tr4_4_putDocEmptyEqualsClearDocPreservesVector() throws IOException {
         long docId = 531L;
-        long p = parentOf(docId);
         long uA = td.toUid(VEC_WORD_A, true);
         long uB = td.toUid(VEC_WORD_B, true);
         float[] vecA = vecForA();
@@ -255,6 +258,7 @@ public class P23_T4_PutDocIdempotentClearTest {
 
         String text = VEC_WORD_A + " " + VEC_WORD_B + " P1 P2 P3 P4";
         store.putDoc(docId, text);
+        long p = wordParent(docId); // T7-1：WORD 行 parentId = 句实体 uid
         store.recomputeIdfForTerms(Arrays.asList(uA, uB));
         double idfA = store.getTermStatForTest(uA).idf;
         double idfB = store.getTermStatForTest(uB).idf;

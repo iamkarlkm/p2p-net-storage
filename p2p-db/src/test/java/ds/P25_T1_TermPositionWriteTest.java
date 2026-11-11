@@ -17,6 +17,7 @@ import org.junit.rules.TemporaryFolder;
 import com.q3lives.ds.database.fulltext.FulltextSegmenter;
 import com.q3lives.ds.database.fulltext.FulltextStore;
 import com.q3lives.ds.database.fulltext.FulltextStore.PositionSpan;
+import com.q3lives.ds.database.fulltext.TermDictStore;
 
 public class P25_T1_TermPositionWriteTest {
 
@@ -40,6 +41,12 @@ public class P25_T1_TermPositionWriteTest {
 
     private static long parentOf(long docId, int lv) { return docId * 10L + (long)lv; }
 
+    /** T7-1：WORD 行 parentId = 句实体 uid（真实父实体），不再 docId*10+lv → 从索引动态取。 */
+    private long wordParent(long docId) throws IOException {
+        List<TermDictStore.TuRow> rows = store.selectByDocLevel(docId, DS1_WORD);
+        return rows.isEmpty() ? -1L : rows.get(0).parentId;
+    }
+
     @Test
     public void tr11_positionSpanEqualsSegCutUnit() throws Exception {
         final int N = 6;
@@ -57,7 +64,7 @@ public class P25_T1_TermPositionWriteTest {
         int[] sampleTerms = {0, 1, 2};
         for (long d : sampleDocs) {
             String text = docs[(int)(d - 1)];
-            long parent = parentOf(d, DS1_WORD);
+            long parent = wordParent(d);
             Iterator<FulltextSegmenter.CutUnit> it = seg.cut(text, DS1_WORD, FulltextSegmenter.SegOptions.defaults());
             List<FulltextSegmenter.CutUnit> cuts = new ArrayList<>();
             it.forEachRemaining(cuts::add);
@@ -119,8 +126,8 @@ public class P25_T1_TermPositionWriteTest {
 
         long uid = store.getTermDict().toUid(share, false);
         Assert.assertTrue("uid exist for '" + share + "' got=" + uid, uid > 0L);
-        long p0 = parentOf(d0, DS1_WORD);
-        long p1 = parentOf(d1, DS1_WORD);
+        long p0 = wordParent(d0);
+        long p1 = wordParent(d1);
 
         List<PositionSpan> s0pre = store.getTermPositionsForTest(uid, d0, p0, DS1_WORD);
         List<PositionSpan> s1pre = store.getTermPositionsForTest(uid, d1, p1, DS1_WORD);

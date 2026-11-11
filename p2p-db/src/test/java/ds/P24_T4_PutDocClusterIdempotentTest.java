@@ -56,7 +56,6 @@ public class P24_T4_PutDocClusterIdempotentTest {
         System.clearProperty("p2p.db.home");
     }
 
-    private static long parentOf(long docId) { return docId * 10L + LV_WORD; }
     private static float[] vecForA() { float[] r=new float[VEC_DIM]; for(int i=0;i<VEC_DIM;i++) r[i]=(float)Math.sin(i+1.0); return r; }
     private static float[] vecForB() { float[] r=new float[VEC_DIM]; for(int i=0;i<VEC_DIM;i++) r[i]=(float)Math.cos(i+2.0); return r; }
     private static void assertVecEquals(String m,float[]e,float[]a){
@@ -91,7 +90,9 @@ public class P24_T4_PutDocClusterIdempotentTest {
             router.putDocCluster(D0, text);
             router.putDocCluster(D1, text);
             for(int d=0;d<2;d++){
-                long did = (d==0)?D0:D1; int sh=(d==0)?s0:s1; long p=parentOf(did);
+                long did = (d==0)?D0:D1; int sh=(d==0)?s0:s1;
+                // T7-1：WORD 行 parentId = 句实体 uid（不再 docId*10+lv）→ 从该 shard 索引动态取
+                long p = router.getShardForTest(sh).selectByDocLevel(did, LV_WORD).get(0).parentId;
                 for(int i=0;i<U2_TERMS.length;i++){
                     long uid = router.termDictToUidForTest(sh, U2_TERMS[i], false);
                     tf[r][d][i]=router.getTfForTest(sh, uid, did, p, LV_WORD);

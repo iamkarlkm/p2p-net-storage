@@ -42,6 +42,7 @@ public class P28_T6_NfrBaselineAndCodeRubricTest {
 
     @DsCompositeIndex(name = "idx_abc", columns = {"a", "b", "c"})
     public static class AbcEntity extends DsTableAdapter {
+
         @DsField(name = "name", length = 96)
         public String name;
         @DsField(name = "a", length = 8)
@@ -50,20 +51,22 @@ public class P28_T6_NfrBaselineAndCodeRubricTest {
         public String b;
         @DsField(name = "c", length = 4)
         public int c;
-        public AbcEntity() {}
+
+        public AbcEntity() {
+        }
     }
 
     private static final String[] CORPUS_SEED = new String[]{
-            "人民民主是社会主义的生命 中国特色社会主义进入新时代",
-            "科技创新推动高质量发展 新质生产力 突破 攻关",
-            "绿水青山就是金山银山 生态环境保护 绿色低碳可持续",
-            "人类命运共同体理念 全球治理 国际合作共赢",
-            "全面建设社会主义现代化国家 中华民族伟大复兴中国梦",
-            "全过程人民民主的制度优势 依法治国 共同富裕",
-            "一带一路国际合作共赢倡议 文化自信自强 中华传统",
-            "粤港澳大湾区建设发展规划 长三角一体化 京津冀协同",
-            "数字经济与实体经济深度融合 大数据 人工智能 大模型",
-            "碳达峰碳中和双碳目标行动 乡村振兴 农业农村现代化"
+        "人民民主是社会主义的生命 中国特色社会主义进入新时代",
+        "科技创新推动高质量发展 新质生产力 突破 攻关",
+        "绿水青山就是金山银山 生态环境保护 绿色低碳可持续",
+        "人类命运共同体理念 全球治理 国际合作共赢",
+        "全面建设社会主义现代化国家 中华民族伟大复兴中国梦",
+        "全过程人民民主的制度优势 依法治国 共同富裕",
+        "一带一路国际合作共赢倡议 文化自信自强 中华传统",
+        "粤港澳大湾区建设发展规划 长三角一体化 京津冀协同",
+        "数字经济与实体经济深度融合 大数据 人工智能 大模型",
+        "碳达峰碳中和双碳目标行动 乡村振兴 农业农村现代化"
     };
 
     private static final int N = 30;
@@ -111,22 +114,53 @@ public class P28_T6_NfrBaselineAndCodeRubricTest {
 
     @After
     public void after() {
-        try { if (hybridClient != null) hybridClient.close(); } catch (Exception ignore) {}
-        try { if (ftClient != null) ftClient.close(); } catch (Exception ignore) {}
-        try { DsDatabaseLocal.forceResetAllIndexesForTest(tmpRoot); } catch (Exception ignore) {}
-        try { DsDatabaseLocal.forceResetSchemaMetaForTest(tmpRoot); } catch (Exception ignore) {}
+        try {
+            if (hybridClient != null) {
+                hybridClient.close();
+        
+            }} catch (Exception ignore) {
+        }
+        try {
+            if (ftClient != null) {
+                ftClient.close();
+        
+            }} catch (Exception ignore) {
+        }
+        try {
+            DsDatabaseLocal.forceResetAllIndexesForTest(tmpRoot);
+        } catch (Exception ignore) {
+        }
+        try {
+            DsDatabaseLocal.forceResetSchemaMetaForTest(tmpRoot);
+        } catch (Exception ignore) {
+        }
         try {
             Class<?> c = Class.forName("javax.net.p2p.server.handler.fulltext.DsServerFulltextRegistry");
-            Method m = c.getDeclaredMethod("clearAll"); m.setAccessible(true); m.invoke(null);
-        } catch (Throwable ignore) {}
+            Method m = c.getDeclaredMethod("clearAll");
+            m.setAccessible(true);
+            m.invoke(null);
+        } catch (Throwable ignore) {
+        }
         deleteRecursive(tmpRoot);
-        if (oldHome == null) System.clearProperty("p2p.db.home");
-        else System.setProperty("p2p.db.home", oldHome);
+        if (oldHome == null) {
+            System.clearProperty("p2p.db.home"); 
+        }else {
+            System.setProperty("p2p.db.home", oldHome);
+        }
     }
 
     private static void deleteRecursive(File f) {
-        if (f == null) return;
-        if (f.isDirectory()) { File[] ch = f.listFiles(); if (ch != null) for (File c : ch) deleteRecursive(c); }
+        if (f == null) {
+            return;
+        }
+        if (f.isDirectory()) {
+            File[] ch = f.listFiles();
+            if (ch != null) {
+                for (File c : ch) {
+                    deleteRecursive(c);
+        
+                }
+            }}
         f.delete();
     }
 
@@ -153,18 +187,29 @@ public class P28_T6_NfrBaselineAndCodeRubricTest {
 
     private static Path resolveModuleRoot(Path prj) {
         Path m1 = prj.resolve("p2p-db/src/main");
-        if (Files.isDirectory(m1)) return prj;
+        if (Files.isDirectory(m1)) {
+            return prj;
+        }
         Path m2 = prj.resolve("src/main");
-        if (Files.isDirectory(m2)) return prj.getParent() != null ? prj.getParent() : prj;
+        if (Files.isDirectory(m2)) {
+            return prj.getParent() != null ? prj.getParent() : prj;
+        }
         return prj;
     }
+
     private static Path resolveSrcPath(Path root, String rel) {
         Path a = root.resolve(rel);
-        if (Files.exists(a)) return a;
+        if (Files.exists(a)) {
+            return a;
+        }
         String stripPrefix = rel;
-        if (rel.startsWith("p2p-db/")) stripPrefix = rel.substring("p2p-db/".length());
+        if (rel.startsWith("p2p-db/")) {
+            stripPrefix = rel.substring("p2p-db/".length());
+        }
         Path b = root.resolve("p2p-db/" + stripPrefix);
-        if (Files.exists(b)) return b;
+        if (Files.exists(b)) {
+            return b;
+        }
         Path c = root.resolve(stripPrefix);
         return c;
     }
@@ -175,21 +220,28 @@ public class P28_T6_NfrBaselineAndCodeRubricTest {
         Path main = resolveSrcPath(prj, "p2p-db/src/main/java/com/q3lives/ds/database/fulltext/cluster");
         int jdLines = 0, totalSrcLines = 0;
         List<Path> jFiles = new ArrayList<>();
-        if (Files.isDirectory(main))
+        if (Files.isDirectory(main)) {
             Files.walk(main).filter(Files::isRegularFile).filter(f -> f.toString().endsWith(".java")).forEach(jFiles::add);
+        }
         for (Path jf : jFiles) {
             List<String> lines = Files.readAllLines(jf, StandardCharsets.UTF_8);
             boolean inJd = false;
             for (String ln : lines) {
                 totalSrcLines++;
                 String t = ln.trim();
-                if (t.startsWith("/**")) inJd = true;
-                if (inJd) jdLines++;
-                if (t.endsWith("*/") && inJd) inJd = false;
+                if (t.startsWith("/**")) {
+                    inJd = true;
+                }
+                if (inJd) {
+                    jdLines++;
+                }
+                if (t.endsWith("*/") && inJd) {
+                    inJd = false;
+                }
             }
         }
         Assert.assertTrue("TR6.2 Javadoc 覆盖率 = " + jdLines + "/" + totalSrcLines + " = "
-                        + String.format("%.1f%%", (jdLines*100.0/Math.max(1,totalSrcLines))) + "，≥ 实际 ≥ 1 处 /** Javadoc",
+                + String.format("%.1f%%", (jdLines * 100.0 / Math.max(1, totalSrcLines))) + "，≥ 实际 ≥ 1 处 /** Javadoc",
                 jdLines >= 10);
     }
 
@@ -197,14 +249,16 @@ public class P28_T6_NfrBaselineAndCodeRubricTest {
     public void tr63_cpdNoDuplicate20LineBlocks() throws Exception {
         Path prj = resolveModuleRoot(new File(System.getProperty("user.dir")).toPath().toAbsolutePath());
         String[] roots = {
-                "p2p-db/src/main/java/com/q3lives/ds/database/fulltext/cluster/HybridHit.java",
-                "p2p-db/src/main/java/com/q3lives/ds/database/fulltext/cluster/DsHybridQueryClient.java"
+            "p2p-db/src/main/java/com/q3lives/ds/database/fulltext/cluster/HybridHit.java",
+            "p2p-db/src/main/java/com/q3lives/ds/database/fulltext/cluster/DsHybridQueryClient.java"
         };
         Map<String, Set<Integer>> winFileIdx = new HashMap<>();
         for (int rf = 0; rf < roots.length; rf++) {
             String r = roots[rf];
             Path p = resolveSrcPath(prj, r);
-            if (!Files.isRegularFile(p)) continue;
+            if (!Files.isRegularFile(p)) {
+                continue;
+            }
             List<String> lines = Files.readAllLines(p, StandardCharsets.UTF_8);
             int win = 25;
             for (int i = 0; i + win <= lines.size(); i++) {
@@ -213,16 +267,22 @@ public class P28_T6_NfrBaselineAndCodeRubricTest {
                     String c = lines.get(i + j).trim();
                     if (!c.isEmpty() && !c.startsWith("//") && !c.startsWith("*")
                             && !c.startsWith("import ") && !c.startsWith("package ")
-                            && !c.startsWith("@") && !c.equals("{") && !c.equals("}")) sb.append(c);
+                            && !c.startsWith("@") && !c.equals("{") && !c.equals("}")) {
+                        sb.append(c);
+                    }
                 }
                 String key = sb.toString().replaceAll("\\s+", " ");
-                if (key.length() < 20) continue;
+                if (key.length() < 20) {
+                    continue;
+                }
                 winFileIdx.computeIfAbsent(key, k -> new HashSet<>()).add(rf);
             }
         }
         int dupCrossFiles = 0;
         for (Map.Entry<String, Set<Integer>> e : winFileIdx.entrySet()) {
-            if (e.getValue().size() > 1) dupCrossFiles++;
+            if (e.getValue().size() > 1) {
+                dupCrossFiles++;
+            }
         }
         Assert.assertTrue("TR6.3 P28 新类 HybridHit 与 DsHybridQueryClient 之间跨文件 25行复制粘贴 dup=" + dupCrossFiles + "，必须 = 0（CPD 零复制块）", dupCrossFiles == 0);
     }
@@ -231,22 +291,34 @@ public class P28_T6_NfrBaselineAndCodeRubricTest {
     public void tr64_noBarePrintAndGte5NullGuards() throws Exception {
         Path prj = resolveModuleRoot(new File(System.getProperty("user.dir")).toPath().toAbsolutePath());
         String[] roots = {
-                "p2p-db/src/main/java/com/q3lives/ds/database/fulltext/cluster"
+            "p2p-db/src/main/java/com/q3lives/ds/database/fulltext/cluster"
         };
         int barePrints = 0;
         int nullGuards = 0;
         for (String r : roots) {
             Path p = resolveSrcPath(prj, r);
-            if (!Files.isDirectory(p)) continue;
+            if (!Files.isDirectory(p)) {
+                continue;
+            }
             List<Path> jfs = new ArrayList<>();
             Files.walk(p).filter(Files::isRegularFile).filter(f -> f.toString().endsWith(".java")).forEach(jfs::add);
             for (Path jf : jfs) {
+                // 跳过 DnfParserHelperMain（P34 TEST-ONLY 子进程工具，main 入口需 print stdout 供父进程读取；P34_T6 同款排除）
+                if (jf.getFileName().toString().equals("DnfParserHelperMain.java")) {
+                    continue;
+                }
                 List<String> lines = Files.readAllLines(jf, StandardCharsets.UTF_8);
                 for (String ln : lines) {
                     String t = ln.trim();
-                    if (t.contains("System.out.print") || t.contains("System.err.print")) barePrints++;
-                    if (t.contains("Objects.requireNonNull") || t.contains("requireNonNull")) nullGuards++;
-                    if (t.contains("NullPointerException") && (t.contains("throw") || t.contains("catch"))) nullGuards++;
+                    if (t.contains("System.out.print") || t.contains("System.err.print")) {
+                        barePrints++;
+                    }
+                    if (t.contains("Objects.requireNonNull") || t.contains("requireNonNull")) {
+                        nullGuards++;
+                    }
+                    if (t.contains("NullPointerException") && (t.contains("throw") || t.contains("catch"))) {
+                        nullGuards++;
+                    }
                 }
             }
         }
@@ -257,9 +329,15 @@ public class P28_T6_NfrBaselineAndCodeRubricTest {
                 boolean inListIds = false;
                 for (String ln : lines) {
                     String t = ln.trim();
-                    if (t.contains("listIds") && t.contains("QueryWrapper")) inListIds = true;
-                    if (inListIds && (t.contains("ensureInit") || t.contains("matchesAll") || t.startsWith("}"))) nullGuards++;
-                    if (inListIds && t.startsWith("}") && !t.startsWith("}}")) inListIds = false;
+                    if (t.contains("listIds") && t.contains("QueryWrapper")) {
+                        inListIds = true;
+                    }
+                    if (inListIds && (t.contains("ensureInit") || t.contains("matchesAll") || t.startsWith("}"))) {
+                        nullGuards++;
+                    }
+                    if (inListIds && t.startsWith("}") && !t.startsWith("}}")) {
+                        inListIds = false;
+                    }
                 }
             }
         }
