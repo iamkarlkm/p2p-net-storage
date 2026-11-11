@@ -32,10 +32,11 @@ import com.q3lives.ds.database.fulltext.sched.CompactionScheduler;
 /**
  * P55 T5：Gatekeeper 9Y（9 TR / 0F0E）。
  *
- * <p>Y1 ZeroLeak3 ≤3（新包 {@code cluster/stats/} = 2）+ 既有锁定包类数守恒；Y2 NG-3 零依赖；
- * Y3 R10 零新线程（去注释判定）；Y4 Facade 单调不减（P21~P54 fulltext 0 改 + {@code DsMemory} public 面 0 改）；
- * Y5 既有 API 0 改；Y6 P21~P55 编译兼容 + 新方法可达；Y7 {@code /sync/api/db-stats} 端点已注册；
- * Y8 注册表并发安全；Y9 0 TODO/FIXME/HACK（含移除 {@code DsClusterMonitor} 既有 TODO）。
+ * <p>
+ * Y1 ZeroLeak3 ≤3（新包 {@code cluster/stats/} = 2）+ 既有锁定包类数守恒；Y2 NG-3 零依赖； Y3 R10
+ * 零新线程（去注释判定）；Y4 Facade 单调不减（P21~P54 fulltext 0 改 + {@code DsMemory} public 面 0
+ * 改）； Y5 既有 API 0 改；Y6 P21~P55 编译兼容 + 新方法可达；Y7 {@code /sync/api/db-stats}
+ * 端点已注册； Y8 注册表并发安全；Y9 0 TODO/FIXME/HACK（含移除 {@code DsClusterMonitor} 既有 TODO）。
  */
 public class P55_T5_Gatekeeper9YTest {
 
@@ -72,7 +73,7 @@ public class P55_T5_Gatekeeper9YTest {
         Assert.assertEquals("wordnet/ 仍 3", 3, countTopLevelJava(FT + "/wordnet"));
         Assert.assertEquals("cluster/agg/ 仍 6", 6, countTopLevelJava(FT + "/cluster/agg"));
         Assert.assertEquals("cluster/groupby/ 仍 5", 5, countTopLevelJava(FT + "/cluster/groupby"));
-        Assert.assertEquals("cluster/rowsource/ 仍 2", 2, countTopLevelJava(FT + "/cluster/rowsource"));
+        Assert.assertEquals("cluster/rowsource/ 仍 3", 3, countTopLevelJava(FT + "/cluster/rowsource"));
         Assert.assertEquals("cluster/parser/v3/ 仍 5", 5, countTopLevelJava(FT + "/cluster/parser/v3"));
         Assert.assertEquals("columnar/pushdown/ 仍 2", 2, countTopLevelJava(COL + "/pushdown"));
         Assert.assertEquals("columnar/aggpushdown/ 仍 1", 1, countTopLevelJava(COL + "/aggpushdown"));

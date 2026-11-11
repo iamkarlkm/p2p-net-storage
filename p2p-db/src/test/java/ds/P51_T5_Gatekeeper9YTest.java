@@ -99,7 +99,7 @@ public class P51_T5_Gatekeeper9YTest {
         Assert.assertEquals("compact/ 源文件数", 5, countJava(COMPACT_SRC));
         Assert.assertEquals("cluster/groupby/ 源文件数", 5, countJava(GROUPBY_SRC));
         Assert.assertEquals("layered/ 源文件数", 3, countJava(LAYERED_SRC));
-        Assert.assertEquals("cluster/rowsource/ 源文件数", 2, countJava(ROWS_SRC));
+        Assert.assertEquals("cluster/rowsource/ 源文件数（P45 1 + P46 1 + P58 1）", 3, countJava(ROWS_SRC));
         Assert.assertEquals("P47 sched/ 源文件数", 3, countJava(SCHED_SRC));
         Assert.assertEquals("P48 autocompact/ 源文件数", 3, countJava(AUTO_SRC));
         Assert.assertEquals("P49 autoseg/ 源文件数", 3, countJava(AUTOSEG_SRC));

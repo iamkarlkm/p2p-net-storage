@@ -38,13 +38,14 @@ import com.q3lives.ds.database.fulltext.wordnet.WordNetSnapshot;
  * P54 T5：Gatekeeper 9Y 9 TR 0F0E。
  *
  * <p>
- * Y1 ZeroLeak3=3 + <b>十三重递归文件数守恒全不变</b>（segment=5 / parser/v3=5 / agg=6 / compact=5 /
- * groupby=5 / layered=3 / rowsource=2 / sched=3 / autocompact=3 / autoseg=3 / wordnet=3 / pushdown=2 /
- * aggpushdown=1）；Y2 NG-3 零依赖（{@code wordnet/} forbidden 引用 + import 白名单 + pom banned 0 命中）；Y3
- * TOPK 铁律（去注释后 0 {@code bucketAccessCounter} / 0 {@code SearchOptions}）；Y4 Facade 单调不减（P21 本阶段 0
- * 改 + P37~P53 目录源码 0 改 + P51 3 类旧签名不消失）；Y5 路由公式 0 改；Y6 P21~P54 编译兼容 + P54 新方法
- * {@code getMethod} 可达；Y7 {@code HybridHit} ctor=2；Y8 {@code ShardTransport} 5 方法；Y9 新增/改源码 0
- * TODO/FIXME/HACK。
+ * Y1 ZeroLeak3=3 + <b>十三重递归文件数守恒全不变</b>（segment=5 / parser/v3=5 / agg=6 /
+ * compact=5 / groupby=5 / layered=3 / rowsource=2 / sched=3 / autocompact=3 /
+ * autoseg=3 / wordnet=3 / pushdown=2 / aggpushdown=1）；Y2 NG-3
+ * 零依赖（{@code wordnet/} forbidden 引用 + import 白名单 + pom banned 0 命中）；Y3 TOPK
+ * 铁律（去注释后 0 {@code bucketAccessCounter} / 0 {@code SearchOptions}）；Y4 Facade
+ * 单调不减（P21 本阶段 0 改 + P37~P53 目录源码 0 改 + P51 3 类旧签名不消失）；Y5 路由公式 0 改；Y6 P21~P54
+ * 编译兼容 + P54 新方法 {@code getMethod} 可达；Y7 {@code HybridHit} ctor=2；Y8
+ * {@code ShardTransport} 5 方法；Y9 新增/改源码 0 TODO/FIXME/HACK。
  */
 public class P54_T5_Gatekeeper9YTest {
 
@@ -103,7 +104,7 @@ public class P54_T5_Gatekeeper9YTest {
         Assert.assertEquals("compact/ 源文件数", 5, countJava(COMPACT_SRC));
         Assert.assertEquals("cluster/groupby/ 源文件数", 5, countJava(GROUPBY_SRC));
         Assert.assertEquals("layered/ 源文件数", 3, countJava(LAYERED_SRC));
-        Assert.assertEquals("cluster/rowsource/ 源文件数", 2, countJava(ROWS_SRC));
+        Assert.assertEquals("cluster/rowsource/ 源文件数（P45 1 + P46 1 + P58 1）", 3, countJava(ROWS_SRC));
         Assert.assertEquals("P47 sched/ 源文件数", 3, countJava(SCHED_SRC));
         Assert.assertEquals("P48 autocompact/ 源文件数", 3, countJava(AUTO_SRC));
         Assert.assertEquals("P49 autoseg/ 源文件数", 3, countJava(AUTOSEG_SRC));

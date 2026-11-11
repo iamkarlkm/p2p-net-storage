@@ -43,15 +43,18 @@ import javax.net.p2p.model.DbQueryOrder;
  * P53 T5：Gatekeeper 9Y 9 TR 0F0E。
  *
  * <p>
- * Y1 ZeroLeak3=3 + <b>十三重递归文件数守恒</b>（segment=5 / parser/v3=5 / agg=6 / compact=5 /
- * groupby=5 / layered=3 / rowsource=2 / sched=3 / autocompact=3 / autoseg=3 / wordnet=3 /
- * columnar/pushdown=2 / <b>columnar/aggpushdown=1（第 13 处锁）</b>）；Y2 NG-3 零依赖（
- * {@code aggpushdown/} 仅 JDK + first-party + {@code javax.net.p2p.model.}）；Y3 {@code P2PCommand}
- * 既有枚举值 0 变 + 双份定义（core 数值版 / sdk ordinal 版 / ordinals 表）两侧均含新命令；Y4 Facade
- * 单调不减（P21/P37/P40/P42/P47/P48/P49/P51/P52 目录源码 0 改 + {@link ColumnScanPushdown} 公开签名 0
- * 改 + {@link ColumnAggPushdown} 新类契约）；Y5 路由公式 0 改；Y6 P21~P53 编译兼容（含 P53 新类）；Y7
- * {@code DbQuery}/{@code DbQueryOrder}/{@code DbQueryCriterion} 模型字段 0 改；Y8 段格式 0 变更（
- * {@code MAGIC="DIDX"} / {@code VERSION=1}）；Y9 新增源码 0 TODO/FIXME/HACK + 0 新线程。
+ * Y1 ZeroLeak3=3 + <b>十三重递归文件数守恒</b>（segment=5 / parser/v3=5 / agg=6 /
+ * compact=5 / groupby=5 / layered=3 / rowsource=2 / sched=3 / autocompact=3 /
+ * autoseg=3 / wordnet=3 / columnar/pushdown=2 / <b>columnar/aggpushdown=1（第 13
+ * 处锁）</b>）；Y2 NG-3 零依赖（ {@code aggpushdown/} 仅 JDK + first-party +
+ * {@code javax.net.p2p.model.}）；Y3 {@code P2PCommand} 既有枚举值 0 变 + 双份定义（core 数值版
+ * / sdk ordinal 版 / ordinals 表）两侧均含新命令；Y4 Facade
+ * 单调不减（P21/P37/P40/P42/P47/P48/P49/P51/P52 目录源码 0 改 +
+ * {@link ColumnScanPushdown} 公开签名 0 改 + {@link ColumnAggPushdown} 新类契约）；Y5 路由公式
+ * 0 改；Y6 P21~P53 编译兼容（含 P53 新类）；Y7
+ * {@code DbQuery}/{@code DbQueryOrder}/{@code DbQueryCriterion} 模型字段 0 改；Y8 段格式
+ * 0 变更（ {@code MAGIC="DIDX"} / {@code VERSION=1}）；Y9 新增源码 0 TODO/FIXME/HACK + 0
+ * 新线程。
  *
  * <p>
  * 所有跨模块源路径经 {@link #projectRoot()} 自 {@code user.dir} 向上回溯定位含 {@code p2p-db} 与
@@ -123,7 +126,7 @@ public class P53_T5_Gatekeeper9YTest {
         Assert.assertEquals("compact/ 源文件数", 5, countJava(COMPACT_SRC));
         Assert.assertEquals("cluster/groupby/ 源文件数", 5, countJava(GROUPBY_SRC));
         Assert.assertEquals("layered/ 源文件数", 3, countJava(LAYERED_SRC));
-        Assert.assertEquals("cluster/rowsource/ 源文件数", 2, countJava(ROWS_SRC));
+        Assert.assertEquals("cluster/rowsource/ 源文件数（P45 1 + P46 1 + P58 1）", 3, countJava(ROWS_SRC));
         Assert.assertEquals("P47 sched/ 源文件数", 3, countJava(SCHED_SRC));
         Assert.assertEquals("P48 autocompact/ 源文件数", 3, countJava(AUTO_SRC));
         Assert.assertEquals("P49 autoseg/ 源文件数", 3, countJava(AUTOSEG_SRC));

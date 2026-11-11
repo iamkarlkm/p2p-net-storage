@@ -38,12 +38,13 @@ import com.q3lives.ds.database.fulltext.segment.DsIndexSegmentStore;
  * P48 T5：Gatekeeper 9Y 9 TR 0F0E。
  *
  * <p>
- * Y1 ZeroLeak3=3 + 八重递归文件数守恒（segment=5 / parser/v3=5 / agg=6 / compact=5 / groupby=5 /
- * layered=3 / rowsource=2 / sched=3）+ {@code autocompact}=3（P48 新增兄弟包）；Y2 NG-3 零依赖； Y3
- * TOPK 铁律（0 触 bucket 计数 + 运行期 {@link SearchOptions} 只读）；Y4 Facade 单调不减（P37 segment 5 +
- * P40 compact 5 + P47 sched 3 计数锁定 + P21 {@code FulltextStore} 源码 0 触）；Y5 路由公式（
- * {@code ShardRouter} UNIT/DOC + {@link DsIdLayout} 位布局）；Y6 P21~P48 编译兼容；Y7 HybridHit
- * ctor=2；Y8 ShardTransport 5 方法；Y9 0 TODO/FIXME/HACK。
+ * Y1 ZeroLeak3=3 + 八重递归文件数守恒（segment=5 / parser/v3=5 / agg=6 / compact=5 /
+ * groupby=5 / layered=3 / rowsource=2 / sched=3）+ {@code autocompact}=3（P48
+ * 新增兄弟包）；Y2 NG-3 零依赖； Y3 TOPK 铁律（0 触 bucket 计数 + 运行期 {@link SearchOptions}
+ * 只读）；Y4 Facade 单调不减（P37 segment 5 + P40 compact 5 + P47 sched 3 计数锁定 + P21
+ * {@code FulltextStore} 源码 0 触）；Y5 路由公式（ {@code ShardRouter} UNIT/DOC +
+ * {@link DsIdLayout} 位布局）；Y6 P21~P48 编译兼容；Y7 HybridHit ctor=2；Y8 ShardTransport
+ * 5 方法；Y9 0 TODO/FIXME/HACK。
  */
 public class P48_T5_Gatekeeper9YTest {
 
@@ -93,7 +94,7 @@ public class P48_T5_Gatekeeper9YTest {
         Assert.assertEquals("compact/ 源文件数", 5, countJava(COMPACT_SRC));
         Assert.assertEquals("cluster/groupby/ 源文件数", 5, countJava(GROUPBY_SRC));
         Assert.assertEquals("layered/ 源文件数", 3, countJava(LAYERED_SRC));
-        Assert.assertEquals("cluster/rowsource/ 源文件数（P45 1 + P46 1）", 2, countJava(ROWS_SRC));
+        Assert.assertEquals("cluster/rowsource/ 源文件数（P45 1 + P46 1 + P58 1）", 3, countJava(ROWS_SRC));
         Assert.assertEquals("P47 sched/ 源文件数", 3, countJava(SCHED_SRC));
         Assert.assertEquals("P48 autocompact/ 源文件数", 3, countJava(AUTO_SRC));
 

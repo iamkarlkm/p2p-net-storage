@@ -37,12 +37,14 @@ import com.q3lives.ds.database.fulltext.layered.LayeredSnapshot;
  *
  * <p>
  * Y1 ZeroLeak3=3 + 十二重递归文件数守恒（segment=5 / parser/v3=5 / agg=6 / compact=5 /
- * groupby=5 / layered=3 / rowsource=2 / sched=3 / autocompact=3 / autoseg=3 / wordnet=3 /
- * <b>columnar/pushdown=2</b>）；Y2 NG-3 零依赖（{@code pushdown/} 仅 JDK + first-party）；Y3
- * TOPK 铁律（<b>去注释后</b> 0 触 {@code bucketAccessCounter} / {@code SearchOptions}）；Y4 Facade
- * 单调不减（P21/P37/P40/P42/P47/P48/P49/P51 目录源码 0 改 + {@link DbQueryToQueryWrapper} 契约 +
- * {@link ColumnScanPushdown} 新类契约）；Y5 路由公式 0 改；Y6 P21~P52 编译兼容；Y7 {@code HybridHit}
- * ctor=2；Y8 {@code ShardTransport} 5 方法；Y9 新增源码 0 TODO/FIXME/HACK。
+ * groupby=5 / layered=3 / rowsource=2 / sched=3 / autocompact=3 / autoseg=3 /
+ * wordnet=3 /
+ * <b>columnar/pushdown=2</b>）；Y2 NG-3 零依赖（{@code pushdown/} 仅 JDK +
+ * first-party）；Y3 TOPK 铁律（<b>去注释后</b> 0 触 {@code bucketAccessCounter} /
+ * {@code SearchOptions}）；Y4 Facade 单调不减（P21/P37/P40/P42/P47/P48/P49/P51 目录源码 0
+ * 改 + {@link DbQueryToQueryWrapper} 契约 + {@link ColumnScanPushdown} 新类契约）；Y5
+ * 路由公式 0 改；Y6 P21~P52 编译兼容；Y7 {@code HybridHit} ctor=2；Y8
+ * {@code ShardTransport} 5 方法；Y9 新增源码 0 TODO/FIXME/HACK。
  */
 public class P52_T5_Gatekeeper9YTest {
 
@@ -99,7 +101,7 @@ public class P52_T5_Gatekeeper9YTest {
         Assert.assertEquals("compact/ 源文件数", 5, countJava(COMPACT_SRC));
         Assert.assertEquals("cluster/groupby/ 源文件数", 5, countJava(GROUPBY_SRC));
         Assert.assertEquals("layered/ 源文件数", 3, countJava(LAYERED_SRC));
-        Assert.assertEquals("cluster/rowsource/ 源文件数", 2, countJava(ROWS_SRC));
+        Assert.assertEquals("cluster/rowsource/ 源文件数（P45 1 + P46 1 + P58 1）", 3, countJava(ROWS_SRC));
         Assert.assertEquals("P47 sched/ 源文件数", 3, countJava(SCHED_SRC));
         Assert.assertEquals("P48 autocompact/ 源文件数", 3, countJava(AUTO_SRC));
         Assert.assertEquals("P49 autoseg/ 源文件数", 3, countJava(AUTOSEG_SRC));

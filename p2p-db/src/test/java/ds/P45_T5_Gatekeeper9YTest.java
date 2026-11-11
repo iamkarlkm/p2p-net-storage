@@ -41,11 +41,11 @@ import com.q3lives.ds.database.fulltext.cluster.parser.v2.ConditionNode;
  *
  * <p>
  * Y1 ZeroLeak3=3 + 六重递归文件数守恒（segment=5 / parser/v3=5 / agg=6 / compact=5 /
- * groupby=5 / layered=3）+ {@code rowsource}=2（P45 1 + P46
- * {@code ColumnarAggRowSource} 1）；Y2 NG-3 零依赖；Y3 TOPK 铁律（0 触 bucket 计数 + 运行期
- * {@link SearchOptions} 只读）；Y4 Facade 单调不减（Q1 例外仅 {@code toWrapper} 可见性）；Y5
- * 路由公式； Y6 P21~P45 编译兼容；Y7 HybridHit ctor=2；Y8 ShardTransport 5 方法；Y9 0
- * TODO/FIXME/HACK。
+ * groupby=5 / layered=3）+ {@code rowsource}=3（P45 1 + P46
+ * {@code ColumnarAggRowSource} 1 + P58 {@code UnifiedAggRowSource} 1）；Y2 NG-3
+ * 零依赖；Y3 TOPK 铁律（0 触 bucket 计数 + 运行期 {@link SearchOptions} 只读）；Y4 Facade
+ * 单调不减（Q1 例外仅 {@code toWrapper} 可见性）；Y5 路由公式； Y6 P21~P45 编译兼容；Y7 HybridHit
+ * ctor=2；Y8 ShardTransport 5 方法；Y9 0 TODO/FIXME/HACK。
  */
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 public class P45_T5_Gatekeeper9YTest {
@@ -157,7 +157,7 @@ public class P45_T5_Gatekeeper9YTest {
         Assert.assertEquals("compact/ 源文件数", 5, countJava(COMPACT_SRC));
         Assert.assertEquals("cluster/groupby/ 源文件数", 5, countJava(GROUPBY_SRC));
         Assert.assertEquals("layered/ 源文件数", 3, countJava(LAYERED_SRC));
-        Assert.assertEquals("cluster/rowsource/ 源文件数（P45 1 + P46 1）", 2, countJava(ROWS_SRC));
+        Assert.assertEquals("cluster/rowsource/ 源文件数（P45 1 + P46 1 + P58 1）", 3, countJava(ROWS_SRC));
 
         URL rowsUrl = Thread.currentThread().getContextClassLoader().getResource(ROWS_REL);
         Assert.assertNotNull("cluster/rowsource 子包资源必须存在", rowsUrl);
@@ -168,7 +168,7 @@ public class P45_T5_Gatekeeper9YTest {
     public void y2_Ng3_RowsourceImportsJdkAndFirstPartyOnly() throws Exception {
         List<File> javaFiles = new ArrayList<>();
         collectJavaFiles(srcDir(ROWS_SRC), javaFiles);
-        Assert.assertEquals("rowsource 源文件数应为 2（P45 1 + P46 1）", 2, javaFiles.size());
+        Assert.assertEquals("rowsource 源文件数应为 3（P45 1 + P46 1 + P58 1）", 3, javaFiles.size());
         for (File f : javaFiles) {
             String content = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
             for (String pkg : new String[]{"io.netty", "io.grpc", "javax.net.p2p.client", "p2p.client"}) {
