@@ -114,6 +114,7 @@ public class DsFixedBucketStore {
 
     private final String rootDir;
     private final ConcurrentHashMap<String, Bucket> buckets = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, String> spacePathCache = new ConcurrentHashMap<>();
     private final ReentrantLock bucketLock = new ReentrantLock();
 
     /**
@@ -874,7 +875,7 @@ public class DsFixedBucketStore {
     }
 
     private Bucket getBucket(String space, String type, int power) throws IOException {
-        String spacePath = DsPathUtil.dottedToLinuxPath(space, "space");
+        String spacePath = spacePathCache.computeIfAbsent(space, s -> DsPathUtil.dottedToLinuxPath(s, "space"));
         DsPathUtil.validateSegment(type, "type");
         String key = space + "_" + type + "_" + power;
         Bucket b = buckets.get(key);
