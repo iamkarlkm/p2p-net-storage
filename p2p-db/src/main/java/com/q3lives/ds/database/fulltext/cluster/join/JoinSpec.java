@@ -158,9 +158,10 @@ public final class JoinSpec<R extends DsTableAdapter> {
      * <p>
      * 规则：扫描 mainEntityClass 所有字段，含 {@link DsOneToOne} 注解 → 1) joinProp() 作为
      * relatedField（从表 Join 列名）； 2) props() default "" → outerField="id"（直接取主表
-     * entity.getId() == 从表 joinProp 列值）； props() 非空时作为 outerField（未实现 MVP 抛
-     * UOE，留 P34 DSL v2）； 3) relatedClass = 字段类型（必须继承 DsTableAdapter，否则 IAE）； 4)
-     * relatedField 对应从表字段必须是 Long 类型且标注 @DsField（否则 IAE，Fail-First）。
+     * entity.getId() == 从表 joinProp 列值）； props() 非空时作为 outerField（非主键 Join，
+     * 主表该属性必须 Long/long 且标注 @DsField，否则 IAE）； 3) relatedClass = 字段类型（必须继承
+     * DsTableAdapter，否则 IAE）； 4) relatedField 对应从表字段必须是 Long 类型且标注 @DsField
+     *（否则 IAE，Fail-First）。
      *
      * @param mainEntityClass 主表实体类（非 null）
      * @param <T> 主表类型（DsTableAdapter 子类）
@@ -181,45 +182,8 @@ public final class JoinSpec<R extends DsTableAdapter> {
             if (ann == null) {
                 continue;
             }
-            Class<?> fieldType = f.getType();
-            if (!DsTableAdapter.class.isAssignableFrom(fieldType)) {
-                throw new IllegalArgumentException(
-                        "@DsOneToOne field[" + f.getName() + "] type must be DsTableAdapter subclass, got "
-                        + fieldType.getName());
-            }
-            Class<? extends DsTableAdapter> relatedClass = (Class<? extends DsTableAdapter>) fieldType;
-            String joinProp = ann.joinProp();
-            if (joinProp == null || joinProp.isBlank()) {
-                throw new IllegalArgumentException(
-                        "@DsOneToOne(joinProp) cannot be blank on field[" + f.getName() + "]");
-            }
-            Field relatedF;
-            try {
-                relatedF = relatedClass.getDeclaredField(joinProp);
-            } catch (NoSuchFieldException ex) {
-                throw new IllegalArgumentException(
-                        "relatedClass[" + relatedClass.getName() + "] missing joinProp field: '" + joinProp
-                        + "' (field[" + f.getName() + "])", ex);
-            }
-            if (relatedF.getType() != Long.class && relatedF.getType() != long.class) {
-                throw new IllegalArgumentException(
-                        "@DsOneToOne joinProp[" + joinProp + "] must be Long/long (not Long type, got "
-                        + relatedF.getType().getName() + ") on " + relatedClass.getName());
-            }
-            DsField dsF = relatedF.getAnnotation(DsField.class);
-            if (dsF == null) {
-                throw new IllegalArgumentException(
-                        "relatedClass[" + relatedClass.getName() + "] joinProp[" + joinProp
-                        + "] missing @DsField annotation (ORM 列未注册)");
-            }
-            String props = ann.props();
-            String outerField = (props == null || props.isBlank()) ? "id" : props;
-            if (!"id".equals(outerField)) {
-                throw new UnsupportedOperationException(
-                        "@DsOneToOne.props() MVP v1.0 仅支持 \"\"/\"id\" (主表 entity.getId() 等值), got '"
-                        + props + "' on field[" + f.getName() + "] (留 P34 DSL v2 支持非主键 outerField)");
-            }
-            out.add(new JoinSpec(relatedClass, outerField, joinProp, null));
+            out.add(parseJoinField(mainEntityClass, f, "@DsOneToOne", ann.joinProp(), ann.props(),
+                    JoinMode.ONE_TO_ONE, 0));
         }
         return Collections.unmodifiableList(out);
     }
@@ -258,7 +222,8 @@ public final class JoinSpec<R extends DsTableAdapter> {
      * <p>
      * 规则：扫描 mainEntityClass 所有字段，含 {@link DsManyToOne} 注解 → 1) joinProp() 作为
      * relatedField（从表外键列）； 2) props() default "" → outerField="id"（直接取主表
-     * entity.getId() == 从表 joinProp 列值）； 3) relatedClass = 字段类型（必须继承
+     * entity.getId() == 从表 joinProp 列值）； props() 非空时作为 outerField（非主键 Join，
+     * 主表该属性必须 Long/long 且标注 @DsField，否则 IAE）； 3) relatedClass = 字段类型（必须继承
      * DsTableAdapter，否则 IAE）； 4) relatedField 对应从表字段必须是 Long 类型且标注 @DsField（否则
      * IAE，Fail-First）； 5) fetchSize() default 256，∈ [1, 4096] 硬上限（与 P35 6
      * 参构造器一致）。
@@ -282,48 +247,145 @@ public final class JoinSpec<R extends DsTableAdapter> {
             if (ann == null) {
                 continue;
             }
-            Class<?> fieldType = f.getType();
-            if (!DsTableAdapter.class.isAssignableFrom(fieldType)) {
-                throw new IllegalArgumentException(
-                        "@DsManyToOne field[" + f.getName() + "] type must be DsTableAdapter subclass, got "
-                        + fieldType.getName());
-            }
-            Class<? extends DsTableAdapter> relatedClass = (Class<? extends DsTableAdapter>) fieldType;
-            String joinProp = ann.joinProp();
-            if (joinProp == null || joinProp.isBlank()) {
-                throw new IllegalArgumentException(
-                        "@DsManyToOne(joinProp) cannot be blank on field[" + f.getName() + "]");
-            }
-            Field relatedF;
-            try {
-                relatedF = relatedClass.getDeclaredField(joinProp);
-            } catch (NoSuchFieldException ex) {
-                throw new IllegalArgumentException(
-                        "relatedClass[" + relatedClass.getName() + "] missing joinProp field: '" + joinProp
-                        + "' (field[" + f.getName() + "])", ex);
-            }
-            if (relatedF.getType() != Long.class && relatedF.getType() != long.class) {
-                throw new IllegalArgumentException(
-                        "@DsManyToOne joinProp[" + joinProp + "] must be Long/long on " + relatedClass.getName());
-            }
-            DsField dsF = relatedF.getAnnotation(DsField.class);
-            if (dsF == null) {
-                throw new IllegalArgumentException(
-                        "relatedClass[" + relatedClass.getName() + "] joinProp[" + joinProp
-                        + "] missing @DsField annotation (ORM 列未注册)");
-            }
-            String props = ann.props();
-            String outerField = (props == null || props.isBlank()) ? "id" : props;
-            if (!"id".equals(outerField)) {
-                throw new UnsupportedOperationException(
-                        "@DsManyToOne.props() MVP v1.0 仅支持 \"\"/\"id\" (主表 entity.getId() 等值), got '"
-                        + props + "' on field[" + f.getName() + "]");
-            }
-            int fetchSize = ann.fetchSize();
-            out.add(new JoinSpec(relatedClass, outerField, joinProp, null,
-                    JoinMode.MANY_TO_ONE, fetchSize));
+            out.add(parseJoinField(mainEntityClass, f, "@DsManyToOne", ann.joinProp(), ann.props(),
+                    JoinMode.MANY_TO_ONE, ann.fetchSize()));
         }
         return Collections.unmodifiableList(out);
+    }
+
+    /**
+     * 反射工厂共用：解析单个 Join 注解字段（{@link DsOneToOne} / {@link DsManyToOne}）为
+     * JoinSpec。Fail-First：注解字段类型必须 DsTableAdapter 子类；joinProp 非空；从表 joinProp
+     * 声明字段存在且为 Long/long；该字段标注 {@link DsField}；主表 outerField 合法
+     * （{@link #validateOuterField}）。
+     *
+     * @param mainEntityClass 主表实体类
+     * @param f 携带 Join 注解的字段
+     * @param annName 注解名（异常 message 溯源用，如 "@DsOneToOne"）
+     * @param joinProp 从表 Join 列名（外键列）
+     * @param props 主表 Join 列名（blank → "id"）
+     * @param mode Join 模式
+     * @param batchSize MANY_TO_ONE 批量（ONE_TO_ONE 传 0）
+     * @return JoinSpec（raw）
+     * @throws IllegalArgumentException 违反上述任一 Fail-First 契约
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static <T extends DsTableAdapter> JoinSpec<?> parseJoinField(
+            Class<T> mainEntityClass, Field f, String annName, String joinProp, String props,
+            JoinMode mode, int batchSize
+    ) {
+        Class<?> fieldType = f.getType();
+        if (!DsTableAdapter.class.isAssignableFrom(fieldType)) {
+            throw new IllegalArgumentException(
+                    annName + " field[" + f.getName() + "] type must be DsTableAdapter subclass, got "
+                    + fieldType.getName());
+        }
+        Class<? extends DsTableAdapter> relatedClass = (Class<? extends DsTableAdapter>) fieldType;
+        if (joinProp == null || joinProp.isBlank()) {
+            throw new IllegalArgumentException(
+                    annName + "(joinProp) cannot be blank on field[" + f.getName() + "]");
+        }
+        Field relatedF;
+        try {
+            relatedF = relatedClass.getDeclaredField(joinProp);
+        } catch (NoSuchFieldException ex) {
+            throw new IllegalArgumentException(
+                    "relatedClass[" + relatedClass.getName() + "] missing joinProp field: '" + joinProp
+                    + "' (field[" + f.getName() + "])", ex);
+        }
+        if (relatedF.getType() != Long.class && relatedF.getType() != long.class) {
+            throw new IllegalArgumentException(
+                    annName + " joinProp[" + joinProp + "] must be Long/long (not Long type, got "
+                    + relatedF.getType().getName() + ") on " + relatedClass.getName());
+        }
+        if (relatedF.getAnnotation(DsField.class) == null) {
+            throw new IllegalArgumentException(
+                    "relatedClass[" + relatedClass.getName() + "] joinProp[" + joinProp
+                    + "] missing @DsField annotation (ORM 列未注册)");
+        }
+        String outerField = (props == null || props.isBlank()) ? "id" : props;
+        validateOuterField(mainEntityClass, outerField, f.getName());
+        return new JoinSpec(relatedClass, outerField, joinProp, null, mode, batchSize);
+    }
+
+    /**
+     * Fail-First 校验非主键 outerField：主表必须存在同名 Long/long 且标注 {@link DsField} 的属性，
+     * 否则 GenericManager.readByColumn 解析不到该列 → Join 结果恒为空集。"id" 直接取主表主键，
+     * 跳过校验（保持 P31/P35 字节级行为）。
+     *
+     * @param mainEntityClass 主表实体类
+     * @param outerField Join 主表列名
+     * @param fieldName 触发注解的字段名（异常 message 溯源用）
+     * @throws IllegalArgumentException outerField 属性缺失 / 非 Long / 缺 @DsField
+     */
+    private static void validateOuterField(Class<?> mainEntityClass, String outerField, String fieldName) {
+        if ("id".equals(outerField)) {
+            return;
+        }
+        Field of = findField(mainEntityClass, outerField);
+        if (of == null) {
+            throw new IllegalArgumentException(
+                    "outerField \"" + outerField + "\" not found in main class " + mainEntityClass.getName()
+                    + " (declared by field[" + fieldName + "])");
+        }
+        if (of.getType() != Long.class && of.getType() != long.class) {
+            throw new IllegalArgumentException(
+                    "outerField \"" + outerField + "\" must be Long/long on " + mainEntityClass.getName()
+                    + ", got " + of.getType().getName());
+        }
+        if (of.getAnnotation(DsField.class) == null) {
+            throw new IllegalArgumentException(
+                    "main class[" + mainEntityClass.getName() + "] outerField[" + outerField
+                    + "] missing @DsField annotation (ORM 列未注册)");
+        }
+    }
+
+    /** 沿继承链查找声明字段（@DsField 可能声明在父类上）。 */
+    private static Field findField(Class<?> type, String name) {
+        for (Class<?> c = type; c != null && c != Object.class; c = c.getSuperclass()) {
+            try {
+                return c.getDeclaredField(name);
+            } catch (NoSuchFieldException ignore) {
+                // 该层无此字段，继续向父类遍历
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 读取主表行的 Join 列值供非主键 outerField 等值 Join 使用（P31 props 扩展）：{@code "id"} /
+     * 空 → {@code entity.getId()}（主键）；否则反射取同名 Long 列。JoinIdResolver /
+     * HybridJoinClient / JoinIdResolverV2 共用同一取值逻辑（Fail-First 统一）。
+     *
+     * @param mainRow 主表实体行（null → 返回 null）
+     * @param outerField 主表 Join 列名（"id"/空 → 主键）
+     * @return 列值（Long；字段值为 null 时返回 null）
+     * @throws IllegalArgumentException outerField 字段缺失或类型非 Long/long
+     */
+    public static Long readOuterValue(DsTableAdapter mainRow, String outerField) {
+        if (mainRow == null) {
+            return null;
+        }
+        if (outerField == null || outerField.isEmpty() || "id".equals(outerField)) {
+            return mainRow.getId();
+        }
+        Field f = findField(mainRow.getClass(), outerField);
+        if (f == null) {
+            throw new IllegalArgumentException(
+                    "outerField \"" + outerField + "\" not found in main class " + mainRow.getClass().getName()
+                    + " (non-primary Join 主表列未注册)");
+        }
+        if (f.getType() != Long.class && f.getType() != long.class) {
+            throw new IllegalArgumentException(
+                    "outerField \"" + outerField + "\" must be Long/long on " + mainRow.getClass().getName()
+                    + ", got " + f.getType().getName());
+        }
+        try {
+            f.setAccessible(true);
+            return (Long) f.get(mainRow);
+        } catch (IllegalAccessException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Override

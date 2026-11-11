@@ -102,11 +102,8 @@ public final class JoinIdResolverV2 {
                     "relatedGms[" + join.relatedClass.getName() + "] persistentClass mismatch, got "
                     + (expectedClass == null ? "null" : expectedClass.getName()));
         }
-        if (!"id".equals(join.outerField)) {
-            throw new IllegalArgumentException(
-                    "MANY_TOONE outerField MVP 仅支持 \"id\" (主表 entity.getId() 等值), got \""
-                    + join.outerField + "\"");
-        }
+        // outerIds 语义：join.outerField="id" → 主表主键；非 "id" → 主表 outerField 列值
+        // （由 HybridJoinClientV2Adapter.collectJoinKeys 产出），两者均与 relatedField 值做等值比较。
         // 切片 outerIds 按 batchSize
         List<Long> outerList = new ArrayList<>(outerIds);
         Set<Long> matched = new LinkedHashSet<>();
@@ -296,6 +293,11 @@ public final class JoinIdResolverV2 {
         Objects.requireNonNull(join2, "join2 cannot be null");
         if (join1.mode != JoinMode.MANY_TO_ONE || join2.mode != JoinMode.MANY_TO_ONE) {
             throw new IllegalArgumentException("J=2 树级联仅支持 MANY_TOONE");
+        }
+        if (!"id".equals(join1.outerField) || !"id".equals(join2.outerField)) {
+            throw new IllegalArgumentException(
+                    "J=2 树级联 outerField 必须为 \"id\"（R1.PK == R2.relatedField 主键链），got join1=\""
+                    + join1.outerField + "\", join2=\"" + join2.outerField + "\"");
         }
         int J = 2;
         if (J > J_TREE_LIMIT) {

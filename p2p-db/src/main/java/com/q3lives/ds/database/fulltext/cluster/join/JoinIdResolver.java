@@ -26,7 +26,8 @@ import com.q3lives.ds.database.integration.QueryWrapper;
  * Long 值 → matched.retainAll(outerIds) → 交集作为下一 JoinSpec 的 outerIds。MVP v1.0 仅 AND 平铺，
  * 不支持 OR / 子查询嵌套 / NOT 反选（留 P34 DSL v2 实现）。
  *
- * <p>Fail-First 5 条：① outerField 必须为 "id"（MVP v1.0 仅主表主键等值）；② relatedGms 包含
+ * <p>Fail-First 5 条：① outerField="id" 时按主表主键等值；非 "id" 时按主表该 Long 列值等值
+ *（主表列缺失/非 Long 由 {@link JoinSpec#readOuterValue} 抛 IAE）；② relatedGms 包含
  * j.relatedClass 键；③ 从表 relatedField 反射存在且类型 Long；④ relatedField 标注 @DsField
  *（确保 ORM 列已注册）；⑤ 任一检查不通过即抛 IAE，不进入 list 阶段，避免 silent 0 results。
  *
@@ -69,6 +70,7 @@ public final class JoinIdResolver {
             return Collections.unmodifiableSet(outerIds);
         }
         int relatedCalls = 0;
+        List<T> mainRows = null;
         for (JoinSpec<?> j : safeJoins) {
             GenericManager<?> rgRaw = relatedGms.get(j.relatedClass);
             if (rgRaw == null) {
@@ -82,13 +84,16 @@ public final class JoinIdResolver {
                         "relatedGms[" + j.relatedClass.getName() + "] GM.persistentClass mismatch, got "
                                 + (expectedClass == null ? "null" : expectedClass.getName()));
             }
-            if (!"id".equals(j.outerField)) {
-                throw new IllegalArgumentException(
-                        "JoinSpec.outerField MVP v1.0 only support \"id\" (主表主键等值), got \"" + j.outerField + "\"; non-primary outerField留 P34");
-            }
             Set<Long> matched = extractMatched((JoinSpec) j, (GenericManager) rgRaw);
             relatedCalls += 1;
-            outerIds.retainAll(matched);
+            if ("id".equals(j.outerField)) {
+                outerIds.retainAll(matched);
+            } else {
+                if (mainRows == null) {
+                    mainRows = loadMainRows(mainGm, condCopy);
+                }
+                outerIds.retainAll(matchByOuterValue(mainRows, j.outerField, matched));
+            }
             if (outerIds.isEmpty()) break;
         }
         if (probeCounters != null) {
@@ -129,6 +134,35 @@ public final class JoinIdResolver {
             }
         }
         return matched;
+    }
+
+    /** 主表 orm 先行筛选结果全量实体（非主键 outerField 需读主表列值，故须实体而非主键）。 */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static <T extends DsTableAdapter> List<T> loadMainRows(
+            GenericManager<T> mainGm, QueryWrapper<T> cond
+    ) {
+        QueryWrapper<T> c = (cond == null) ? new QueryWrapper<>() : JoinSpec.QwHelper.defensiveCopy(cond);
+        List rows = mainGm.list(c);
+        return (rows == null) ? Collections.emptyList() : (List<T>) rows;
+    }
+
+    /**
+     * 非主键 outerField：取主表候选行 outerField 列值命中 matched 的主表主键子集。
+     * {@code entity.getId() == 从表 relatedField 列值} 的原始语义在此替换为
+     * {@code entity.outerField == relatedField}（JoinSpec.FR-1 主表列等值）。
+     */
+    private static Set<Long> matchByOuterValue(
+            List<? extends DsTableAdapter> mainRows, String outerField, Set<Long> matched
+    ) {
+        Set<Long> out = new LinkedHashSet<>(mainRows.size() + 2, 0.9f);
+        for (DsTableAdapter row : mainRows) {
+            if (row == null) continue;
+            Long pk = row.getId();
+            if (pk == null || pk == 0L) continue;
+            Long v = JoinSpec.readOuterValue(row, outerField);
+            if (v != null && v != 0L && matched.contains(v)) out.add(pk);
+        }
+        return out;
     }
 
     static <T extends DsTableAdapter> QueryWrapper<T> defensiveCopy(QueryWrapper<T> src) {

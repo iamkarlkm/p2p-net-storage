@@ -61,16 +61,16 @@ public final class HybridJoinClientV2Adapter {
             GenericManager<T> mainGm,
             Map<Class<?>, GenericManager<?>> relatedGms) throws IOException {
         validateManyToOne(join);
-        Set<Long> t1Ids = collectMainIds(mainGm, orm);
-        if (t1Ids.isEmpty()) {
+        Set<Long> outerKeys = collectJoinKeys(mainGm, orm, join.outerField);
+        if (outerKeys.isEmpty()) {
             return new ArrayList<>();
         }
-        Set<Long> matched = JoinIdResolverV2.resolveManyToOne(t1Ids, join, relatedGms);
+        Set<Long> matched = JoinIdResolverV2.resolveManyToOne(outerKeys, join, relatedGms);
         if (matched.isEmpty()) {
             return new ArrayList<>();
         }
         List<HybridHit<T>> hits = hjc.searchHybridJoin(orm, Collections.singletonList(join), ftQ, raw, K, opt);
-        List<HybridHit<T>> filtered = filterByMatched(hits, matched);
+        List<HybridHit<T>> filtered = filterByMatched(hits, matched, join);
         attachManyToOneFetch(filtered, matched, join, relatedGms);
         return filtered;
     }
@@ -93,17 +93,17 @@ public final class HybridJoinClientV2Adapter {
             GenericManager<T> mainGm,
             Map<Class<?>, GenericManager<?>> relatedGms) throws IOException {
         validateManyToOne(join);
-        Set<Long> t1Ids = collectMainIds(mainGm, orm);
-        if (t1Ids.isEmpty()) {
+        Set<Long> outerKeys = collectJoinKeys(mainGm, orm, join.outerField);
+        if (outerKeys.isEmpty()) {
             return new ArrayList<>();
         }
-        Set<Long> matched = JoinIdResolverV2.resolveManyToOne(t1Ids, join, relatedGms);
+        Set<Long> matched = JoinIdResolverV2.resolveManyToOne(outerKeys, join, relatedGms);
         if (matched.isEmpty()) {
             return new ArrayList<>();
         }
         List<HybridHit<T>> hits = hjc.searchHybridJoinWithWeights(orm, Collections.singletonList(join),
                 ftQ, raw, K, opt, alpha, beta, colW);
-        List<HybridHit<T>> filtered = filterByMatched(hits, matched);
+        List<HybridHit<T>> filtered = filterByMatched(hits, matched, join);
         attachManyToOneFetch(filtered, matched, join, relatedGms);
         return filtered;
     }
@@ -125,17 +125,17 @@ public final class HybridJoinClientV2Adapter {
             GenericManager<T> mainGm,
             Map<Class<?>, GenericManager<?>> relatedGms) throws IOException {
         validateManyToOne(join);
-        Set<Long> t1Ids = collectMainIds(mainGm, orm);
-        if (t1Ids.isEmpty()) {
+        Set<Long> outerKeys = collectJoinKeys(mainGm, orm, join.outerField);
+        if (outerKeys.isEmpty()) {
             return new ArrayList<>();
         }
-        Set<Long> matched = JoinIdResolverV2.resolveManyToOne(t1Ids, join, relatedGms);
+        Set<Long> matched = JoinIdResolverV2.resolveManyToOne(outerKeys, join, relatedGms);
         if (matched.isEmpty()) {
             return new ArrayList<>();
         }
         List<HybridHit<T>> hits = hjc.searchHybridJoinWithLtr(orm, Collections.singletonList(join),
                 ftQ, raw, K, opt, extractors, ltrModelWeights);
-        List<HybridHit<T>> filtered = filterByMatched(hits, matched);
+        List<HybridHit<T>> filtered = filterByMatched(hits, matched, join);
         attachManyToOneFetch(filtered, matched, join, relatedGms);
         return filtered;
     }
@@ -162,7 +162,7 @@ public final class HybridJoinClientV2Adapter {
             return new ArrayList<>();
         }
         List<HybridHit<T>> hits = hjc.searchHybridJoin(orm, Collections.singletonList(join1), ftQ, raw, K, opt);
-        List<HybridHit<T>> filtered = filterByMatched(hits, matched);
+        List<HybridHit<T>> filtered = filterByMatched(hits, matched, join1);
         if (filtered.isEmpty()) {
             return filtered;
         }
@@ -232,24 +232,41 @@ public final class HybridJoinClientV2Adapter {
         }
     }
 
-    private static <T extends DsTableAdapter> Set<Long> collectMainIds(
-            GenericManager<T> mainGm, QueryWrapper<T> orm) {
+    /**
+     * 主表侧关联键集合：outerField="id" → 主表主键（listIds）；非 "id" → 主表该 Long 列值
+     * （P31 props 扩展，供 N:1 非主键等值 Join）。
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private static <T extends DsTableAdapter> Set<Long> collectJoinKeys(
+            GenericManager<T> mainGm, QueryWrapper<T> orm, String outerField) {
         QueryWrapper<T> ormCopy = (orm == null) ? new QueryWrapper<>() : JoinSpec.QwHelper.defensiveCopy(orm);
-        List<Long> rawIds = mainGm.listIds(ormCopy);
-        Set<Long> t1Ids = new HashSet<>();
-        for (Long id : rawIds) {
-            if (id != null && id != 0L) {
-                t1Ids.add(id);
+        Set<Long> keys = new HashSet<>();
+        if (outerField == null || outerField.isEmpty() || "id".equals(outerField)) {
+            List<Long> rawIds = mainGm.listIds(ormCopy);
+            for (Long id : rawIds) {
+                if (id != null && id != 0L) {
+                    keys.add(id);
+                }
+            }
+            return keys;
+        }
+        List rows = (List) mainGm.list(ormCopy);
+        for (Object o : rows) {
+            Long v = JoinSpec.readOuterValue((DsTableAdapter) o, outerField);
+            if (v != null && v != 0L) {
+                keys.add(v);
             }
         }
-        return t1Ids;
+        return keys;
     }
 
     private static <T extends DsTableAdapter> List<HybridHit<T>> filterByMatched(
-            List<HybridHit<T>> hits, Set<Long> matched) {
+            List<HybridHit<T>> hits, Set<Long> matched, JoinSpec<?> join) {
         List<HybridHit<T>> out = new ArrayList<>();
         for (HybridHit<T> h : hits) {
-            if (h != null && matched.contains(h.docId)) {
+            if (h == null) continue;
+            Long key = JoinSpec.readOuterValue(h.entity, join.outerField);
+            if (key != null && matched.contains(key)) {
                 out.add(h);
             }
         }

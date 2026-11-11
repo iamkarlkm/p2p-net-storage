@@ -34,7 +34,8 @@ import com.q3lives.ds.database.integration.QueryWrapper;
  * 4. defensiveCopyOrNew：深拷贝主表 orm 或 new QueryWrapper（保持 delegate 调用侧参数 pristine）；
  * 5. delegate.* 原入口：把 ORM/FT/K/权重/LTR 原封转给 DHQC 红线类（0 line 改 QW/GM/DHQC）；
  * 6. postFilterJoin + fillJoinFetch：按 outerIds.contains(docId) 裁剪 (补偿 transient id 无 @DsField)
- *    → 再对每 Class 从 relatedGM 批量 in(relatedField, hitDocIds) 查取 FromRow → sun.misc.Unsafe
+ *    → 再对每 Class 从 relatedGM 批量 in(relatedField, joinKeys) 查取 FromRow（joinKeys 由 outerField
+ *    决定：主键 docId / 非主键 props 列值）→ sun.misc.Unsafe
  *    反射赋写 HybridHit.final joinFetch Map（保持 constructors.length==2 红线，0 新增第 3 构造器）。
  *
  * <p>红线钉死：① ZeroLeak3=3 → 本类是 join 子包 3 top-level 之 3；② NG-3 → 本类源码导入
@@ -154,9 +155,6 @@ public final class HybridJoinClient<T extends DsTableAdapter> implements AutoClo
             Map<String, int[]> probeCounters
     ) {
         if (hits == null || hits.isEmpty() || joins == null || joins.isEmpty()) return;
-        List<Long> hitDocIds = new ArrayList<>(hits.size());
-        for (HybridHit<T> h : hits) if (h != null && h.docId != 0L) hitDocIds.add(h.docId);
-        if (hitDocIds.isEmpty()) return;
         int fetchCalls = 0;
         List<JoinSpec<?>> safeJoins = new ArrayList<>(joins.size());
         for (JoinSpec<?> j : joins) {
@@ -176,10 +174,12 @@ public final class HybridJoinClient<T extends DsTableAdapter> implements AutoClo
             } catch (NoSuchFieldException nsf) {
                 continue;
             }
+            List<Long> joinKeys = collectJoinKeys(hits, j);
+            if (joinKeys.isEmpty()) continue;
             QueryWrapper condBase = (j.relatedCond != null)
                     ? JoinSpec.QwHelper.defensiveCopy(j.relatedCond)
                     : new QueryWrapper();
-            condBase.in(j.relatedField, hitDocIds);
+            condBase.in(j.relatedField, joinKeys);
             List rows = (List) rg.list(condBase);
             fetchCalls += 1;
             Map<Long, DsTableAdapter> m = new HashMap<>(rows.size() + 2, 0.9f);
@@ -211,7 +211,9 @@ public final class HybridJoinClient<T extends DsTableAdapter> implements AutoClo
                 JoinSpec<?> j = safeJoins.get(ji);
                 Map<Long, ? extends DsTableAdapter> rm = relByOuter.get(j);
                 if (rm == null) continue;
-                DsTableAdapter r = rm.get(h.docId);
+                Long key = JoinSpec.readOuterValue(h.entity, j.outerField);
+                if (key == null || key == 0L) continue;
+                DsTableAdapter r = rm.get(key);
                 if (r == null) continue;
                 if (built == null) built = new HashMap<>(4, 0.9f);
                 built.put(j.relatedClass, r);
@@ -228,6 +230,22 @@ public final class HybridJoinClient<T extends DsTableAdapter> implements AutoClo
             probeCounters.putIfAbsent("joinFetchCalls", new int[]{0});
             probeCounters.get("joinFetchCalls")[0] += fetchCalls;
         }
+    }
+
+    /**
+     * 单 Join 的关联键集合：outerField="id" → {@code hit.docId}（主表主键）；非 "id" →
+     * {@code hit.entity} 的 outerField Long 列值（P31 props 扩展，非主键 ORM×FT Join）。
+     */
+    private static <T extends DsTableAdapter> List<Long> collectJoinKeys(
+            List<HybridHit<T>> hits, JoinSpec<?> j
+    ) {
+        List<Long> keys = new ArrayList<>(hits.size());
+        for (HybridHit<T> h : hits) {
+            if (h == null) continue;
+            Long k = JoinSpec.readOuterValue(h.entity, j.outerField);
+            if (k != null && k != 0L) keys.add(k);
+        }
+        return keys;
     }
 
     private static void preValidateCommon(String ftQ, Map<?, ?> raw, int K) {
