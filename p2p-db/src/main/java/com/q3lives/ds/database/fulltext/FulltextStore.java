@@ -13,6 +13,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -66,6 +67,11 @@ public class FulltextStore implements AutoCloseable {
     private static final String DIST_PAIR_FILE = "dist_pair.dshash";
     private static final String UID_RING_DIR = "uid_ring";
     private static final String DIST_NEIGHBOR_TYPE = "dist_neighbors";
+    // ---------------- T7-4（REV8）char 层词/词组倒排 + 同义/近义（HC-8 豁免 + HC-12）----------------
+    private static final String CHAR_TERM_TYPE = "char_term_postings"; // 复用 distNeighborStore，仅换 type
+    private static final String SYNONYM_TYPE = "synonym_sets";
+    private static final String SCOPE_FWD_TYPE = "scope_fwd"; // (keyUid,valUid) → unitIds
+    private static final String SCOPE_REV_TYPE = "scope_rev"; // unitId → [k,v,...]
     private static final String DIR_L = "L";
     private static final String DIR_R = "R";
     private static final int PRECREATE_MAX_D = 32; // d=1..32 预创建（64 文件），其余懒创建
@@ -77,6 +83,12 @@ public class FulltextStore implements AutoCloseable {
     private final DsFixedBucketStore distNeighborStore; // 存邻居 long[] list
     private final ConcurrentHashMap<Integer, DsFreeRing> uidRingShards; // shard = (uid >>> 48) ∈ [0..65535]
     private final File uidRingDir;
+
+    // ---------------- T7-4（REV8）char 层词/词组后置表 + 同义/近义一等倒排（HC-12）----------------
+    private final DsHashMap charTermMap; // HC-12①：charUid → long[]（含该字符的词/词组 uid）
+    private final DsHashMap synonymMap;  // HC-12②：unitId → long[]（同义/近义 uid）
+    private final DsHashMap scopeFwdMap; // HC-11：mix4(keyUid,valUid,0,0) → long[]（该 scope 下的 unitId）
+    private final DsHashMap scopeRevMap; // HC-11：unitId → long[]（扁平 [keyUid,valUid,...]）
 
     /** T3 测试探针：topKNeighbors 访问某 d 桶次数（[0] 不用, 1..1024）。 */
     public final int[] bucketAccessCounter = new int[DIST_MAX + 1];
@@ -843,6 +855,12 @@ public class FulltextStore implements AutoCloseable {
         this.distNeighborStore = new DsFixedBucketStore(new File(root, "dist_neighbor_store").getAbsolutePath());
         this.uidRingDir = new File(root, UID_RING_DIR); if (!uidRingDir.exists()) uidRingDir.mkdirs();
         this.uidRingShards = new ConcurrentHashMap<>(256, 0.75f, 2);
+        // T7-4（REV8）：char 层词/词组后置表 + 同义/近义倒排（maps/ 下新增 2 个 DsHashMap，复用 distNeighborStore 存 long[]）
+        this.charTermMap = new DsHashMap(new File(maps, "char_term_postings.dshash"));
+        this.synonymMap  = new DsHashMap(new File(maps, "synonym_sets.dshash"));
+        // T7-3（REV8）：scope 双向倒排（maps/ 下新增 2 个 DsHashMap，复用 distNeighborStore 存 long[]，0 第 4 store）
+        this.scopeFwdMap = new DsHashMap(new File(maps, "scope_fwd.dshash"));
+        this.scopeRevMap = new DsHashMap(new File(maps, "scope_rev.dshash"));
         // P22 T1 WeightStore 初始化（独立 weight_store/ 目录，零破坏 P21 任何文件）
         this.weightStore = new WeightStore(root.getAbsolutePath());
     }
@@ -1145,22 +1163,45 @@ public class FulltextStore implements AutoCloseable {
 
         private static Iterator<CutUnit> cutBlock(String text, SegOptions opts) {
             List<CutUnit> out = new ArrayList<>();
-            int seq = 0, n = text.length(), i = 0, start = 0;
+            int n = text.length(), i = 0, start = 0;
             while (i < n) {
                 if (text.charAt(i) == '\n' && i + 1 < n && text.charAt(i+1) == '\n') {
                     int j = i;
                     while (j < n && text.charAt(j) == '\n') j++;
-                    String blk = text.substring(start, i);
-                    if (blk.trim().length() >= opts.minChar) out.add(new CutUnit(blk, start, i, seq++));
+                    emitBlocks(text, start, i, opts, out);
                     start = j;
                     i = j;
                 } else i++;
             }
-            if (start < n) {
-                String s = text.substring(start);
-                if (s.trim().length() >= opts.minChar) out.add(new CutUnit(s, start, n, seq));
-            }
+            if (start < n) emitBlocks(text, start, n, opts, out);
             return out.iterator();
+        }
+
+        /** HC-10：把段落 [start,end) 按 maxBlockChars（code point）限长，超长在句边界二次切（不切碎句子）。 */
+        private static void emitBlocks(String text, int start, int end, SegOptions opts, List<CutUnit> out) {
+            int max = opts.maxBlockChars <= 0 ? 1024 : opts.maxBlockChars;
+            int s = start;
+            while (s < end) {
+                int cp = text.codePointCount(s, end);
+                int e = (cp <= max) ? end : cutAtSentenceBoundary(text, s, end, max);
+                if (e <= s) e = end;
+                String blk = text.substring(s, e);
+                if (blk.trim().length() >= opts.minChar) out.add(new CutUnit(blk, s, e, out.size()));
+                s = e;
+            }
+        }
+
+        /** 在 [s,end) 内从 s 起数 max 个 code point；返回该窗口内最后一个句末符之后的位置（无则返回 code point 硬边界）。 */
+        private static int cutAtSentenceBoundary(String text, int s, int end, int max) {
+            int i = s, cp = 0, lastBreak = -1, hardBound = end;
+            while (i < end) {
+                int c = text.codePointAt(i);
+                i += Character.charCount(c);
+                cp++;
+                if (c == '。' || c == '！' || c == '？' || c == '.' || c == '!' || c == '?' || c == '\n') lastBreak = i;
+                if (cp >= max) { hardBound = i; break; }
+            }
+            return lastBreak > s ? lastBreak : hardBound;
         }
     }
 
@@ -1258,6 +1299,183 @@ public class FulltextStore implements AutoCloseable {
         return out;
     }
 
+    // ---------------- T7-4（REV8）char 层词/词组倒排 + 同义/近义 + 精确优先降权（HC-8 豁免 + HC-12）----------------
+
+    /** 通用：向 DsHashMap(key → long[]) 追加去重 uid（复用 distNeighborStore，换 type）。 */
+    private void appendUidToSet(DsHashMap map, String type, long key, long val) throws IOException {
+        long[] cur = readUidArray(map, type, key);
+        for (long x : cur) if (x == val) return;
+        long[] na = Arrays.copyOf(cur, cur.length + 1);
+        na[cur.length] = val;
+        ByteBuffer bb = ByteBuffer.allocate(4 + na.length * 8);
+        bb.putInt(na.length);
+        for (long x : na) bb.putLong(x);
+        Long old = map.get(key);
+        long newId = distNeighborStore.put(SPACE_FT, type, bb.array());
+        if (old != null && old.longValue() != 0L) { try { distNeighborStore.remove(SPACE_FT, type, old.longValue()); } catch (Exception ignore) {} }
+        map.put(key, newId);
+    }
+
+    /** 通用：读 DsHashMap(key → long[])（缺失返回空数组）。 */
+    private long[] readUidArray(DsHashMap map, String type, long key) throws IOException {
+        Long bucketId = map.get(key);
+        if (bucketId == null || bucketId.longValue() == 0L) return new long[0];
+        try {
+            byte[] h4 = distNeighborStore.get(SPACE_FT, type, bucketId.longValue(), 0, 4);
+            int count = ByteBuffer.wrap(h4).getInt();
+            if (count <= 0) return new long[0];
+            byte[] body = distNeighborStore.get(SPACE_FT, type, bucketId.longValue(), 0, 4 + count * 8);
+            ByteBuffer bb = ByteBuffer.wrap(body); bb.getInt();
+            long[] out = new long[count];
+            for (int k = 0; k < count; k++) out[k] = bb.getLong();
+            return out;
+        } catch (Exception ignore) { return new long[0]; }
+    }
+
+    /** HC-12①：把词/词组按其构成字符登记进「字符→词/词组」后置表（char 两两 DIST 仍 = 0，仅倒排链）。 */
+    private void registerCharTermPostings(long termUid, String termText) throws IOException {
+        if (termUid <= 0L || termText == null || termText.isEmpty()) return;
+        LinkedHashSet<Long> seen = new LinkedHashSet<>();
+        for (int cp : termText.codePoints().toArray()) {
+            long cu = termDict.toUid(new String(Character.toChars(cp)), false);
+            if (cu > 0L && cu != termUid && seen.add(cu)) appendUidToSet(charTermMap, CHAR_TERM_TYPE, cu, termUid);
+        }
+    }
+
+    /** HC-12②：显式登记同义/近义关系（双向一等倒排；外部可插拔词典/内建兜底经此写入）。 */
+    public void putSynonym(String a, String b) throws IOException {
+        long ua = termDict.toUid(a, false), ub = termDict.toUid(b, false);
+        if (ua <= 0L || ub <= 0L || ua == ub) return;
+        appendUidToSet(synonymMap, SYNONYM_TYPE, ua, ub);
+        appendUidToSet(synonymMap, SYNONYM_TYPE, ub, ua);
+    }
+
+    /** HC-12②：读某 unit 的同义/近义集合。 */
+    public long[] synonymsOf(long uid) throws IOException { return readUidArray(synonymMap, SYNONYM_TYPE, uid); }
+
+    /**
+     * HC-12③ char 层择优召回原语：查询分解为 char → 经「字符→词/词组」后置表取候选 →
+     * 按匹配度 degree = 2·|Q∩T|/(|Q|+|T|) 降序（精确整词 degree=1 优先，长词组降权）；平局短词优先。
+     * 打分公式本身归 P22；此处只交付召回序（原语）。
+     */
+    public List<Long> recallTermsByChars(String queryText) throws IOException {
+        List<Long> out = new ArrayList<>();
+        if (queryText == null || queryText.isEmpty()) return out;
+        LinkedHashSet<Long> qChars = new LinkedHashSet<>();
+        for (int cp : queryText.codePoints().toArray()) {
+            long cu = termDict.toUid(new String(Character.toChars(cp)), false);
+            if (cu > 0L) qChars.add(cu);
+        }
+        if (qChars.isEmpty()) return out;
+        Map<Long,Integer> inter = new HashMap<>();
+        for (long cu : qChars) for (long tu : readUidArray(charTermMap, CHAR_TERM_TYPE, cu)) inter.merge(tu, 1, Integer::sum);
+        if (inter.isEmpty()) return out;
+        final int qlen = qChars.size();
+        List<long[]> scored = new ArrayList<>(inter.size()); // [termUid, inter, qlen+tlen, tlen]
+        for (Map.Entry<Long,Integer> e : inter.entrySet()) {
+            String t = termDict.toText(e.getKey());
+            int tlen = t == null ? 0 : t.codePointCount(0, t.length());
+            if (tlen <= 0) continue;
+            scored.add(new long[]{ e.getKey(), e.getValue(), (long)qlen + tlen, tlen });
+        }
+        scored.sort((x, y) -> {
+            long lhs = x[1] * y[2], rhs = y[1] * x[2]; // 2·inter/(qlen+tlen) 交叉相乘比较
+            if (lhs != rhs) return Long.compare(rhs, lhs); // degree 大者前
+            if (x[3] != y[3]) return Long.compare(x[3], y[3]); // 短词（精确）优先
+            return Long.compare(x[0], y[0]);
+        });
+        for (long[] s : scored) out.add(s[0]);
+        return out;
+    }
+
+    /** HC-12③：按 char 层择优序召回文档（同文档只出一次，精确整词所在文档排序更前）。 */
+    public List<DocHit> recallDocsByChars(String queryText, int topK) throws IOException {
+        LinkedHashSet<Long> seen = new LinkedHashSet<>();
+        List<DocHit> out = new ArrayList<>();
+        for (long tu : recallTermsByChars(queryText)) {
+            for (TuRow r : selectByUnit(tu)) if (seen.add(r.docId)) out.add(new DocHit(r.docId, r.parentId, r.level, r.seq, r.unit_id()));
+            if (topK > 0 && out.size() >= topK) break;
+        }
+        return out;
+    }
+
+    /** HC-12①+②：char 层择优召回 + 同义扩展（同义项追加在后，弱于精确）。 */
+    public List<DocHit> recallDocsWithSynonyms(String queryText, int topK) throws IOException {
+        List<Long> base = recallTermsByChars(queryText);
+        LinkedHashSet<Long> terms = new LinkedHashSet<>(base);
+        for (long tu : base) for (long syn : synonymsOf(tu)) terms.add(syn);
+        LinkedHashSet<Long> seen = new LinkedHashSet<>();
+        List<DocHit> out = new ArrayList<>();
+        for (long tu : terms) {
+            for (TuRow r : selectByUnit(tu)) if (seen.add(r.docId)) out.add(new DocHit(r.docId, r.parentId, r.level, r.seq, r.unit_id()));
+            if (topK > 0 && out.size() >= topK) break;
+        }
+        return out;
+    }
+
+    // ---------------- T7-3（REV8）scope 倒排（HC-11）----------------
+
+    /** HC-11：为某 unit（通常 block/segment）登记 scope 键值对；(key,value) ↔ unit 双向倒排，复用既有物理原语。 */
+    public void putScope(long unitId, String scopeKey, String scopeValue) throws IOException {
+        if (unitId <= 0L || scopeKey == null || scopeValue == null || scopeKey.isEmpty() || scopeValue.isEmpty()) return;
+        long ku = termDict.toUid(scopeKey, true), vu = termDict.toUid(scopeValue, true);
+        if (ku <= 0L || vu <= 0L) return;
+        appendUidToSet(scopeFwdMap, SCOPE_FWD_TYPE, FarmHash64.mix4(ku, vu, 0L, 0L), unitId);
+        appendScopePair(unitId, ku, vu);
+    }
+
+    /** HC-11：scope 反向追加「(keyUid,valUid)」到 rev 扁平数组，按 pair 去重（保持 key/value 相邻）。 */
+    private void appendScopePair(long unitId, long ku, long vu) throws IOException {
+        long[] cur = readUidArray(scopeRevMap, SCOPE_REV_TYPE, unitId);
+        for (int i = 0; i + 1 < cur.length; i += 2) if (cur[i] == ku && cur[i + 1] == vu) return;
+        long[] na = Arrays.copyOf(cur, cur.length + 2);
+        na[cur.length] = ku; na[cur.length + 1] = vu;
+        ByteBuffer bb = ByteBuffer.allocate(4 + na.length * 8);
+        bb.putInt(na.length);
+        for (long x : na) bb.putLong(x);
+        Long old = scopeRevMap.get(unitId);
+        long newId = distNeighborStore.put(SPACE_FT, SCOPE_REV_TYPE, bb.array());
+        if (old != null && old.longValue() != 0L) { try { distNeighborStore.remove(SPACE_FT, SCOPE_REV_TYPE, old.longValue()); } catch (Exception ignore) {} }
+        scopeRevMap.put(unitId, newId);
+    }
+
+    /** HC-11：命中某 scope 键值对的全部 unit（过滤用）。 */
+    public long[] unitIdsWithScope(String scopeKey, String scopeValue) throws IOException {
+        long ku = termDict.toUid(scopeKey, false), vu = termDict.toUid(scopeValue, false);
+        if (ku <= 0L || vu <= 0L) return new long[0];
+        return readUidArray(scopeFwdMap, SCOPE_FWD_TYPE, FarmHash64.mix4(ku, vu, 0L, 0L));
+    }
+
+    /** HC-11：某 unit 的 scope 集合（扁平 [keyUid,valUid,...]，反向展示用）。 */
+    public long[] scopesOf(long unitId) throws IOException { return readUidArray(scopeRevMap, SCOPE_REV_TYPE, unitId); }
+
+    /** HC-11：char 层择优召回 + scope 过滤（只保留拥有指定 scope 的 unit 所在文档）。 */
+    public List<DocHit> recallDocsByCharsScoped(String queryText, int topK, String scopeKey, String scopeValue) throws IOException {
+        Set<Long> allowed = new HashSet<>();
+        for (long u : unitIdsWithScope(scopeKey, scopeValue)) allowed.add(u);
+        if (allowed.isEmpty()) return new ArrayList<>();
+        LinkedHashSet<Long> seen = new LinkedHashSet<>();
+        List<DocHit> out = new ArrayList<>();
+        for (long tu : recallTermsByChars(queryText)) {
+            for (TuRow r : selectByUnit(tu)) {
+                if (seen.contains(r.docId)) continue;
+                if (!docHasScope(r.docId, allowed)) continue;
+                seen.add(r.docId);
+                out.add(new DocHit(r.docId, r.parentId, r.level, r.seq, r.unit_id()));
+            }
+            if (topK > 0 && out.size() >= topK) break;
+        }
+        return out;
+    }
+
+    /** HC-11：该 doc 是否有任一实例 unit 命中 allowed scope 集合。 */
+    private boolean docHasScope(long docId, Set<Long> allowed) throws IOException {
+        for (int lv = 0; lv <= DS5_DOC_STRUCT; lv++) {
+            for (TuRow r : selectByDocLevel(docId, lv)) if (allowed.contains(r.unit_id())) return true;
+        }
+        return false;
+    }
+
     /** UID_RING shard 获取（shard = uid >>> 48 ∈ [0..65535]）。 */
     private DsFreeRing uidRing(long uid) throws IOException {
         int shard = (int)((uid >>> 48) & 0xFFFFL);
@@ -1276,12 +1494,12 @@ public class FulltextStore implements AutoCloseable {
     // ---------------- T3 IngestPipeline 4 步 ----------------
 
     /**
-     * IngestPipeline：把单篇长文本写入全文索引（4 步）。
-     *   Step1 Seg6：选最佳 Seg（Seg SPI priority max）按 6 level 切分；
-     *   Step2 TD：每个 cut.text → TermDictStore.toUid(create=true) retain；
-     *   Step3 TU：写入 text_units 实例（parentId 构造：docId*10 + level + 同 level 子句序号）；
-     *   Step4 DIST：对每 (docId,parentId,level) 的 seq 列表，全两两 i<j → d=min(j-i,1024) → DIST_BUCKET L/R + PAIR_MAP + UID_RING。
-     * 同一个 parent/level 下若 (l,r) 已在 PAIR_MAP 中存在且 d'≠当前 d → IllegalStateException("dist inconsistent")（HC-6 一致性）。
+     * IngestPipeline（REV8 / HC-9）：把单篇长文本按**实体包含树**写入全文索引。
+     *   Step A 结构层 DS5：按 Markdown '#' 标题行分章（无标题 → 单合成 doc 根锚），parentId=docId（文档为隐式根）；
+     *   Step B BLOCK(4)：cutBlock（HC-10 限长）按偏移归属章节 → parentId=章节 uid；
+     *   Step C SENTENCE(3)：块内 cutSentence → parentId=块 uid；
+     *   Step D CHAR(0)/WORD(1)/PHRASE(2)：句内切分 → parentId=句 uid。
+     * DIST/weight/positions 按 (docId,parentId,level) 逐组构建；同一组内 (l,r) 新的 d 与 PAIR_MAP 冲突 → IllegalStateException（HC-6）。
      */
     public IngestStat ingestDoc(long docId, String text) throws IOException {
         if (docId <= 0L) throw new IllegalArgumentException("docId<=0");
@@ -1289,68 +1507,146 @@ public class FulltextStore implements AutoCloseable {
         IngestStat stat = new IngestStat(docId);
         FulltextSegmenter seg = resolveSegmenter();
         FulltextSegmenter.SegOptions opts = FulltextSegmenter.SegOptions.defaults();
-        // Step1+2+3：level 0..5 独立执行切分→TD→TU；每 level 1 个 parent（小文本量场景）
-        for (int lv = 0; lv < 6; lv++) {
-            long parentId = docId * 10L + (long)lv;
-            Iterator<FulltextSegmenter.CutUnit> it = seg.cut(text, lv, opts);
-            List<long[]> seqList = new ArrayList<>(); // [uid, seq, startOff, endOff]
+        // 同一 uid 在 doc 内跨 level/跨组可能重复出现（USER-HC-0 同文本同 uid）→ 每 doc 只 retain 一次，
+        // 与 clearDoc 的去重 release 对称，避免 refCount 漂移（refCount 语义 = 引用该 term 的 doc 数）。
+        Set<Long> retainedUids = new HashSet<>();
+
+        // ===== Step A：DS5 结构层（章节/根锚）=====
+        List<long[]> anchors = new ArrayList<>(); // [uid, secStart, secEnd]
+        List<int[]> chapters = chapterSpans(text);
+        if (chapters == null) {
+            String title = "\u0000doc:" + docId;
+            long uid = termDict.toUid(title, true); retainOnce(retainedUids, uid);
+            insert(new TuRow(uid, docId, docId, DS5_DOC_STRUCT, 0, 0, text.length(), title));
+            anchors.add(new long[]{ uid, 0L, (long) text.length() });
+            stat.rowsPerLevel[DS5_DOC_STRUCT] = 1;
+        } else {
             int seq = 0;
-            while (it.hasNext()) {
-                FulltextSegmenter.CutUnit cu = it.next();
-                if (cu == null || cu.text == null || cu.text.isEmpty()) continue;
-                long uid = termDict.toUid(cu.text, true);
-                termDict.retain(uid);
-                int so = cu.startOff; int eo = cu.endOff;
-                TuRow row = new TuRow(uid, docId, parentId, lv, seq, so, eo, cu.text);
-                try { insert(row); } catch (IllegalArgumentException ignore) { /* uk dup 幂等：已存在 (uid,doc,parent,level,seq) */ }
-                seqList.add(new long[]{ uid, seq, so, eo });
+            for (int[] sp : chapters) {
+                String title = text.substring(sp[2], sp[3]).trim();
+                if (title.isEmpty()) title = "\u0000doc:" + docId + ":" + seq;
+                long uid = termDict.toUid(title, true); retainOnce(retainedUids, uid);
+                insert(new TuRow(uid, docId, docId, DS5_DOC_STRUCT, seq, sp[0], sp[1], title));
+                anchors.add(new long[]{ uid, (long) sp[0], (long) sp[1] });
                 seq++;
             }
-            stat.rowsPerLevel[lv] = seq;
-            if (seq < 2) continue; // 0/1 单元无 pair
-            // char 层（DS0_CHAR）仅作兜底词/词组/句子解析源，不建成对 DIST 倒排，避免 O(C²) 存储浪费
-            if (lv != DS0_CHAR) {
-                long[] uids = new long[seq];
-                for (int k = 0; k < seq; k++) uids[k] = seqList.get(k)[0];
+            stat.rowsPerLevel[DS5_DOC_STRUCT] = seq;
+        }
 
-                // Step4 DIST：枚举两两对 (i<j)
-                for (int i = 0; i < seq; i++) {
-                    long lUid = uids[i];
-                    for (int j = i + 1; j < seq; j++) {
-                        long rUid = uids[j];
-                        int d = Math.min(j - i, DIST_MAX);
-
-                        // HC-6：PAIR_MAP key 混合 (l,r,p,lv,i,j) 六元 → 同一上下文同 l/r 多次出现独立 key；完全相同 i,j 再写才检测 d 冲突
-                        long base = FarmHash64.mix4(lUid, rUid, parentId, (long)lv);
-                        long pairKey = FarmHash64.mix4(base, (long)i, (long)j, 0xC0FFEEL);
-                        Long curD = distPairMap.get(pairKey);
-                        if (curD != null) {
-                            int cur = curD.intValue();
-                            if (cur != d) throw new IllegalStateException("dist inconsistent (HC-6) pair(l="+lUid+",r="+rUid+",p="+parentId+",lv="+lv+",i="+i+",j="+j+"): old="+cur+" new="+d);
-                        } else {
-                            distPairMap.put(pairKey, (long)d);
-                        }
-
-                        // L/R bucket 追加邻居（上下文隔离）
-                        appendNeighbor(d, docId, parentId, lv, ensureDistL(d), lUid, rUid);
-                        appendNeighbor(d, docId, parentId, lv, ensureDistR(d), rUid, lUid);
-
-                        // UID_RING offerUnique d
-                        uidRing(lUid).offerUnique(d);
-                        uidRing(rUid).offerUnique(d);
-
-                        stat.pairsTotal++;
-                    }
-                }
+        // ===== Step B~D：块 / 句 / 词法 =====
+        List<FulltextSegmenter.CutUnit> blocks = collect(seg.cut(text, DS4_BLOCK, opts));
+        Map<Long, List<FulltextSegmenter.CutUnit>> blockByChapter = new LinkedHashMap<>();
+        for (FulltextSegmenter.CutUnit b : blocks) {
+            if (b == null || b.text == null || b.text.isEmpty()) continue;
+            long chapterUid = chapterOf(anchors, b.startOff);
+            long blockUid = termDict.toUid(b.text, true);
+            blockByChapter.computeIfAbsent(chapterUid, k -> new ArrayList<>()).add(b);
+            // Step C：句（块内）
+            List<FulltextSegmenter.CutUnit> sents = shift(collect(seg.cut(b.text, DS3_SENTENCE, opts)), b.startOff);
+            writeGroup(docId, blockUid, DS3_SENTENCE, sents, stat, retainedUids);
+            // Step D：词法（句内）
+            for (FulltextSegmenter.CutUnit s : sents) {
+                if (s.text == null || s.text.isEmpty()) continue;
+                long sentUid = termDict.toUid(s.text, true);
+                writeGroup(docId, sentUid, DS0_CHAR,   shift(collect(seg.cut(s.text, DS0_CHAR,   opts)), s.startOff), stat, retainedUids);
+                writeGroup(docId, sentUid, DS1_WORD,   shift(collect(seg.cut(s.text, DS1_WORD,   opts)), s.startOff), stat, retainedUids);
+                writeGroup(docId, sentUid, DS2_PHRASE, shift(collect(seg.cut(s.text, DS2_PHRASE, opts)), s.startOff), stat, retainedUids);
             }
-            List<Long> lvUidSeq = new ArrayList<>(seq);
-            for (int k = 0; k < seq; k++) lvUidSeq.add(seqList.get(k)[0]);
-            updateWeightForLevel(docId, parentId, lv, lvUidSeq);
-            // P25 T1: 写 term positions（按 uid 合并所有 span；缺 startOff 或 endOff 时 fallback seq/seq+1）
-            writePositionsForLevel(docId, parentId, lv, seqList);
+        }
+        // Step B 收尾：BLOCK 行 + 同章节块内 DIST（HC-10：超长段落多块共享章节 parentId）
+        for (Map.Entry<Long, List<FulltextSegmenter.CutUnit>> e : blockByChapter.entrySet()) {
+            writeGroup(docId, e.getKey(), DS4_BLOCK, e.getValue(), stat, retainedUids);
         }
         return stat;
     }
+
+    /** 每 doc 每 uid 只 retain 一次（与 clearDoc 去重 release 对称，refCount 语义 = 引用该 term 的 doc 数）。 */
+    private void retainOnce(Set<Long> retained, long uid) throws IOException {
+        if (uid <= 0L) return;
+        if (retained.add(uid)) termDict.retain(uid);
+    }
+
+    /** 把某 (parentId,level) 组：TD retain + insert + char_term 登记 + DIST + weight + positions。返回插入行数。 */
+    private int writeGroup(long docId, long parentId, int level, List<FulltextSegmenter.CutUnit> units, IngestStat stat, Set<Long> retained) throws IOException {
+        if (units == null || units.isEmpty()) return 0;
+        List<long[]> seqList = new ArrayList<>(units.size());
+        int seq = 0;
+        for (FulltextSegmenter.CutUnit cu : units) {
+            if (cu == null || cu.text == null || cu.text.isEmpty()) continue;
+            long uid = termDict.toUid(cu.text, true);
+            retainOnce(retained, uid);
+            int so = Math.max(0, cu.startOff), eo = Math.max(so, cu.endOff);
+            try { insert(new TuRow(uid, docId, parentId, level, seq, so, eo, cu.text)); }
+            catch (IllegalArgumentException ignore) { /* uk dup 幂等 */ }
+            seqList.add(new long[]{ uid, seq, so, eo });
+            // T7-4（HC-12①）：WORD/PHRASE 单元登记「字符→词/词组」后置表（char 两两 DIST 仍 = 0）
+            if ((level == DS1_WORD || level == DS2_PHRASE) && cu.text.codePointCount(0, cu.text.length()) >= 2) {
+                registerCharTermPostings(uid, cu.text);
+            }
+            seq++;
+        }
+        if (seq == 0) return 0;
+        stat.rowsPerLevel[level] += seq;
+        List<Long> uidSeq = new ArrayList<>(seq);
+        for (long[] a : seqList) uidSeq.add(a[0]);
+        if (level != DS0_CHAR) {
+            stat.pairsTotal += buildDistForSeq(docId, parentId, level, uidSeq).pairsTotal;
+        } else {
+            updateWeightForLevel(docId, parentId, level, uidSeq); // char 层不建 DIST，仅 weight
+        }
+        writePositionsForLevel(docId, parentId, level, seqList);
+        return seq;
+    }
+
+    /** 收集迭代器为 List（保持顺序）。 */
+    private static List<FulltextSegmenter.CutUnit> collect(Iterator<FulltextSegmenter.CutUnit> it) {
+        List<FulltextSegmenter.CutUnit> out = new ArrayList<>();
+        if (it != null) while (it.hasNext()) { FulltextSegmenter.CutUnit cu = it.next(); if (cu != null) out.add(cu); }
+        return out;
+    }
+
+    /** 把一组 CutUnit 的偏移整体平移 base（子串偏移 → 文档偏移）。 */
+    private static List<FulltextSegmenter.CutUnit> shift(List<FulltextSegmenter.CutUnit> units, int base) {
+        List<FulltextSegmenter.CutUnit> out = new ArrayList<>(units.size());
+        for (FulltextSegmenter.CutUnit cu : units) out.add(new FulltextSegmenter.CutUnit(cu.text, base + cu.startOff, base + cu.endOff, cu.seqHint));
+        return out;
+    }
+
+    /** HC-9：按 Markdown '#' 标题行把文本切为章节 span [secStart,secEnd,headStart,headEnd]；无标题返回 null。 */
+    private static List<int[]> chapterSpans(String text) {
+        int n = text.length(), i = 0;
+        List<int[]> heads = new ArrayList<>();
+        while (i < n) {
+            int le = text.indexOf('\n', i); if (le < 0) le = n;
+            if (isHeadingLine(text, i, le)) heads.add(new int[]{ i, le });
+            i = le + 1;
+        }
+        if (heads.isEmpty()) return null;
+        List<int[]> spans = new ArrayList<>(heads.size());
+        for (int k = 0; k < heads.size(); k++) {
+            int s = (k == 0) ? 0 : heads.get(k)[0];      // 首章含标题前导言
+            int e = (k + 1 < heads.size()) ? heads.get(k + 1)[0] : n;
+            spans.add(new int[]{ s, e, heads.get(k)[0], heads.get(k)[1] });
+        }
+        return spans;
+    }
+
+    /** [ls,le) 是否为 Markdown 标题行（1~6 个 '#' 后跟空白）。 */
+    private static boolean isHeadingLine(String text, int ls, int le) {
+        int i = ls;
+        while (i < le && (text.charAt(i) == ' ' || text.charAt(i) == '\t')) i++;
+        int h = 0; while (i < le && text.charAt(i) == '#' && h < 7) { i++; h++; }
+        if (h == 0 || h > 6) return false;
+        return i < le && (text.charAt(i) == ' ' || text.charAt(i) == '\t');
+    }
+
+    /** 找到包含偏移 off 的章节节点 uid（无命中回退首锚）。 */
+    private static long chapterOf(List<long[]> anchors, int off) {
+        long fallback = anchors.isEmpty() ? 0L : anchors.get(0)[0];
+        for (long[] a : anchors) if (off >= a[1] && off < a[2]) return a[0];
+        return fallback;
+    }
+
     /** P25 T1: 从 seqList 写 positions。seqList=[uid,seq,startOff,endOff]；start==end（缺失或不合法）时 fallback start=seq,end=seq+1。 */
     private void writePositionsForLevel(long docId, long parentId, int level, List<long[]> seqList) throws IOException {
         if (seqList == null || seqList.isEmpty()) return;

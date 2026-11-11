@@ -1,8 +1,10 @@
-# P21 OQ1 全文分层倒排索引（6 层语义 + 层级化两两正距离）—— spec.md（**REV7 GATE C 实装对齐版，2026-11-10**）
+# P21 OQ1 全文分层倒排索引（6 层语义 + 层级化两两正距离）—— spec.md（**REV8 GATE A 待批版，2026-11-10**）
 
 **绝对日期：2026-11-10**
 **REV5→REV6 关键差异**：① PAIR_MAP 四元→六元（加 i,j 下标 HC-6）；② DIST_BUCKET ctxKey 上下文隔离；③ §7 KT-1~KT-5 实装 Tradeoffs 写死（distanceBetween 查 DIST_BUCKET L 桶，不查 PAIR_MAP）。
 **REV6→REV7 关键差异（用户 2026-11-10 澄清偏差修正）**：① **CHAR 层（DS0_CHAR）不再建 DIST 倒排**（成对 PAIR_MAP/DIST_BUCKET/UID_RING 全部跳过），仅保留 text_units 实例行作为「兜底词/词组/句子解析源」；DIST 最低层下沉为 WORD(level 1)，消除 char 层 O(C²) 存储浪费（见 §2.9 HC-8 与 §7 KT-6）；② HanLP 中文分词**改为硬依赖 hanlp jar**（`com.hankcs:hanlp:portable-1.8.6`，compile scope）以 Provider 接入（见 §7 KT-7）。**REV7 修订（用户 2026-11-10 推翻"反射式零硬依赖"方案）**：NG-3 红线原禁止 p2p-db 实依赖 hanlp，现**将 hanlp 移出红线**（剩余 jieba/ik/spacy/lucene/HNSW/向量库仍禁）；HanLpProvider 直连 `HanLP.segment(...)`，`available()` 恒 true、`priority()=100`；P21~P29_T5 Gatekeeper 已同步移除对 hanlp 的 `Class.forName` CNF 断言（计数 5→4 等）。
+**REV7→REV8 关键差异（用户 2026-11-10 检索语义质询，Gate A 待批）**：① **实体包含树 + 向上聚合**：检索模型由"同文扁平 6 路"升级为**父包含子实体树**——`sentence(3) ⊂ block(4) ⊂ 章节/篇 ⊂ 卷 ⊂ 全本`，章节及以上统一以 **DS5_DOC_STRUCT 的 parent_id 链**嵌套（HC-5 永不增 level 6）；入参**含句子**时检索优先走 **sentence 倒排 → 定位 block/segment → 沿 parent_id 向上聚合**（章节/篇→卷→全本，每级只存本级索引，**不越层**）。见 §2.10 HC-9。② **block/segment 限长**（`maxBlockChars`，防 O(B²) 并作 scope 过滤粒度）见 §2.11 HC-10。③ **scope 倒排**（数据类别/权限过滤，复用既有物理原语、不引入第 4 种 store）见 §2.12 HC-11。④ **char 层挂「字符→词/词组」检索倒排**（澄清 HC-8 只禁 char **两两 DIST**，**不禁** char 层的词/词组后置表）见 §2.9 豁免边界增补 + §2.13 HC-12。⑤ **词/词组同义·近义关系**像 scope 一样作**一等倒排属性**（`unitId → synonymSet`）见 §2.13 HC-12。⑥ **召回语义=精确优先降权**：搜「人民」**召回**「人民群众」但**精确整词「人民」排序更前**（"人民"2/2 vs "人民群众"2/4，char 层最多匹配者择优）；**打分公式归 P22**（P21 Non-Goals：权重/TF-IDF 不在 P21），P21 只提供 char 层择优**召回原语**。
+
 **核心设计对齐用户 VERBATIM 原方案（严格实施）**：
 
 ---
@@ -21,7 +23,7 @@
 
 ---
 
-1. **6 层 unit 抽象（同前）**：CHAR(0) → WORD(1) → PHRASE(2) → SENTENCE(3) → BLOCK(4) → DOC_STRUCT(5)；**每层只存「父包含子、子 seq、同父同层两两正距离」3 类最小信息；跨层 0 距离重复写。**【REV7 修订】CHAR(0) 层**不建 DIST 倒排**（见 HC-8）：char 层仅作为「兜底获取词/词组/句子」的解析源并保留 text_units 实例行，其两两成对距离由 WORD(1)/PHRASE(2) 层承担；DIST 倒排的实际最低层为 **WORD(level 1)**。
+1. **6 层 unit 抽象（同前）**：CHAR(0) → WORD(1) → PHRASE(2) → SENTENCE(3) → BLOCK(4) → DOC_STRUCT(5)；**每层只存「父包含子、子 seq、同父同层两两正距离」3 类最小信息；跨层 0 距离重复写。**【REV7 修订】CHAR(0) 层**不建 DIST 倒排**（见 HC-8）：char 层仅作为「兜底获取词/词组/句子」的解析源并保留 text_units 实例行，其两两成对距离由 WORD(1)/PHRASE(2) 层承担；DIST 倒排的实际最低层为 **WORD(level 1)**。【REV8 修订】6 层升级为**父包含子实体树**（`sentence ⊂ block(最重要检索实体) ⊂ 章节/篇/卷/全本`，级别≥4 用 DS5 `parent_id` 链）；**检索流程**：入参**含句子** → 优先 sentence 倒排 → block/segment → 沿 `parent_id` 向上聚合（**不越层存储**）；入参**非句子** → 统一分解 char → char 层倒排（**char 层可倒排词/词组**）→ **最多匹配者择优**（精确优先降权，解决「人民」vs「人民群众」）。block/segment **限长**并倒排 **scope**（数据类别/权限过滤）；词/词组带 **同义·近义** 一等属性。见 §2.9~§2.13（HC-8 增补 / HC-9~HC-12）。
 
 2. **【USER-HC-0 严格对齐】unit_id = 纯文本 DsString.indexId 全局唯一，level 零关联**：
    - `term_dict = DsString(root, "string_store_ft_all")` 单实例；字典 key = **纯文本 UTF-8 字节**（无前缀、无分隔符、无 level 任何字节）
@@ -92,7 +94,7 @@
 ## 1.4 Non-Goals（同前修订）
 
 ✅ Seg SPI 纳入 Goals；**HanLP 为 compile 硬依赖**（`HanLpProvider` priority=100）；IK/Jieba/SpaCy 插件纳入 Goals（scope=provided）。
-❌ 权重/TF-IDF/BM25/embedding 仍非 Goals（P22）。
+❌ 权重/TF-IDF/BM25/embedding 仍非 Goals（P22）。**【REV8】精确优先降权的"打分公式"（精确匹配 bonus / synonym 加权融合）归 P22**；P21 只交付 char 层**择优召回原语**（HC-12）。
 ❌ 分布式分片/增量 patch/自动 n-gram/跨库字典共享 仍非 Goals（P21b 后续）。
 
 ---
@@ -152,7 +154,39 @@ fulltext/ft, inverted/inv, term_dict/td, text_units/tu, unit_distances/ud, segme
 - **语义**：`ingestDoc` Step4 的成对 DIST 枚举（PAIR_MAP 六元 + DIST_BUCKET[d] L/R + UID_RING.offerUnique）**仅对 level ≥ 1 执行**；level == DS0_CHAR 跳过整段 DIST，只保留 Step1/2/3 的切分与 text_units 实例行。
 - **依据**：char 层逐 code point（N=字符数），同父两两对 = N(N-1)/2 → 长文本 O(C²)。CJK 场景下 char 逐字与 word 一字一词 uid 近乎同构，char 层 DIST 纯属冗余（约 32B/pair：PAIR_MAP key/value + distL 8B + distR 8B）。
 - **豁免边界**：`updateWeightForLevel` / `writePositionsForLevel` 对 level 0 **仍执行**（char 层 tf/positions 保留，供 charLevelSearch 兜底查询）；`clearDoc` 对 char 层幂等安全（无 bucket → `removeNeighbor` 早返回）。
+- **【REV8 增补】豁免边界扩展（用户 2026-11-10 澄清）**：HC-8 仅禁 char 层的**成对 DIST 距离对**（PAIR_MAP / DIST_BUCKET / UID_RING）；**不禁止** char 层挂「**字符 → 词/词组**」的**检索后置表**（用于 `charLevelSearch` 消歧与 §2.13 的"精确优先降权"）。即 char 层**可以倒排词和词组**（词/词组因不能严格分层，豁免跨层限制），但**仍不建**字符两两距离。二者互不冲突：查候选走词/词组后置表，距离走 level≥1。
 - **Gatekeeper**：`P21_T3_IngestQueryTest.checkPairs` 断言 `pairsTotal == Σ_{lv≥1} n(n-1)/2`（排除 level 0）；HC-6 一致性红线在 level ≥ 1 内继续生效。
+
+### §2.10 P21-HC-9：实体包含树 + 向上聚合（REV8 新增，用户 2026-11-10 澄清）
+
+- **语义**：6 层**不是**"同一整篇文本各切一遍的扁平 6 路"，而是**父包含子**的实体树：
+  - `CHAR(0) ⊂ WORD(1) ⊂ PHRASE(2) ⊂ SENTENCE(3) ⊂ BLOCK(4) ⊂ 章节/篇 ⊂ 卷 ⊂ 全本`。
+  - **`block(4)` 是最重要的检索实体**：`sentence(3)` 的 `parent_id` = 其所属 **block**；`block(4)` 的 `parent_id` = 其所属**章节节点**；章节/篇/卷/全本统一用 **DS5_DOC_STRUCT 的 parent_id 链**嵌套表达（HC-5：**永不增 level=6**）。
+- **检索流程（用户 VERBATIM）**：
+  - 入参**含句子** → 优先走 **sentence 倒排** → 定位含该句的 **block/segment** → 沿 `parent_id` 链**向上聚合**到 章节/篇 → 卷 → 全本。
+  - 入参**非句子** → 统一分解为 **char** → 走 char 层倒排（见 §2.9 豁免边界 + §2.13）。
+- **不越层（用户核心原则）**：block 只倒排其 sentence 级索引；章节/篇**不重复存** sentence；卷/全本只倒排其下章节/篇。每级只存本级索引，**严禁越级冗余存储**以省空间。
+- **Gatekeeper**：断言 `parent_id` 链可自底向上回溯（sentence.parentId 命中的 block 之 parentId 命中其章节 DS5 节点）≥ 3 级。
+
+### §2.11 P21-HC-10：block/segment 长度上限（REV8 新增，用户 2026-11-10）
+
+- **语义**：`block(4)` 单元**必须限长**（`maxBlockChars`，默认 **1024** code point）；超长段落按**句边界**二次切分为多个 block（不切碎句子）。
+- **目的**：① 控制单 block 的 DIST pair 数（防 O(B²)）；② block 作为**向上聚合**与 **scope 过滤**的粒度单位。
+- **Gatekeeper**：`cutBlock` 输出任一 block 长度 ≤ `maxBlockChars`；超长段落切出的多 block 的 `parent_id` 指向**同一章节节点**。
+
+### §2.12 P21-HC-11：scope 倒排（REV8 新增，用户 2026-11-10）
+
+- **语义**：block/segment 除文本倒排外，**倒排若干 scope**（数据类别/权限/标签等）。scope = `(scopeKey, scopeValue)` 键值对（如 `dept:HR`、`cls:SECRET`）。
+- **物理**：复用既有物理原语（DsHashMap / DsColumnar），**不引入第 4 种 store 类型**（HC-3 语义下视作 unit_distances 的倒排变体）；双向：`scopeKey → {unitId}`（过滤用）与 `unitId → scopeSet`（展示/反向用）。
+- **用途**：检索时按 scope 过滤（如 `scope=dept:HR` 只召回 HR 数据），实现**数据类别/权限**维度的裁剪。
+- **ZeroLeak**：实现类必须放 fulltext 包**外**或作 `static` 内嵌类（fulltext 包顶级类 ≤ 3，见 §7 KT-5）。
+
+### §2.13 P21-HC-12：词/词组同义·近义关系 + 精确优先降权（REV8 新增，用户 2026-11-10）
+
+- **语义**：词/词组是重要语法元素，其**同义/近义词**属性**像 scope 一样**作**一等倒排属性**处理：`unitId → synonymSet`（同义 + 近义）。
+- **召回语义（用户决策：精确优先降权）**：搜「人民」时，含「人民」的**更长单元**（如「人民群众」）**仍召回**，但**精确整词「人民」排序更前**；由 char 层"**最多匹配者择优**"实现（「人民」2/2 ≻「人民群众」2/4）。
+- **实现位点**：char 层挂「字符→词/词组」检索后置表（§2.9 豁免边界）→ query 分解为 char → 命中候选单元 → 按**匹配度**择优（精确整词 > 长词组前缀）。
+- **依赖边界**：本轮 spec 只规定 char 层**召回原语与择优规则**；最终**打分公式（精确匹配 bonus / synonym 加权融合）归 P22**（P21 Non-Goals：权重/TF-IDF/BM25 不在 P21）。
 
 ---
 
@@ -168,6 +202,10 @@ fulltext/ft, inverted/inv, term_dict/td, text_units/tu, unit_distances/ud, segme
 | FR-6 | **覆盖写幂等（T4）**：删除旧 text_units 行后旧 distances 清理；DsString release 旧 text_sid（因为 unit_id 就是 text_sid 全局引用，同一 uid 在多处出现 refCount 共享正确处理——覆盖写减少某文档引用时 release，新增时 retain，refCount 稳定）。 | AC-FR6-1~5 |
 | FR-7 | **Gatekeeper HC-0~HC-7（T5）**：新增 HC-0 同文跨级 uid 相等 100 例专项；其余同前扩展 HC-7 SPI 专项。 | AC-FR7-1~13 |
 | FR-8 | **NFR 性能 + 总闭包（T6）**：同前。 | ≥4 TR, 总闭包 Tests≥450 |
+| FR-9 | **实体包含树 + 向上聚合（REV8，HC-9）**：ingestDoc 由"同文扁平 6 路"升级为**父包含子实体树**（sentence⊂block⊂章节/篇/卷/全本，DS5 `parent_id` 链，永不增 level 6）；入参**含句子**时检索优先 sentence 倒排 → block/segment → 沿 `parent_id` 向上聚合；**不越层存储**。 | AC-FR9-1~4 |
+| FR-10 | **block 限长 + scope 倒排（REV8，HC-10/11）**：`cutBlock` 受 `maxBlockChars`（默认 1024）约束、超长按句边界切；block/segment 倒排 scope `(scopeKey,scopeValue)` 供数据类别/权限过滤（复用既有物理原语，0 第 4 store）。 | AC-FR10-1~4 |
+| FR-11 | **char 层词/词组检索倒排（REV8，HC-8 豁免边界）**：char 层挂「字符→词/词组」后置表用于消歧/择优；**仍不建** char 两两 DIST（pairsTotal 排除 level 0）。 | AC-FR11-1~4 |
+| FR-12 | **同义/近义关系 + 精确优先降权（REV8，HC-12）**：`unitId → synonymSet` 一等倒排；召回=**精确优先降权**（长词组仍召回但精确整词排序更前）；打分公式归 P22。 | AC-FR12-1~4 |
 
 ---
 
@@ -189,6 +227,16 @@ fulltext/ft, inverted/inv, term_dict/td, text_units/tu, unit_distances/ud, segme
 - **AC-FR5-3（distance 上下文隔离）**：同文本对 (l="的", r="服务") 在 sentence=S1 中 distance=3；在 sentence=S2 中 distance=7；PAIR_MAP 分别 mix(S1) 和 mix(S2) 返回 3 和 7（两 key 不同，结果独立）。
 - **AC-FR6-3（refCount 稳定）**：doc A 含 word="地球"（引用 1 次），覆盖写删除 → DsString.refCount(uidOf("地球")) 减 1（到 0 则 DsString 删除由 DsData 内部管理；但其他文档引用时不删）—— 100 次覆盖后高频 100 词 refCount 方差 ≤1。
 - **AC-FR7-1（HC-0 Gate）**：HC-0 100 例跨层 uid 相等 100/100 通过。
+- **AC-FR9-1（实体树回溯，HC-9）**：sentence 实例的 `parentId` 命中同一 doc 的 block 实例；block 的 `parentId` 命中章节 DS5 节点；可自底向上回溯 **≥3 级**（sentence→block→章节）。
+- **AC-FR9-2（含句检索聚合）**：入参含完整句子 → 命中该句的 **block/segment 优先返回**，并向上聚合命中其章节/篇（不越层：章节索引中不含 sentence 级冗余）。
+- **AC-FR9-3（不越层断言）**：block 的倒排在中不含章节/篇级 term 冗余；章节及以上节点只倒排其直接下级的索引。
+- **AC-FR10-1（block 限长，HC-10）**：构造 > `maxBlockChars` 的超长段落 → 切出 **≥2 个 block**，每个长度 ≤ `maxBlockChars`，且**不切碎句子**，多 block 的 `parentId` 相同。
+- **AC-FR10-2（scope 过滤，HC-11）**：写入 block 带 `scope=dept:HR` 与 `scope=dept:FIN`；查询限定 `dept:HR` 只召回 HR block，FIN block 被过滤掉。
+- **AC-FR10-3（scope 0 第 4 store）**：`root/text_index/` 下**不新增**第 4 种 store 目录；scope 复用 DsHashMap/DsColumnar 原语。
+- **AC-FR11-1（char 层词/词组倒排，HC-8 豁免）**：`charLevelSearch=true` 时 char 层**可命中词/词组单元**；同时 `pairsTotal` 中 char 层 DIST 对 = **0**（HC-8 仍生效）。
+- **AC-FR11-2（精确优先降权）**：语料同时含「人民」「人民群众」；搜「人民」→ **两者均召回**，且「人民」**排序严格先于**「人民群众」（降权不丢召回）。
+- **AC-FR12-1（同义关联，HC-12）**：配置 `synonym(人民 ↔ 群众)` 后，搜「人民」可经 `synonymSet` **召回**含「群众」的单元（作为**相关**，弱于精确）。
+- **AC-FR12-2（无同义词典不误召）**：未配置 synonym 时，搜「人民」**不因** synonym 机制召回「群众」。
 
 ### §4.2 NFR（同前略，NFR-FT8 门槛 ≥ 450 tests 0F0E）
 
@@ -211,7 +259,11 @@ DsString / DsHashMap / DsFreeRing / DsColumnar + DsTableAdapter / DsEqIndexStore
 - OQ-2 决策 B：DIST_BUCKET 饱和 1024（用户 VERBATIM 指令，相关度递减 d=1 最高 / d=1024 最低，>1024 塞 1024 桶），固定 2048 文件（L+R） **决策 B（强制按用户指令，不可修改=1024）**
 - OQ-3 决策 C：PAIR_MAP 64-bit mix vs 128-bit 复合？**决策 C（推荐）64-bit mix**
 - OQ-4 决策 D：UID_RING shard=高 16 位 65536 文件 vs 单 DsHashMap bitmap？**决策 D（推荐）shard 16-bit**
-- OQ-5 决策 E：Seg SPI 接口 Iterator(E-A) vs List(E-B) vs 双模式？**决策 E-A（推荐）流式 Iterator<CutUnit> 大文档省内存**
+- OQ-5 决策 E：Seg SPI 接口 Iterator(E-A) vs List(E-B) vs 双模式？**决策 E-A（推荐）流式 Iterator<CutUnit> 大文档省内存**。
+- OQ-6 决策 F（REV8）：包含树上界——章节/篇/卷/全本用**单 DS5 + parent_id 链可变深度** vs 固定 4 级？**决策 F-A（推荐）单 DS5 + parent_id 链**（HC-5 兼容，节点数按实际文档结构定）。
+- OQ-7 决策 G（REV8）：scope 物理落点——block 表加 scope 列（DsColumnar）vs 独立 `scope→unitId` DsHashMap 倒排？**决策 G-A（推荐）倒排 DsHashMap**（过滤走倒排，避免全表扫）。
+- OQ-8 决策 H（REV8）：同义/近义词典来源——内建静态词表 vs 外部可插拔（像 Seg SPI）？**决策 H-A（推荐）外部可插拔 + 内建兜底**（对齐 Seg SPI 插件化风格）。
+- OQ-9 决策 I（REV8）：精确优先降权打分归属——P21 只出**召回原语**（char 层择优），打分公式（精确 bonus / synonym 加权）归 **P22**？**决策 I-A（推荐）P21 原语 + P22 打分**（P21 Non-Goals 不含权重）。
 
 ---
 
@@ -258,5 +310,25 @@ USER-HC-0 与 Ds Core Spec 的 **位运算 ID 编码偏好**不存在冲突：Ds
 - 实装：`com.q3lives.ds.database.HanLpProvider`（非 fulltext 包，规避 ZeroLeak 13 词类名扫描），`priority=100`（> MockJieba=10 > Seg5=0），注册于 `src/main/resources/META-INF/services/com.q3lives.ds.database.fulltext.FulltextSegmenter`。
 - **硬依赖**：`pom.xml` 新增 `<dependency>com.hankcs:hanlp:portable-1.8.6</dependency>`（compile scope）；`available()` 恒 `true`、`priority()=100`，`resolveSegmenter` winner 恒为 HanLpProvider（生产 + 测试全量生效）。NG-3 红线**已将 hanlp 移出**，剩余禁忌为 jieba/IKAnalyzer/SpaCy/Lucene/HNSW/向量库。
 - **Gatekeeper 同步**：P21~P29_T5 的 NG-3 `Class.forName` CNF 断言移除 `com.hankcs.hanlp.HanLP`（计数 5→4、9→8 等），`Java_21_起单调递增` 断言随之下调；P21_T2/P21_T5 winner 断言由 `priority>=10` 改为 `priority>=100`。
-- 切分范围：仅 `level == DS1_WORD` 直连 HanLP（`HanLP.segment(text)` → `Term.offset/word`）；其余 5 层直接委托 `Seg5BuiltinSegmenter`，保证层级语义不变。
+- 切分范围：仅 `level == DS1_WORD` 直连 HanLP（`HanLP.segment(text)` → `Term.word`）；其余 5 层直接委托 `Seg5BuiltinSegmenter`，保证层级语义不变。
+- **规范化语义（REV8 补注，`HanLpProvider.cutWord`）**：HanLP(portable) 的 `Term.offset` **不回填（恒 0）**，故偏移改用**顺序光标** `text.indexOf(word, cursor)` 对齐原文（找不到则退化到光标位）；并做两项规范化以对齐 Seg5/MockJieba 既有语义——① **过滤纯空白 token**（`keepWhitespace` 时保留）；② 原文中**连续的 ASCII 字母/数字/下划线 token 合并为整词**（避免 `T_0_00` 被 HanLP 切成 `T_`+`0`+`00` 碎片）。
 - 语义变更：HanLP WORD 层切分与 Seg5 逐字切分不同（CJK 检索语义变更），受影响的 CJK 检索测试须重基线（如 P25_T1 tr13 由 ASCII 整词改用 HanLP 认可整词）。
+
+**KT-8 实体包含树（HC-9，REV8）**：
+- 现状偏差：当前 [FulltextStore.ingestDoc](file:///I:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/fulltext/FulltextStore.java#L1293-L1351) 对**同一整篇 text** 按 6 层各切一遍，`parentId = docId*10 + lv`（层间**无父子语义**，仅"同 doc 同层假父"）；[search](file:///I:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/fulltext/FulltextStore.java#L2247-L2268) 仅召回 WORD 层 doc。
+- REV8 目标：sentence 的 `parent_id` → 其所属 block；block 的 `parent_id` → 章节 DS5 节点；向上聚合链 `sentence→block→章节→篇→卷→全本`（级别≥4 统一 DS5 + parent_id 链）。
+- 迁移影响：`parentId = docId*10+lv` 约定需改为**真实父实体 uid**；text_units IDX1/IDX3 与 DIST ctxKey（含 parentId）全部随动 → **属结构性改造**，须独立 T（T7）。
+
+**KT-9 block 限长（HC-10，REV8）**：
+- 现状偏差：当前 [cutBlock](file:///I:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/fulltext/FulltextStore.java#L1145-L1163) 仅按空行分隔，**无长度上限** → 长段落 = 单 block，DIST pair 数 O(B²) 无界。
+- REV8 目标：`maxBlockChars`（默认 1024）约束，超长按**句边界**二次切（不切碎句子），多 block 同父（同章节）。
+
+**KT-10 scope 倒排（HC-11，REV8）**：
+- 现状偏差：代码中无 scope 概念（仅 fulltext/cluster/join 两文件因业务无关命中词 "Scope"，非本机制）。
+- REV8 目标：`(scopeKey,scopeValue) → {unitId}` 与 `unitId → scopeSet` 双向上；复用 DsHashMap / DsColumnar；**不新增第 4 种 store 目录**；实现类放 fulltext 包外或 static 内嵌（ZeroLeak ≤3 顶级类）。
+
+**KT-11 char 层词/词组倒排 + 精确优先降权（HC-8 豁免 + HC-12，REV8）**：
+- 关键澄清：HC-8 只禁 char **两两 DIST**，**不禁** char 层「字符→词/词组」检索后置表 —— 二者物理目标不同（前者距离对 O(C²)，后者倒排链），**可共存**。
+- 现状偏差：当前 [cutWord](file:///I:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/fulltext/FulltextStore.java#L1078-L1104) CJK 一字一词、[cutPhrase](file:///I:/2026/code/p2p-net-storage/p2p-db/src/main/java/com/q3lives/ds/database/fulltext/FulltextStore.java#L1106-L1118) 仅相邻两词拼接，**无 char 层词/词组后置表**、**无同义/近义关系**。
+- REV8 目标：char 层可倒排词/词组（消歧用）；`synonymSet` 一等属性；召回=**精确优先降权**（「人民」2/2 ≻「人民群众」2/4）。
+- 边界：**打分公式归 P22**；P21 只交付 char 层**择优召回原语**。

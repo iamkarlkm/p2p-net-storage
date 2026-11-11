@@ -1,8 +1,9 @@
-# P21 OQ1 全文分层倒排索引 — tasks.md（**GATE C 实装验收版 REV6，2026-10-04**）
+# P21 OQ1 全文分层倒排索引 — tasks.md（**REV8 GATE B PASS 版，2026-11-11**）
 
-**基线日期：2026-10-04**
-**Gate A/B/C 状态**：✅ Gate A（Spec/Taks REV5 批准）✅ Gate B（Implement T1~T6 代码写入）✅ Gate C（**T1~T6 25 TR 实锤验收，Surefire 0F0E**）
-**当前累计 TR**：P21 = 25（T1 5 / T2 4 / T3 4 / T4 4 / T5 4 / T6 4）≥ 24 TR 门槛 ✅
+**基线日期：2026-10-04（REV8 增补 2026-11-10）**
+**Gate A/B/C 状态**：✅ Gate A（Spec/Taks REV5 批准）✅ Gate B（Implement T1~T6 代码写入）✅ Gate C（**T1~T6 25 TR 实锤验收，Surefire 0F0E**）；**【REV8】✅ Gate A（T7 批准）✅ Gate B（T7-1~T7-4 实装，11 Tests 0F0E，见 §1 T7）**
+**核心修订 REV7→REV8 差异（用户 2026-11-10 检索语义质询）**：新增 **T7 检索语义升级**（含 4 组 = T7-1 实体包含树+向上聚合 HC-9 / T7-2 block 限长 HC-10 / T7-3 scope 倒排 HC-11 / T7-4 char 层词/词组倒排+同义近义+精确优先降权 HC-8 豁免 & HC-12）；决策 F/G/H/I 见 spec §5.3 OQ-6~OQ-9。
+**当前累计 TR**：P21 = 25（T1 5 / T2 4 / T3 4 / T4 4 / T5 4 / T6 4）≥ 24 TR 门槛 ✅；**【REV8】+ T7 4 TR = 29（T7 闭包 11 Tests 0F0E）**
 **核心修订 REV5→REV6 差异**：① PAIR_MAP 从四元 mix → **六元 mix4**（加 i,j 下标，HC-6 重复 term 碰撞 0）；② DIST_BUCKET ctxKey=mix4(docId,parentId,level,srcUid) 上下文隔离防邻居泄漏；③ bucketAccessCounter 精确断言 TOPK 提前终止铁律；④ 决策 B 修正：`d_max=1024`（DIST_BUCKET 固定 2048 文件，d>1024 全入饱和桶 1024，原 65535 描述废弃）；⑤ T3~T6 测试用例文件名与 §3.1 命令更新为实装文件名。
 
 ---
@@ -114,6 +115,28 @@ mvn -pl p2p-db "-Dtest=ds.P21_T2_TextUnitsTest,ds.P21_T2_Seg5Test,ds.P21_T2_SegP
 | T6-2 | **查询性能（rule NFR-FT2，Q4 分双查询模式）**：10k docs × 10k runs：<br>① Q3 distanceBetween P99 ≤5ms；<br>② Q4a neighborsWithin K=20（阈值全范围）P99 ≤10ms；<br>③ Q4b **topK K=10（用户 TOPK 提前终止）P99 ≤5ms**（因为通常 d≤3 即满 10 条，仅扫 ≤3×2=6 iterator 空扫少）；<br>三项全部满足才 PASS | T6-TR-2 Q3Q4 P99 |
 | T6-3 | **存储膨胀（rubric NFR-FT3）**：10M 字中英语料 → Total Bytes = 原文 utf-8 × 1.5 + 200bytes/unit → rubric4+ | T6-TR-3 Bloat10M |
 | T6-4 | **总闭包 Surefire（VERBATIM 命令 §3）**：Tests run ≥47(P21×24+P20×12+P19×11) / 全量 ≥450（P10~P18 历史 364）→ F:0 E:0 S:0 | T6-TR-4 TotalCloseSurefire |
+
+---
+
+### T7：检索语义升级（REV8 新增，FR-9~FR-12 / HC-8 豁免 & HC-9~HC-12）
+
+**目标（用户 2026-11-10 检索语义质询）**：把"同文扁平 6 路"升级为**父包含子实体树**；入参含句走 sentence→block→向上聚合；block 限长 + scope 倒排；char 层挂词/词组倒排 + 同义·近义一等属性；召回=**精确优先降权**。
+
+> **Gate 状态：T7 为 Gate A 待批项**（决策 F/G/H/I 见 spec §5.3 OQ-6~OQ-9），批准后方进入 T7 编码。**打分公式归 P22**，T7 只交付 char 层择优**召回原语**。
+
+| ID | 任务内容 | 对应 TR |
+|----|---------|--------|
+| T7-1 | **实体包含树 + 向上聚合（HC-9）**：<br>`ingestDoc` 由 `parentId = docId*10+lv` 假父改为**真实父实体 uid**：`sentence.parentId → 所属 block`；`block.parentId → 章节 DS5 节点`；章节/篇/卷/全本统一 DS5 + `parent_id` 链（永不增 level 6）；<br>检索：入参含完整句子 → sentence 倒排命中 → 定位 block/segment → 沿 `parent_id` **向上聚合**（章节→篇→卷→全本）；<br>**不越层**：章节及以上不重复存 sentence 级索引。<br>回归牵引：text_units IDX1/IDX3 与 DIST ctxKey（含 parentId）随动，须整体重基线。 | **T7-TR-1 实体树回溯 + 含句聚合** |
+| T7-2 | **block 限长（HC-10）**：`cutBlock` 受 `maxBlockChars`（默认 1024 code point）约束；超长段落按**句边界**二次切（不切碎句子），多 block `parentId` 相同（同章节）；断言任一 block 长度 ≤ `maxBlockChars`。 | **T7-TR-2 block 限长** |
+| T7-3 | **scope 倒排（HC-11）**：`(scopeKey,scopeValue) → {unitId}` + `unitId → scopeSet` 双向倒排；复用 DsHashMap/DsColumnar（**0 第 4 store**）；检索按 scope 过滤（`dept:HR` 只召回 HR block）。 | **T7-TR-3 scope 写读过滤** |
+| T7-4 | **char 层词/词组倒排 + 同义·近义 + 精确优先降权（HC-8 豁免 + HC-12）**：<br>① char 层挂「字符→词/词组」检索后置表（消歧用），**char 两两 DIST 仍 = 0**（HC-8 不破）；<br>② `unitId → synonymSet` 一等倒排；<br>③ 召回=**精确优先降权**：语料含「人民」「人民群众」，搜「人民」**两者均召回**且「人民」排序**严格先于**「人民群众」；<br>④ 未配 synonym 时搜「人民」不因 synonym 召回「群众」。 | **T7-TR-4 char 词/词组倒排 + 精确优先降权** |
+
+**T7 闭包** ✅ GATE B PASS（2026-11-11，11 Tests 0F0E）：
+```powershell
+mvn -pl p2p-db "-Dtest=ds.P21_T7_EntityTreeTest,ds.P21_T7_BlockLimitTest,ds.P21_T7_ScopeTest,ds.P21_T7_CharTermRankTest" test
+# VERBATIM：Tests run: 11, Failures: 0, Errors: 0, Skipped: 0 — BUILD SUCCESS
+# 明细：EntityTree 3 / BlockLimit 2 / Scope 3 / CharTermRank 3（各 ≥ 对应 TR 门槛）
+```
 
 ---
 

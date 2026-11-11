@@ -34,6 +34,8 @@ public interface FulltextSegmenter {
         public boolean keepWhitespace = false;
         public boolean keepPunct = true;
         public int minChar = 1;
+        /** HC-10（REV8）：block/segment 长度上限（code point 计数，默认 1024）；超长段落按句边界二次切，不切碎句子。 */
+        public int maxBlockChars = 1024;
         public static SegOptions defaults() { return new SegOptions(); }
     }
 

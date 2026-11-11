@@ -219,18 +219,21 @@ public class DsData {
         }
 
         Object lock = indexLocks.computeIfAbsent(indexId, k -> new Object());
+        boolean cow;
         synchronized (lock) {
             IndexRecord r = readIndexRecord(indexId);
             int ref = r.refCount & 0xFFFF;
+            cow = ref > 1 || ref <= 0;
             if (ref > 1) {
                 short newRef = (short) (ref - 1);
                 byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
                 bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
-                return put(newVal);
             }
-            if (ref <= 0) {
-                return put(newVal);
-            }
+        }
+        if (cow) {
+            // COW 递减已在锁内完成；put(newVal) 必须在 per-index 锁之外调用，
+            // 否则会以「本 id → 目标 id」的任意顺序嵌套获取第二把锁，导致 ABBA 锁序死锁。
+            return put(newVal);
         }
 
         for (int attempt = 0; attempt < 8; attempt++) {
@@ -246,16 +249,18 @@ public class DsData {
                         short newRef = (short) (ref - 1);
                         byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
                         bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
-                        return put(newVal);
+                    } else {
+                        masterIndex.remove(oldVal);
+                        bucketStore.update(space, TYPE_VALUE, r.valueId, offset, data);
+                        short newHash16 = (short) (DsDataUtil.hash32(newVal) & 0xFFFF);
+                        byte[] record = buildIndexRecord(r.valueLen, newHash16, r.refCount, r.valueId);
+                        bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
+                        masterIndex.put(newVal, indexId, false);
+                        return indexId;
                     }
-                    masterIndex.remove(oldVal);
-                    bucketStore.update(space, TYPE_VALUE, r.valueId, offset, data);
-                    short newHash16 = (short) (DsDataUtil.hash32(newVal) & 0xFFFF);
-                    byte[] record = buildIndexRecord(r.valueLen, newHash16, r.refCount, r.valueId);
-                    bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
-                    masterIndex.put(newVal, indexId, false);
-                    return indexId;
                 }
+                // COW：put(newVal) 在 per-index 锁外执行，避免嵌套锁导致 ABBA 死锁。
+                return put(newVal);
             }
             if (otherIndexId == indexId) {
                 synchronized (lock) {
@@ -268,16 +273,18 @@ public class DsData {
                         short newRef = (short) (ref - 1);
                         byte[] record = buildIndexRecord(r.valueLen, r.valueHash16, newRef, r.valueId);
                         bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
-                        return put(newVal);
+                    } else {
+                        masterIndex.remove(oldVal);
+                        bucketStore.update(space, TYPE_VALUE, r.valueId, offset, data);
+                        short newHash16 = (short) (DsDataUtil.hash32(newVal) & 0xFFFF);
+                        byte[] record = buildIndexRecord(r.valueLen, newHash16, r.refCount, r.valueId);
+                        bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
+                        masterIndex.put(newVal, indexId, true);
+                        return indexId;
                     }
-                    masterIndex.remove(oldVal);
-                    bucketStore.update(space, TYPE_VALUE, r.valueId, offset, data);
-                    short newHash16 = (short) (DsDataUtil.hash32(newVal) & 0xFFFF);
-                    byte[] record = buildIndexRecord(r.valueLen, newHash16, r.refCount, r.valueId);
-                    bucketStore.overwrite(space, TYPE_INDEX, indexId, record);
-                    masterIndex.put(newVal, indexId, true);
-                    return indexId;
                 }
+                // COW：put(newVal) 在 per-index 锁外执行，避免嵌套锁导致 ABBA 死锁。
+                return put(newVal);
             }
 
             IndexRecord other = readIndexRecord(otherIndexId);

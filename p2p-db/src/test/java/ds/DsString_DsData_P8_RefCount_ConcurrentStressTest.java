@@ -7,9 +7,11 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -361,6 +363,59 @@ public class DsString_DsData_P8_RefCount_ConcurrentStressTest {
             String tag = "T04 ops=" + ops;
             assertEmptyErrs(errCounters, tag);
         } finally {
+            d.close();
+        }
+    }
+
+    /**
+     * T05（R3）：交叉 COW 锁序死锁回归。
+     *
+     * <p>构造两个值 V="YAAA…"、C="XAAA…"，各自 refCount&gt;1。写线程 A 对 V 做 offset0→'X' 的局部改写，
+     * 其 newVal 恰好等于 C（属于另一个 indexId）；写线程 B 对 C 做 offset0→'Y' 的局部改写，其 newVal 恰好等于 V。
+     * 修复前 {@code updatePartialValueByIndexId} 会在持有本 indexId 的 per-index 锁期间调用 {@code put(newVal)}，
+     * 从而以「本 id → 目标 id」的任意顺序嵌套获取第二把 per-index 锁，形成经典 ABBA 锁序死锁。
+     * 修复后 put(newVal) 在本锁之外执行，两线程应能在超时内正常收尾。</p>
+     */
+    @Test
+    public void T05_testUpdatePartialCrossedCow_NoDeadlock_R3() throws Exception {
+        File dir = tmpDir("ds-p8-t05-crosscow");
+        DsData d = new DsData(dir.getAbsolutePath(), "data");
+        final byte[] V = ("Y" + "A".repeat(31)).getBytes(StandardCharsets.UTF_8);
+        final byte[] C = ("X" + "A".repeat(31)).getBytes(StandardCharsets.UTF_8);
+        final byte[] PATCH_X = new byte[] {'X'};
+        final byte[] PATCH_Y = new byte[] {'Y'};
+        final int ATTEMPTS = 5000;
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            d.put(V);
+            d.put(V);
+            d.put(C);
+            d.put(C); // 使 V / C 两个 indexId 的 refCount 均 > 1，确保走 COW(ref>1) 分支
+            final CyclicBarrier bar = new CyclicBarrier(2);
+            Callable<Void> writerA = () -> {
+                for (int i = 0; i < ATTEMPTS; i++) {
+                    bar.await();
+                    d.put(V); // 维持 ref(V) > 1
+                    d.updatePartialValueByIndexId(d.getIndexId(V), 0, PATCH_X);
+                    bar.await();
+                }
+                return null;
+            };
+            Callable<Void> writerB = () -> {
+                for (int i = 0; i < ATTEMPTS; i++) {
+                    bar.await();
+                    d.put(C); // 维持 ref(C) > 1
+                    d.updatePartialValueByIndexId(d.getIndexId(C), 0, PATCH_Y);
+                    bar.await();
+                }
+                return null;
+            };
+            Future<Void> fa = pool.submit(writerA);
+            Future<Void> fb = pool.submit(writerB);
+            fa.get(20, TimeUnit.SECONDS);
+            fb.get(20, TimeUnit.SECONDS);
+        } finally {
+            pool.shutdownNow();
             d.close();
         }
     }
